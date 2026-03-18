@@ -261,6 +261,17 @@ async def recompute_risk(
     return result
 
 
+@router.post("/update-prices")
+async def update_prices(
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Fetch live NSE prices and update all holdings."""
+    from backend.services.live_prices import update_holdings_prices
+    result = await update_holdings_prices(db)
+    return result
+
+
 @router.get("/upload-log", response_model=list[UploadLogResponse])
 async def get_upload_log(
     admin: dict = Depends(get_admin_user),

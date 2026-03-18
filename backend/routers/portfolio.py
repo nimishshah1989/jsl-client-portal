@@ -120,7 +120,7 @@ async def get_summary(
 
 @router.get("/nav-series", response_model=list[NavSeriesPoint])
 async def get_nav_series(
-    range: str = Query("ALL", alias="range"),
+    time_range: str = Query("ALL", alias="range"),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[NavSeriesPoint]:
@@ -138,7 +138,7 @@ async def get_nav_series(
     if not rows:
         return []
 
-    cutoff = date_cutoff(range, rows[-1].nav_date)
+    cutoff = date_cutoff(time_range, rows[-1].nav_date)
     if cutoff is not None:
         rows = [r for r in rows if r.nav_date >= cutoff]
     if not rows:
@@ -318,7 +318,7 @@ async def get_holdings(
 
 @router.get("/drawdown-series", response_model=list[DrawdownPoint])
 async def get_drawdown_series(
-    range: str = Query("ALL", alias="range"),
+    time_range: str = Query("ALL", alias="range"),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[DrawdownPoint]:
@@ -336,7 +336,7 @@ async def get_drawdown_series(
     if not rows:
         return []
 
-    cutoff = date_cutoff(range, rows[-1].dd_date)
+    cutoff = date_cutoff(time_range, rows[-1].dd_date)
     if cutoff is not None:
         rows = [r for r in rows if r.dd_date >= cutoff]
 

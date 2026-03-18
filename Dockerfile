@@ -39,6 +39,12 @@ COPY --from=frontend /app/frontend/node_modules ./frontend/node_modules
 COPY --from=frontend /app/frontend/package.json ./frontend/package.json
 COPY --from=frontend /app/frontend/next.config.js ./frontend/next.config.js
 
+# Scripts for data ingestion
+COPY scripts/ ./scripts/
+
+# Data directory (mount or copy data files here)
+RUN mkdir -p /app/data
+
 # Startup script
 COPY start.sh ./
 RUN chmod +x start.sh

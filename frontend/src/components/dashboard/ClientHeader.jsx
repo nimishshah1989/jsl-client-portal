@@ -1,6 +1,7 @@
 'use client';
 
-import { useAuth } from '@/hooks/useAuth';
+import { useState, useEffect } from 'react';
+import { apiFetch } from '@/lib/api';
 import { useSummary } from '@/hooks/usePortfolio';
 import { formatDate } from '@/lib/format';
 import { Download } from 'lucide-react';
@@ -8,10 +9,23 @@ import Button from '@/components/ui/Button';
 
 /**
  * Client header: welcome message, portfolio name, as-of date, download button.
+ * Fetches user profile directly from /auth/me to display the client name.
  */
 export default function ClientHeader() {
-  const { user } = useAuth();
+  const [user, setUser] = useState(null);
   const { data: summary } = useSummary();
+
+  useEffect(() => {
+    async function fetchUser() {
+      try {
+        const data = await apiFetch('/auth/me');
+        setUser(data);
+      } catch {
+        // Auth failure handled by dashboard layout redirect
+      }
+    }
+    fetchUser();
+  }, []);
 
   const clientName = user?.name || user?.client_name || 'Client';
   const portfolioName = user?.portfolio_name || 'PMS Equity';

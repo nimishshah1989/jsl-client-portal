@@ -290,7 +290,7 @@ def _build_methodology_metrics(  # noqa: ANN001
     return {
         "absolute_return": MethodologyMetric(
             value=opt2(risk.absolute_return), benchmark_value=opt2(risk.bench_return_inception),
-            inputs={"nav_start": nav_start, "nav_end": nav_end},
+            inputs={"start_nav": nav_start, "end_nav": nav_end},
         ),
         "cagr": MethodologyMetric(
             value=opt2(risk.cagr), benchmark_value=opt2(risk.bench_cagr_inception),
@@ -304,6 +304,7 @@ def _build_methodology_metrics(  # noqa: ANN001
                 "first_date": str(first_nav.nav_date) if first_nav else None,
                 "latest_date": str(last_nav.nav_date) if last_nav else None,
                 "num_cash_flows": inception_days,  # approximate; exact count unavailable here
+                "total_invested": dec2(last_nav.invested_amount) if last_nav and last_nav.invested_amount else None,
             },
         ),
         "volatility": MethodologyMetric(
@@ -329,7 +330,7 @@ def _build_methodology_metrics(  # noqa: ANN001
         "alpha": MethodologyMetric(
             value=opt2(risk.alpha),
             inputs={"port_cagr": opt2(risk.cagr), "bench_cagr": opt2(risk.bench_cagr_inception),
-                    "beta_val": opt2(risk.beta), "risk_free_rate": dec2(rf)},
+                    "beta": opt2(risk.beta), "risk_free_rate": dec2(rf)},
         ),
         "beta": MethodologyMetric(
             value=opt2(risk.beta), inputs={"formula": "Cov(R_p, R_b) / Var(R_b)"},
@@ -363,8 +364,17 @@ def _build_methodology_metrics(  # noqa: ANN001
             value=opt2(risk.market_correlation),
             inputs={"formula": "Pearson correlation of daily returns"},
         ),
+        "max_consecutive_loss": MethodologyMetric(
+            value=str(risk.max_consecutive_loss) if risk.max_consecutive_loss is not None else None,
+            inputs={"win_months": str(risk.win_months) if risk.win_months else None,
+                    "loss_months": str(risk.loss_months) if risk.loss_months else None},
+        ),
         "avg_cash_held": MethodologyMetric(
             value=opt2(risk.avg_cash_held),
             inputs={"current_cash": opt2(risk.current_cash), "max_cash_held": opt2(risk.max_cash_held)},
+        ),
+        "max_cash_held": MethodologyMetric(
+            value=opt2(risk.max_cash_held),
+            inputs={"current_cash": opt2(risk.current_cash), "avg_cash_held": opt2(risk.avg_cash_held)},
         ),
     }

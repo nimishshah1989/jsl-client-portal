@@ -35,7 +35,12 @@ export async function apiFetch(url, options = {}) {
   const response = await fetch(fullUrl, config);
 
   if (response.status === 401) {
-    if (typeof window !== 'undefined' && !url.includes('/auth/login')) {
+    if (
+      typeof window !== 'undefined' &&
+      !url.includes('/auth/login') &&
+      !url.includes('/auth/me') &&
+      !window.location.pathname.startsWith('/login')
+    ) {
       window.location.href = '/login';
     }
     throw new ApiError('Unauthorized', 401, null);

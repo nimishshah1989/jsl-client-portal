@@ -1,8 +1,6 @@
-import LoginForm from '@/components/auth/LoginForm';
+'use client';
 
-export const metadata = {
-  title: 'Login | JSL Client Portal',
-};
+import LoginForm from '@/components/auth/LoginForm';
 
 export default function LoginPage() {
   return (

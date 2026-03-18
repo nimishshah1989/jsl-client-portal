@@ -32,9 +32,8 @@ export function useAuth() {
     }
   }, []);
 
-  useEffect(() => {
-    checkAuth();
-  }, [checkAuth]);
+  // Don't auto-check on mount — dashboard layout calls checkAuth explicitly.
+  // This prevents 401 loops on the login page.
 
   const login = useCallback(async (username, password) => {
     setLoading(true);

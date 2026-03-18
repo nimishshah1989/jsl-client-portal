@@ -32,12 +32,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Backend source
 COPY backend/ ./backend/
 
-# Frontend built assets + node_modules for Next.js runtime
-COPY --from=frontend /app/frontend/.next ./frontend/.next
-COPY --from=frontend /app/frontend/public ./frontend/public
-COPY --from=frontend /app/frontend/node_modules ./frontend/node_modules
-COPY --from=frontend /app/frontend/package.json ./frontend/package.json
-COPY --from=frontend /app/frontend/next.config.js ./frontend/next.config.js
+# Frontend: copy entire build stage output (includes .next, node_modules, config)
+COPY --from=frontend /app/frontend ./frontend/
 
 # Scripts for data ingestion
 COPY scripts/ ./scripts/

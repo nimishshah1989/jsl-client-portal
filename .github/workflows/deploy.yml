@@ -11,6 +11,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -41,8 +45,7 @@ jobs:
             docker build -t client-portal .
 
             echo "[3/5] Stopping old container..."
-            docker stop client-portal 2>/dev/null || true
-            docker rm client-portal 2>/dev/null || true
+            docker rm -f client-portal 2>/dev/null || true
 
             echo "[4/5] Starting new container..."
             docker run -d \

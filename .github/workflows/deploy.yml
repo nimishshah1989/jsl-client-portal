@@ -57,14 +57,8 @@ jobs:
 
             echo "[5/5] Health check..."
             sleep 8
-            echo "--- Container startup logs ---"
-            docker logs client-portal --tail 30
-            echo "--- End logs ---"
             if curl -sf http://localhost:8007/api/health > /dev/null; then
               echo "Health check PASSED"
-              echo "Dashboard check:"
-              curl -s -o /dev/null -w "HTTP %{http_code}" http://localhost:8007/dashboard
-              echo ""
             else
               echo "Health check FAILED — rolling back"
               docker logs client-portal --tail 50

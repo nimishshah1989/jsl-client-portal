@@ -14,9 +14,6 @@ FASTAPI_PID=$!
 
 echo "[CPP] Starting Next.js on port 3000..."
 cd /app/frontend
-echo "[CPP] Frontend dir contents:"
-ls -la /app/frontend/.next/ 2>/dev/null | head -10 || echo "[CPP] WARNING: .next directory NOT FOUND"
-ls -la /app/frontend/.next/server/app/ 2>/dev/null | head -10 || echo "[CPP] WARNING: .next/server/app/ NOT FOUND"
 npx next start -p 3000 &
 NEXTJS_PID=$!
 

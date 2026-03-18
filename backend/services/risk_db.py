@@ -88,14 +88,19 @@ _UPSERT_SQL = (
 )
 
 
-def to_decimal(value: float, places: int = 4) -> Decimal:
-    """Convert float to Decimal with specified precision for DB storage."""
+def to_decimal(value: float, places: int = 4, max_abs: float = 99_999_999.0) -> Decimal:
+    """Convert float to Decimal with specified precision for DB storage.
+
+    Clamps extreme values to avoid PostgreSQL numeric overflow.
+    """
     if value is None:
         return Decimal("0")
     if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
         return Decimal("0")
+    # Clamp to avoid NUMERIC(12,4) overflow
+    clamped = max(-max_abs, min(max_abs, float(value)))
     quantize_str = "0." + "0" * places
-    return Decimal(str(value)).quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP)
+    return Decimal(str(clamped)).quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP)
 
 
 def to_date(value: object) -> date | None:

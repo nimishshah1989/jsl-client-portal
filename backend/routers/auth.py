@@ -1,12 +1,13 @@
 """Auth router — login, logout, me, change-password."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.config import get_settings
 from backend.database import get_db
 from backend.middleware.auth_middleware import (
     create_access_token,
@@ -25,6 +26,8 @@ from backend.schemas.auth import (
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 COOKIE_MAX_AGE = 48 * 3600  # 48 hours in seconds
+_settings = get_settings()
+_SECURE_COOKIE = _settings.APP_ENV == "production" and "https" in _settings.CORS_ORIGINS
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -55,13 +58,13 @@ async def login(
         key="access_token",
         value=token,
         httponly=True,
-        secure=True,
-        samesite="strict",
+        secure=_SECURE_COOKIE,
+        samesite="lax",
         path="/",
         max_age=COOKIE_MAX_AGE,
     )
 
-    client.last_login = datetime.now(timezone.utc)
+    client.last_login = datetime.utcnow()
     await db.flush()
 
     return LoginResponse(
@@ -77,8 +80,8 @@ async def logout(response: Response) -> dict[str, str]:
     response.delete_cookie(
         key="access_token",
         httponly=True,
-        secure=True,
-        samesite="strict",
+        secure=_SECURE_COOKIE,
+        samesite="lax",
         path="/",
     )
     return {"message": "logged out"}

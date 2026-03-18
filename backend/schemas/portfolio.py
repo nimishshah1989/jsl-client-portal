@@ -19,10 +19,19 @@ class SummaryResponse(BaseModel):
 
 
 class NavSeriesPoint(BaseModel):
-    """Single data point in the NAV time series chart."""
+    """Single data point in the NAV time series chart.
+
+    nav          — actual portfolio current_value in ₹
+    benchmark    — what the same invested_amount would be worth in Nifty at this date (₹)
+    invested     — corpus/invested amount at this date (₹) — for step-line overlay
+    benchmark_raw — base-100 Nifty index value (kept for reference/future use)
+    cash_pct     — liquidity % clamped to [0, 100]
+    """
     date: dt.date
     nav: str
     benchmark: str | None = None
+    invested: str | None = None
+    benchmark_raw: str | None = None
     cash_pct: str | None = None
 
 

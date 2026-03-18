@@ -86,6 +86,7 @@ SECTOR_MAP: dict[str, str] = {
     # ── Oil, Gas & Petrochemicals ────────────────────────────────────────────
     "DEEPAKFERT":   "Chemicals",
     "DEEPAKNTR":    "Chemicals",
+    "GUJGASLTD":    "Oil & Gas",
     "HINDPETRO":    "Oil & Gas",
     "OIL":          "Oil & Gas",
     "ONGC":         "Oil & Gas",

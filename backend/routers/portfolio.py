@@ -124,7 +124,18 @@ async def get_nav_series(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[NavSeriesPoint]:
-    """NAV time series normalized to base 100."""
+    """NAV time series with actual ₹ portfolio value and Nifty equivalent.
+
+    Left-axis values are in absolute rupees so the client sees real portfolio
+    growth rather than a normalised index.
+
+    - nav:           actual current_value from the NAV row (₹)
+    - benchmark:     invested_amount × (benchmark_today / benchmark_first) —
+                     what the same corpus would be worth had it been in Nifty
+    - invested:      corpus (invested_amount) at each date — step-line overlay
+    - benchmark_raw: base-100 Nifty index (kept for reference)
+    - cash_pct:      liquidity % clamped to [0, 100]
+    """
     client_id: int = user["client_id"]
     portfolio = await get_default_portfolio(db, client_id)
 
@@ -144,40 +155,40 @@ async def get_nav_series(
     if not rows:
         return []
 
-    # Compute TWR-adjusted base-100 index for portfolio.
-    # Raw nav_value includes corpus infusions as value increases, which would
-    # make the chart show inflated returns after each cash infusion.
-    nav_vals = [float(r.nav_value) for r in rows]
-    corpus_vals = [float(r.invested_amount) for r in rows]
-    twr_vals = [100.0]
-    for i in range(1, len(nav_vals)):
-        prev = nav_vals[i - 1]
-        if prev == 0:
-            twr_vals.append(twr_vals[-1])
-            continue
-        corpus_chg = corpus_vals[i] - corpus_vals[i - 1]
-        if corpus_chg != 0:
-            adj_prev = prev + corpus_chg
-            if adj_prev <= 0:
-                twr_vals.append(twr_vals[-1])
-                continue
-            daily_ret = (nav_vals[i] / adj_prev) - 1
-        else:
-            daily_ret = (nav_vals[i] / prev) - 1
-        twr_vals.append(twr_vals[-1] * (1 + daily_ret))
-
+    # Benchmark base: use the first row's benchmark value that is non-zero.
+    # invested_amount at the first row is the reference corpus for Nifty scaling.
     first_bench = rows[0].benchmark_value
-    points: list[NavSeriesPoint] = []
+    first_invested = rows[0].invested_amount or Decimal("0")
 
-    for i, row in enumerate(rows):
-        bench_idx: str | None = None
-        if row.benchmark_value and first_bench and first_bench != Decimal("0"):
-            bench_idx = dec2(row.benchmark_value / first_bench * Decimal("100"))
+    points: list[NavSeriesPoint] = []
+    for row in rows:
+        # Nifty equivalent: what first_invested corpus would be worth today in Nifty
+        bench_equiv: str | None = None
+        bench_raw: str | None = None
+        if (
+            row.benchmark_value
+            and first_bench
+            and first_bench != Decimal("0")
+            and first_invested != Decimal("0")
+        ):
+            bench_equiv = dec2(
+                first_invested * row.benchmark_value / first_bench
+            )
+            bench_raw = dec2(row.benchmark_value / first_bench * Decimal("100"))
+
+        # Clamp cash_pct to [0, 100]
+        cash: str | None = None
+        if row.cash_pct is not None:
+            clamped = max(Decimal("0"), min(Decimal("100"), row.cash_pct))
+            cash = dec2(clamped)
+
         points.append(NavSeriesPoint(
             date=row.nav_date,
-            nav=dec2(Decimal(str(round(twr_vals[i], 2)))),
-            benchmark=bench_idx,
-            cash_pct=dec2(row.cash_pct) if row.cash_pct is not None else None,
+            nav=dec2(row.current_value),
+            benchmark=bench_equiv,
+            invested=dec2(row.invested_amount) if row.invested_amount is not None else None,
+            benchmark_raw=bench_raw,
+            cash_pct=cash,
         ))
     return points
 

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useNavSeries } from '@/hooks/usePortfolio';
-import { formatDateShort, formatPct } from '@/lib/format';
+import { formatDateShort, formatINRShort, formatINR } from '@/lib/format';
 import { CHART_COLORS, TIME_RANGES } from '@/lib/constants';
 import {
   ComposedChart,
@@ -38,22 +38,30 @@ function CustomTooltip({ active, payload, label }) {
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
       <p className="font-medium text-slate-700 mb-1">{label}</p>
-      {payload.map((entry) => (
-        <div key={entry.dataKey} className="flex items-center gap-2">
-          <span
-            className="w-2.5 h-2.5 rounded-full"
-            style={{ backgroundColor: entry.color }}
-          />
-          <span className="text-slate-500">{entry.name}:</span>
-          <span className="font-mono font-medium text-slate-800">
-            {entry.value != null
-              ? (entry.dataKey === 'cash_pct'
-                ? `${Number(entry.value).toFixed(1)}%`
-                : Number(entry.value).toFixed(2))
-              : '--'}
-          </span>
-        </div>
-      ))}
+      {payload.map((entry) => {
+        if (entry.value == null) return null;
+        let displayValue;
+        if (entry.dataKey === 'cash_pct') {
+          displayValue = `${Number(entry.value).toFixed(1)}%`;
+        } else if (entry.dataKey === 'invested') {
+          displayValue = formatINRShort(entry.value);
+        } else {
+          // nav and benchmark — show both short and full on hover
+          displayValue = formatINRShort(entry.value);
+        }
+        return (
+          <div key={entry.dataKey} className="flex items-center gap-2">
+            <span
+              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: entry.color }}
+            />
+            <span className="text-slate-500">{entry.name}:</span>
+            <span className="font-mono font-medium text-slate-800">
+              {displayValue}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -80,22 +88,23 @@ export default function NavChart() {
     );
   }
 
-  // Format data for display — convert string values to numbers for Recharts
+  // Format data for Recharts — all financial values are numeric ₹ amounts
   const chartData = data.map((d) => ({
     dateLabel: formatDateShort(d.date),
     nav: d.nav != null ? Number(d.nav) : null,
     benchmark: d.benchmark != null ? Number(d.benchmark) : null,
-    cash_pct: d.cash_pct != null ? Number(d.cash_pct) : null,
+    invested: d.invested != null ? Number(d.invested) : null,
+    cash_pct: d.cash_pct != null ? Math.min(100, Math.max(0, Number(d.cash_pct))) : null,
   }));
 
-  // Compute tick interval to avoid overcrowding
+  // Compute tick interval to avoid overcrowding on X-axis
   const tickInterval = Math.max(1, Math.floor(chartData.length / 8));
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
         <h2 className="text-xl font-semibold text-slate-800">
-          Relative Performance (Base 100)
+          Portfolio Value
         </h2>
         <div className="flex flex-wrap gap-1">
           {TIME_RANGES.map((r) => (
@@ -117,7 +126,7 @@ export default function NavChart() {
       <ResponsiveContainer width="100%" height={360}>
         <ComposedChart
           data={chartData}
-          margin={{ top: 5, right: 10, left: 0, bottom: 5 }}
+          margin={{ top: 5, right: 55, left: 10, bottom: 5 }}
         >
           <defs>
             <linearGradient id="navGradient" x1="0" y1="0" x2="0" y2="1">
@@ -137,21 +146,26 @@ export default function NavChart() {
             axisLine={{ stroke: '#e2e8f0' }}
             interval={tickInterval}
           />
+          {/* Left axis — actual ₹ portfolio value */}
           <YAxis
             yAxisId="nav"
             tick={{ fontSize: 11, fill: '#94a3b8' }}
             tickLine={false}
             axisLine={false}
             domain={['auto', 'auto']}
+            tickFormatter={(v) => formatINRShort(v)}
+            width={72}
           />
+          {/* Right axis — cash % clamped strictly to [0, 100] */}
           <YAxis
             yAxisId="cash"
             orientation="right"
             tick={{ fontSize: 11, fill: '#d97706' }}
             tickLine={false}
             axisLine={false}
-            domain={[0, 'auto']}
+            domain={[0, 100]}
             tickFormatter={(v) => `${v}%`}
+            width={40}
           />
           <Tooltip content={<CustomTooltip />} />
           <Legend
@@ -160,6 +174,7 @@ export default function NavChart() {
             iconType="plainline"
             wrapperStyle={{ fontSize: 12, paddingBottom: 8 }}
           />
+          {/* Portfolio value — area chart, left axis */}
           <Area
             yAxisId="nav"
             type="monotone"
@@ -171,17 +186,31 @@ export default function NavChart() {
             dot={false}
             activeDot={{ r: 4, strokeWidth: 0, fill: CHART_COLORS.portfolio }}
           />
+          {/* Nifty equivalent (same corpus invested in Nifty) — dashed line */}
           <Line
             yAxisId="nav"
             type="monotone"
             dataKey="benchmark"
-            name="NIFTY 50"
+            name="NIFTY 50 Equiv."
             stroke={CHART_COLORS.benchmark}
             strokeWidth={1.5}
             strokeDasharray="6 3"
             dot={false}
             activeDot={{ r: 3, strokeWidth: 0, fill: CHART_COLORS.benchmark }}
           />
+          {/* Invested corpus — subtle step line to show cash injections */}
+          <Line
+            yAxisId="nav"
+            type="stepAfter"
+            dataKey="invested"
+            name="Invested"
+            stroke="#94a3b8"
+            strokeWidth={1}
+            strokeDasharray="2 4"
+            dot={false}
+            activeDot={{ r: 3, strokeWidth: 0, fill: '#94a3b8' }}
+          />
+          {/* Cash % — bar overlay on right axis */}
           <Bar
             yAxisId="cash"
             dataKey="cash_pct"

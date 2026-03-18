@@ -18,12 +18,36 @@ function Skeleton() {
 }
 
 const METRIC_LABELS = [
-  { key: 'abs_return', label: 'Absolute Return' },
-  { key: 'cagr', label: 'CAGR' },
-  { key: 'volatility', label: 'Volatility' },
-  { key: 'max_dd', label: 'Max Drawdown' },
-  { key: 'sharpe', label: 'Sharpe Ratio' },
-  { key: 'sortino', label: 'Sortino Ratio' },
+  {
+    key: 'abs_return',
+    label: 'Absolute Return',
+    description: 'Total percentage gain or loss over the period. Formula: (End Value / Start Value - 1) × 100',
+  },
+  {
+    key: 'cagr',
+    label: 'CAGR',
+    description: 'Compound Annual Growth Rate — annualized return that accounts for compounding. Normalizes returns across different time periods for fair comparison.',
+  },
+  {
+    key: 'volatility',
+    label: 'Volatility',
+    description: 'Annualized standard deviation of daily returns (×√252). Higher volatility = larger daily swings. Measures total risk, both up and down.',
+  },
+  {
+    key: 'max_dd',
+    label: 'Max Drawdown',
+    description: 'Largest peak-to-trough decline during the period. Shows the worst-case scenario an investor would have experienced.',
+  },
+  {
+    key: 'sharpe',
+    label: 'Sharpe Ratio',
+    description: 'Risk-adjusted return: (Return - Risk Free Rate) / Volatility. Higher is better. >1 = good, >2 = excellent. Uses 7% risk-free rate (India 10Y bond).',
+  },
+  {
+    key: 'sortino',
+    label: 'Sortino Ratio',
+    description: 'Like Sharpe but only penalizes downside volatility. Better for portfolios that have more upside than downside movement. Higher is better.',
+  },
 ];
 
 export default function PerformanceTable() {
@@ -84,7 +108,17 @@ export default function PerformanceTable() {
           {METRIC_LABELS.map((metric) => (
             <tr key={metric.key} className="border-b border-slate-50 hover:bg-slate-50">
               <td className="px-3 py-2.5 font-medium text-slate-700 whitespace-nowrap">
-                {metric.label}
+                <span className="inline-flex items-center gap-1">
+                  {metric.label}
+                  <span className="relative group">
+                    <span className="text-slate-400 hover:text-slate-600 cursor-default select-none text-xs leading-none">
+                      ⓘ
+                    </span>
+                    <span className="absolute left-0 top-5 z-50 hidden group-hover:block w-[280px] rounded-lg bg-white border border-slate-200 shadow-lg px-3 py-2 text-xs text-slate-600 font-normal leading-relaxed">
+                      {metric.description}
+                    </span>
+                  </span>
+                </span>
               </td>
               {periods.map((p) => {
                 const portKey = `port_${metric.key}`;

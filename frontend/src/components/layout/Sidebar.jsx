@@ -17,6 +17,7 @@ import {
   Menu,
   X,
   ChevronLeft,
+  KeyRound,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -30,11 +31,108 @@ const NAV_ITEMS = [
   { id: 'methodology', label: 'Methodology', icon: Calculator, href: '/dashboard/methodology', isPage: true },
 ];
 
+function ChangePasswordModal({ onClose }) {
+  const [oldPw, setOldPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    if (newPw.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPw !== confirmPw) {
+      setError('New passwords do not match.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await apiFetch('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ old_password: oldPw, new_password: newPw }),
+      });
+      setSuccess(true);
+    } catch (err) {
+      setError(err.message || 'Password change failed.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl border border-slate-200 shadow-xl w-full max-w-sm mx-4 p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-lg font-semibold text-slate-800 mb-4">Change Password</h3>
+        {success ? (
+          <div>
+            <p className="text-emerald-600 text-sm mb-4">Password changed successfully.</p>
+            <button onClick={onClose} className="w-full py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700">
+              Close
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-3">
+            {error && <p className="text-red-600 text-xs">{error}</p>}
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Current Password</label>
+              <input
+                type="password"
+                value={oldPw}
+                onChange={(e) => setOldPw(e.target.value)}
+                required
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">New Password</label>
+              <input
+                type="password"
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                required
+                minLength={8}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Confirm New Password</label>
+              <input
+                type="password"
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+                required
+                minLength={8}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 disabled:opacity-50"
+            >
+              {submitting ? 'Changing...' : 'Change Password'}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Sidebar({ user }) {
   const router = useRouter();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [activeSection, setActiveSection] = useState('summary');
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
 
   const logout = useCallback(async () => {
     try {
@@ -168,8 +266,15 @@ export default function Sidebar({ user }) {
           })}
         </nav>
 
-        {/* Logout */}
-        <div className="p-4 border-t border-slate-100">
+        {/* Change Password + Logout */}
+        <div className="p-4 border-t border-slate-100 space-y-1">
+          <button
+            onClick={() => setShowPasswordModal(true)}
+            className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-slate-500 hover:text-teal-600 hover:bg-teal-50 rounded-lg transition-colors"
+          >
+            <KeyRound className="w-4 h-4" />
+            Change Password
+          </button>
           <button
             onClick={logout}
             className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -179,6 +284,10 @@ export default function Sidebar({ user }) {
           </button>
         </div>
       </aside>
+
+      {showPasswordModal && (
+        <ChangePasswordModal onClose={() => setShowPasswordModal(false)} />
+      )}
     </>
   );
 }

@@ -41,27 +41,33 @@ DECIMAL_FIELDS = [
     "bench_cagr_2y", "bench_cagr_3y", "bench_cagr_4y", "bench_cagr_5y",
     "bench_cagr_inception",
     # Period volatility — portfolio
-    "vol_1m", "vol_3m", "vol_6m", "vol_1y", "vol_2y", "vol_3y", "vol_inception",
+    "vol_1m", "vol_3m", "vol_6m", "vol_1y", "vol_2y", "vol_3y",
+    "vol_4y", "vol_5y", "vol_inception",
     # Period volatility — benchmark
     "bench_vol_1m", "bench_vol_3m", "bench_vol_6m", "bench_vol_1y",
-    "bench_vol_2y", "bench_vol_3y", "bench_vol_inception",
+    "bench_vol_2y", "bench_vol_3y", "bench_vol_4y", "bench_vol_5y",
+    "bench_vol_inception",
     # Period max drawdown — portfolio
-    "dd_1m", "dd_3m", "dd_6m", "dd_1y", "dd_2y", "dd_3y", "dd_inception",
+    "dd_1m", "dd_3m", "dd_6m", "dd_1y", "dd_2y", "dd_3y",
+    "dd_4y", "dd_5y", "dd_inception",
     # Period max drawdown — benchmark
     "bench_dd_1m", "bench_dd_3m", "bench_dd_6m", "bench_dd_1y",
-    "bench_dd_2y", "bench_dd_3y", "bench_dd_inception",
+    "bench_dd_2y", "bench_dd_3y", "bench_dd_4y", "bench_dd_5y",
+    "bench_dd_inception",
     # Period Sharpe — portfolio
     "sharpe_1m", "sharpe_3m", "sharpe_6m", "sharpe_1y", "sharpe_2y", "sharpe_3y",
-    "sharpe_inception",
+    "sharpe_4y", "sharpe_5y", "sharpe_inception",
     # Period Sharpe — benchmark
     "bench_sharpe_1m", "bench_sharpe_3m", "bench_sharpe_6m", "bench_sharpe_1y",
-    "bench_sharpe_2y", "bench_sharpe_3y", "bench_sharpe_inception",
+    "bench_sharpe_2y", "bench_sharpe_3y", "bench_sharpe_4y", "bench_sharpe_5y",
+    "bench_sharpe_inception",
     # Period Sortino — portfolio
     "sortino_1m", "sortino_3m", "sortino_6m", "sortino_1y", "sortino_2y", "sortino_3y",
-    "sortino_inception",
+    "sortino_4y", "sortino_5y", "sortino_inception",
     # Period Sortino — benchmark
     "bench_sortino_1m", "bench_sortino_3m", "bench_sortino_6m", "bench_sortino_1y",
-    "bench_sortino_2y", "bench_sortino_3y", "bench_sortino_inception",
+    "bench_sortino_2y", "bench_sortino_3y", "bench_sortino_4y", "bench_sortino_5y",
+    "bench_sortino_inception",
 ]
 
 _ALL_EXTRA = [

@@ -126,6 +126,8 @@ class RiskMetric(Base):
     vol_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     vol_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     vol_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    vol_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    vol_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     vol_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Period volatility — benchmark
@@ -135,6 +137,8 @@ class RiskMetric(Base):
     bench_vol_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_vol_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_vol_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_vol_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_vol_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_vol_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Period max drawdown — portfolio
@@ -144,6 +148,8 @@ class RiskMetric(Base):
     dd_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     dd_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     dd_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    dd_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    dd_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     dd_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Period max drawdown — benchmark
@@ -153,6 +159,8 @@ class RiskMetric(Base):
     bench_dd_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_dd_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_dd_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_dd_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_dd_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_dd_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Period Sharpe — portfolio
@@ -162,6 +170,8 @@ class RiskMetric(Base):
     sharpe_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     sharpe_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     sharpe_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    sharpe_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    sharpe_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     sharpe_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Period Sharpe — benchmark
@@ -171,6 +181,8 @@ class RiskMetric(Base):
     bench_sharpe_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_sharpe_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_sharpe_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_sharpe_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_sharpe_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_sharpe_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Period Sortino — portfolio
@@ -180,6 +192,8 @@ class RiskMetric(Base):
     sortino_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     sortino_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     sortino_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    sortino_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    sortino_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     sortino_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Period Sortino — benchmark
@@ -189,6 +203,8 @@ class RiskMetric(Base):
     bench_sortino_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_sortino_2y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_sortino_3y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_sortino_4y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    bench_sortino_5y: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     bench_sortino_inception: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     # Risk-free rate used

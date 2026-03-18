@@ -27,7 +27,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 COOKIE_MAX_AGE = 48 * 3600  # 48 hours in seconds
 _settings = get_settings()
-_SECURE_COOKIE = _settings.APP_ENV == "production" and "https" in _settings.CORS_ORIGINS
+# Secure cookies only when ALL origins use HTTPS (i.e., no http:// in CORS_ORIGINS)
+_SECURE_COOKIE = "http://" not in _settings.CORS_ORIGINS
 
 
 @router.post("/login", response_model=LoginResponse)

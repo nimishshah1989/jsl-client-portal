@@ -4,7 +4,7 @@
 
 export const CHART_COLORS = {
   portfolio: '#0d9488',
-  benchmark: '#94a3b8',
+  benchmark: '#3b82f6',
   cash: '#d97706',
   positive: '#059669',
   negative: '#dc2626',

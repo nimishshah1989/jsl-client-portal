@@ -71,9 +71,9 @@ export default function UnderwaterChart() {
   const tickInterval = Math.max(1, Math.floor(chartData.length / 8));
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
-        <h2 className="text-xl font-semibold text-slate-800">
+        <h2 className="text-lg sm:text-xl font-semibold text-slate-800">
           Underwater Chart (Drawdown %)
         </h2>
         <div className="flex flex-wrap gap-1">
@@ -81,7 +81,7 @@ export default function UnderwaterChart() {
             <button
               key={r}
               onClick={() => setRange(r)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 range === r
                   ? 'bg-jip-teal text-white'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -93,7 +93,7 @@ export default function UnderwaterChart() {
         </div>
       </div>
 
-      <ResponsiveContainer width="100%" height={300}>
+      <ResponsiveContainer width="100%" height={240} className="sm:!h-[300px]">
         <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
           <defs>
             <linearGradient id="ddGradient" x1="0" y1="0" x2="0" y2="1">

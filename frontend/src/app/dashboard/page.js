@@ -20,7 +20,7 @@ import MethodologyLink from '@/components/dashboard/MethodologyLink';
  */
 export default function DashboardPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6 min-w-0 max-w-full overflow-hidden">
       {/* 1. Client Header */}
       <section id="header">
         <ClientHeader />

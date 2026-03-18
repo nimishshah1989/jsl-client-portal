@@ -75,8 +75,8 @@ export default function AllocationCharts() {
   const by_sector = rawBySector.map((d) => ({ ...d, weight_pct: Number(d.weight_pct) }));
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
-      <h2 className="text-xl font-semibold text-slate-800 mb-4">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
+      <h2 className="text-lg sm:text-xl font-semibold text-slate-800 mb-4">
         Portfolio Allocation
       </h2>
 
@@ -169,7 +169,7 @@ export default function AllocationCharts() {
       {over_time.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-slate-600 mb-3">Allocation Over Time</h3>
-          <ResponsiveContainer width="100%" height={240}>
+          <ResponsiveContainer width="100%" height={200} className="sm:!h-[240px]">
             <AreaChart data={over_time} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
               <XAxis

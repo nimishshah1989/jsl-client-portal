@@ -101,9 +101,9 @@ export default function NavChart() {
   const tickInterval = Math.max(1, Math.floor(chartData.length / 8));
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
-        <h2 className="text-xl font-semibold text-slate-800">
+        <h2 className="text-lg sm:text-xl font-semibold text-slate-800">
           Portfolio Value
         </h2>
         <div className="flex flex-wrap gap-1">
@@ -111,7 +111,7 @@ export default function NavChart() {
             <button
               key={r}
               onClick={() => setRange(r)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 range === r
                   ? 'bg-jip-teal text-white'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -123,10 +123,10 @@ export default function NavChart() {
         </div>
       </div>
 
-      <ResponsiveContainer width="100%" height={360}>
+      <ResponsiveContainer width="100%" height={280} className="sm:!h-[360px]">
         <ComposedChart
           data={chartData}
-          margin={{ top: 5, right: 55, left: 10, bottom: 5 }}
+          margin={{ top: 5, right: 30, left: 0, bottom: 5 }}
         >
           <defs>
             <linearGradient id="navGradient" x1="0" y1="0" x2="0" y2="1">
@@ -141,31 +141,34 @@ export default function NavChart() {
           />
           <XAxis
             dataKey="dateLabel"
-            tick={{ fontSize: 11, fill: '#94a3b8' }}
+            tick={{ fontSize: 10, fill: '#94a3b8' }}
             tickLine={false}
             axisLine={{ stroke: '#e2e8f0' }}
             interval={tickInterval}
+            angle={-45}
+            textAnchor="end"
+            height={50}
           />
           {/* Left axis — actual ₹ portfolio value */}
           <YAxis
             yAxisId="nav"
-            tick={{ fontSize: 11, fill: '#94a3b8' }}
+            tick={{ fontSize: 10, fill: '#94a3b8' }}
             tickLine={false}
             axisLine={false}
             domain={['auto', 'auto']}
             tickFormatter={(v) => formatINRShort(v)}
-            width={72}
+            width={60}
           />
           {/* Right axis — cash % clamped strictly to [0, 100] */}
           <YAxis
             yAxisId="cash"
             orientation="right"
-            tick={{ fontSize: 11, fill: '#d97706' }}
+            tick={{ fontSize: 10, fill: '#d97706' }}
             tickLine={false}
             axisLine={false}
             domain={[0, 100]}
             tickFormatter={(v) => `${v}%`}
-            width={40}
+            width={35}
           />
           <Tooltip content={<CustomTooltip />} />
           <Legend
@@ -193,10 +196,10 @@ export default function NavChart() {
             dataKey="benchmark"
             name="NIFTY 50 Equiv."
             stroke={CHART_COLORS.benchmark}
-            strokeWidth={1.5}
-            strokeDasharray="6 3"
+            strokeWidth={2.5}
+            strokeDasharray="8 4"
             dot={false}
-            activeDot={{ r: 3, strokeWidth: 0, fill: CHART_COLORS.benchmark }}
+            activeDot={{ r: 4, strokeWidth: 0, fill: CHART_COLORS.benchmark }}
           />
           {/* Invested corpus — subtle step line to show cash injections */}
           <Line

@@ -25,14 +25,14 @@ function SkeletonCard() {
 
 function StatCard({ icon: Icon, label, value, subtitle, valueColor, iconColor }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-sm text-slate-500">{label}</p>
-        <div className={`p-2 rounded-lg ${iconColor || 'bg-slate-100'}`}>
-          <Icon className="w-4 h-4 text-slate-600" />
+        <p className="text-xs sm:text-sm text-slate-500">{label}</p>
+        <div className={`p-1.5 sm:p-2 rounded-lg ${iconColor || 'bg-slate-100'}`}>
+          <Icon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-600" />
         </div>
       </div>
-      <p className={`text-2xl font-bold font-mono tabular-nums ${valueColor || 'text-slate-800'}`}>
+      <p className={`text-xl sm:text-2xl font-bold font-mono tabular-nums ${valueColor || 'text-slate-800'}`}>
         {value}
       </p>
       {subtitle && (
@@ -47,7 +47,7 @@ export default function SummaryCards() {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
         {Array.from({ length: 6 }).map((_, i) => (
           <SkeletonCard key={i} />
         ))}
@@ -121,7 +121,7 @@ export default function SummaryCards() {
   ];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
       {cards.map((card) => (
         <StatCard key={card.label} {...card} />
       ))}

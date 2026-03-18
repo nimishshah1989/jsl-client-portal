@@ -53,8 +53,8 @@ function HeatmapGrid({ monthlyData = [] }) {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
+    <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+      <table className="min-w-[600px] w-full text-xs">
         <thead>
           <tr>
             <th className="px-2 py-1.5 text-left text-slate-400 font-semibold">Year</th>
@@ -140,13 +140,13 @@ export default function MonthlyReturns() {
   const recentMonthly = (monthly_returns || []).slice(-24);
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
-      <h2 className="text-xl font-semibold text-slate-800 mb-4">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
+      <h2 className="text-lg sm:text-xl font-semibold text-slate-800 mb-4">
         Monthly Return Profile
       </h2>
 
       {/* Summary stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 mb-6">
         <div className="bg-slate-50 rounded-xl p-3">
           <p className="text-xs text-slate-500">Hit Rate</p>
           <p className="text-lg font-bold font-mono text-teal-600">
@@ -183,7 +183,7 @@ export default function MonthlyReturns() {
       {recentMonthly.length > 0 && (
         <div className="mb-6">
           <h3 className="text-sm font-semibold text-slate-600 mb-3">Monthly Returns (Last 24 Months)</h3>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveContainer width="100%" height={180} className="sm:!h-[200px]">
             <BarChart data={recentMonthly} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} vertical={false} />
               <XAxis

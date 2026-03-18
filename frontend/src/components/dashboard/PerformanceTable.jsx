@@ -73,12 +73,16 @@ export default function PerformanceTable() {
   const periods = data;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5 overflow-x-auto">
-      <h2 className="text-xl font-semibold text-slate-800 mb-4">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5">
+      <h2 className="text-lg sm:text-xl font-semibold text-slate-800 mb-4">
         Performance Summary &mdash; Portfolio vs NIFTY 50
       </h2>
 
-      <table className="w-full text-sm">
+      <div className="relative">
+        <div className="overflow-x-auto -mx-3 px-3 sm:-mx-5 sm:px-5" style={{ WebkitOverflowScrolling: 'touch' }}>
+          {/* Right-edge fade hint on mobile */}
+          <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-white to-transparent z-10 sm:hidden" />
+      <table className="w-full text-sm min-w-[700px]">
         <thead>
           <tr className="border-b border-slate-200">
             <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2">
@@ -114,7 +118,7 @@ export default function PerformanceTable() {
                     <span className="text-slate-400 hover:text-slate-600 cursor-default select-none text-xs leading-none">
                       ⓘ
                     </span>
-                    <span className="absolute left-0 top-5 z-50 hidden group-hover:block w-[280px] rounded-lg bg-white border border-slate-200 shadow-lg px-3 py-2 text-xs text-slate-600 font-normal leading-relaxed">
+                    <span className="absolute left-0 top-5 z-50 hidden group-hover:block w-[220px] sm:w-[280px] rounded-lg bg-white border border-slate-200 shadow-lg px-3 py-2 text-xs text-slate-600 font-normal leading-relaxed">
                       {metric.description}
                     </span>
                   </span>
@@ -146,6 +150,9 @@ export default function PerformanceTable() {
           ))}
         </tbody>
       </table>
+        </div>
+        <p className="text-xs text-slate-400 mt-2 sm:hidden">Scroll sideways to see all periods</p>
+      </div>
     </div>
   );
 }

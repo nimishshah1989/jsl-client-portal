@@ -62,9 +62,9 @@ export default function HoldingsTable() {
   const holdings = data?.holdings || data || [];
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
-        <h2 className="text-xl font-semibold text-slate-800">Current Holdings</h2>
+        <h2 className="text-lg sm:text-xl font-semibold text-slate-800">Current Holdings</h2>
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-slate-400" />
           <div className="flex flex-wrap gap-1">
@@ -85,8 +85,8 @@ export default function HoldingsTable() {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <table className="min-w-[700px] w-full text-sm">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
               {[

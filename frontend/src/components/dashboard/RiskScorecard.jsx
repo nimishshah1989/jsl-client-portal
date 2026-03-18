@@ -92,20 +92,20 @@ export default function RiskScorecard() {
   const m = data;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
-      <h2 className="text-xl font-semibold text-slate-800 mb-4">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
+      <h2 className="text-lg sm:text-xl font-semibold text-slate-800 mb-4">
         Risk Management Scorecard
       </h2>
 
       {/* Risk gauges */}
-      <div className="flex gap-6 mb-6">
+      <div className="flex flex-col sm:flex-row gap-4 sm:gap-6 mb-6">
         <RiskGauge value={m.volatility} maxValue={30} label="Volatility" />
         <RiskGauge value={Math.abs(num(m.max_drawdown))} maxValue={40} label="Max DD" />
         <RiskGauge value={m.ulcer_index} maxValue={20} label="Ulcer Index" />
       </div>
 
       {/* Metric cards grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
         <MetricCard
           label="Up Capture"
           value={formatPctUnsigned(m.up_capture, 1)}
@@ -162,7 +162,7 @@ export default function RiskScorecard() {
       </div>
 
       {/* Cash metrics row */}
-      <div className="mt-4 grid grid-cols-3 gap-3">
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
         <MetricCard
           label="Current Cash"
           value={formatPctUnsigned(m.current_cash, 1)}

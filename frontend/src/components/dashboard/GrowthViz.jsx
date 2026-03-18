@@ -87,20 +87,20 @@ export default function GrowthViz() {
   ];
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5">
-      <h2 className="text-xl font-semibold text-slate-800 mb-1">
+    <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
+      <h2 className="text-lg sm:text-xl font-semibold text-slate-800 mb-1">
         What Your Money Became
       </h2>
-      <p className="text-sm text-slate-500 mb-4">
+      <p className="text-xs sm:text-sm text-slate-500 mb-4">
         {formatINRShort(invested)} invested &mdash; comparison across instruments
       </p>
 
-      <ResponsiveContainer width="100%" height={280}>
-        <BarChart data={chartData} margin={{ top: 20, right: 20, left: 10, bottom: 5 }}>
+      <ResponsiveContainer width="100%" height={240} className="sm:!h-[280px]">
+        <BarChart data={chartData} margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} vertical={false} />
           <XAxis
             dataKey="name"
-            tick={{ fontSize: 12, fill: '#64748b' }}
+            tick={{ fontSize: 11, fill: '#64748b' }}
             tickLine={false}
             axisLine={{ stroke: '#e2e8f0' }}
           />

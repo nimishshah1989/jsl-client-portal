@@ -1,5 +1,4 @@
-"""
-Stateful .xlsx parser for PMS NAV Report files.
+"""Stateful .xlsx parser for PMS NAV Report files.
 
 Uses openpyxl read_only mode for memory-efficient parsing of 35MB files.
 See FILE_FORMAT_SPEC.md for full format documentation.
@@ -9,6 +8,8 @@ Row types:
   2. Data row — UCC matches current client code, has valid Date
   3. Grand total / subtotal — UCC is None, skip
 """
+
+from __future__ import annotations
 
 import logging
 import re
@@ -21,15 +22,19 @@ from openpyxl import load_workbook
 logger = logging.getLogger(__name__)
 
 # Column indices after header row (0-based)
+# Actual file has 10 columns:
+# UCC, Date, Corpus, Equity Holding At Mkt, Investments in ETF,
+# Cash And Cash Equivalent, Bank Balance, NAV, Liquidity %, High Water Mark
 _COL_UCC = 0
 _COL_DATE = 1
 _COL_CORPUS = 2
 _COL_EQUITY = 3
-_COL_CASH = 4
-_COL_BANK = 5
-_COL_NAV = 6
-_COL_LIQUIDITY = 7
-_COL_HWM = 8
+_COL_ETF = 4        # "Investments in ETF" — not in original spec
+_COL_CASH = 5
+_COL_BANK = 6
+_COL_NAV = 7
+_COL_LIQUIDITY = 8
+_COL_HWM = 9
 
 # Regex for client name header: "FULL NAME [CODE]"
 _NAME_PATTERN = re.compile(r"^(.+?)\s*\[(\w+)\]$")
@@ -101,8 +106,8 @@ def parse_nav_file(filepath: str | Path) -> list[dict]:
             header_skipped = True
             continue
 
-        # Ensure row has enough columns
-        if len(row) < 7:
+        # Ensure row has enough columns (10 in actual file)
+        if len(row) < 8:
             continue
 
         ucc_raw = row[_COL_UCC]
@@ -156,6 +161,7 @@ def parse_nav_file(filepath: str | Path) -> list[dict]:
                 "date": nav_date,
                 "corpus": _safe_decimal(row[_COL_CORPUS]),
                 "equity_value": _safe_decimal(row[_COL_EQUITY]),
+                "etf_value": _safe_decimal(row[_COL_ETF]),
                 "cash_value": _safe_decimal(row[_COL_CASH]),
                 "bank_balance": _safe_decimal(row[_COL_BANK]),
                 "nav": nav_val,

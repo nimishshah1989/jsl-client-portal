@@ -1,5 +1,4 @@
-"""
-Stateful .xlsx parser for PMS Transaction Report files.
+"""Stateful .xlsx parser for PMS Transaction Report files.
 
 Uses openpyxl read_only mode for memory-efficient parsing of 35MB files.
 See FILE_FORMAT_SPEC.md for full format documentation.
@@ -12,6 +11,8 @@ Row types:
   4. Daily subtotal — UCC is None, skip
   5. Grand total — UCC is None, skip
 """
+
+from __future__ import annotations
 
 import logging
 import re

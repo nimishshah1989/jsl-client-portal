@@ -2,7 +2,18 @@
 
 import { useRiskScorecard } from '@/hooks/usePortfolio';
 import { formatPct } from '@/lib/format';
-import Card from '@/components/ui/Card';
+
+/** Safely convert to number, return fallback if null/NaN */
+function num(v, fallback = 0) {
+  if (v == null || v === '') return fallback;
+  const n = Number(v);
+  return isNaN(n) ? fallback : n;
+}
+
+function safe(v, decimals = 2) {
+  const n = num(v, null);
+  return n != null ? n.toFixed(decimals) : '--';
+}
 
 function Skeleton() {
   return (
@@ -32,7 +43,8 @@ function MetricCard({ label, value, subtitle, color = 'text-slate-800' }) {
 }
 
 function RiskGauge({ value, maxValue = 30, label }) {
-  const pct = Math.min(100, Math.max(0, (Math.abs(value) / maxValue) * 100));
+  const v = num(value);
+  const pct = Math.min(100, Math.max(0, (Math.abs(v) / maxValue) * 100));
   const getColor = () => {
     if (pct < 33) return 'bg-emerald-500';
     if (pct < 66) return 'bg-amber-500';
@@ -43,7 +55,7 @@ function RiskGauge({ value, maxValue = 30, label }) {
     <div className="flex-1">
       <div className="flex justify-between items-end mb-1">
         <span className="text-xs text-slate-500">{label}</span>
-        <span className="text-sm font-mono font-bold text-slate-800">{value.toFixed(2)}</span>
+        <span className="text-sm font-mono font-bold text-slate-800">{v.toFixed(2)}</span>
       </div>
       <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
         <div
@@ -84,9 +96,9 @@ export default function RiskScorecard() {
 
       {/* Risk gauges */}
       <div className="flex gap-6 mb-6">
-        <RiskGauge value={m.volatility || 0} maxValue={30} label="Volatility" />
-        <RiskGauge value={Math.abs(m.max_drawdown || 0)} maxValue={40} label="Max DD" />
-        <RiskGauge value={m.ulcer_index || 0} maxValue={20} label="Ulcer Index" />
+        <RiskGauge value={m.volatility} maxValue={30} label="Volatility" />
+        <RiskGauge value={Math.abs(num(m.max_drawdown))} maxValue={40} label="Max DD" />
+        <RiskGauge value={m.ulcer_index} maxValue={20} label="Ulcer Index" />
       </div>
 
       {/* Metric cards grid */}
@@ -95,30 +107,30 @@ export default function RiskScorecard() {
           label="Up Capture"
           value={formatPct(m.up_capture, 1)}
           subtitle="vs benchmark on up days"
-          color={m.up_capture >= 100 ? 'text-emerald-600' : 'text-slate-800'}
+          color={num(m.up_capture) >= 100 ? 'text-emerald-600' : 'text-slate-800'}
         />
         <MetricCard
           label="Down Capture"
           value={formatPct(m.down_capture, 1)}
           subtitle="vs benchmark on down days"
-          color={m.down_capture < 100 ? 'text-emerald-600' : 'text-red-600'}
+          color={num(m.down_capture) < 100 ? 'text-emerald-600' : 'text-red-600'}
         />
         <MetricCard
           label="Beta"
-          value={(m.beta != null ? m.beta.toFixed(2) : '--')}
-          subtitle={m.beta < 1 ? 'Defensive' : 'Aggressive'}
-          color={m.beta < 1 ? 'text-emerald-600' : 'text-amber-600'}
+          value={safe(m.beta)}
+          subtitle={num(m.beta) < 1 ? 'Defensive' : 'Aggressive'}
+          color={num(m.beta) < 1 ? 'text-emerald-600' : 'text-amber-600'}
         />
         <MetricCard
           label="Alpha"
           value={formatPct(m.alpha)}
           subtitle="Jensen's Alpha"
-          color={m.alpha > 0 ? 'text-emerald-600' : 'text-red-600'}
+          color={num(m.alpha) > 0 ? 'text-emerald-600' : 'text-red-600'}
         />
         <MetricCard
           label="Information Ratio"
-          value={(m.information_ratio != null ? m.information_ratio.toFixed(2) : '--')}
-          subtitle={m.information_ratio > 0.5 ? 'Good' : 'Average'}
+          value={safe(m.information_ratio)}
+          subtitle={num(m.information_ratio) > 0.5 ? 'Good' : 'Average'}
         />
         <MetricCard
           label="Tracking Error"
@@ -127,14 +139,14 @@ export default function RiskScorecard() {
         />
         <MetricCard
           label="Max Consec. Loss"
-          value={`${m.max_consecutive_loss || 0} months`}
+          value={`${num(m.max_consecutive_loss)} months`}
           subtitle="Longest losing streak"
-          color={m.max_consecutive_loss > 3 ? 'text-red-600' : 'text-slate-800'}
+          color={num(m.max_consecutive_loss) > 3 ? 'text-red-600' : 'text-slate-800'}
         />
         <MetricCard
           label="Market Correlation"
-          value={(m.market_correlation != null ? m.market_correlation.toFixed(2) : '--')}
-          subtitle={m.market_correlation < 0.7 ? 'Independent' : 'Market-linked'}
+          value={safe(m.market_correlation)}
+          subtitle={num(m.market_correlation) < 0.7 ? 'Independent' : 'Market-linked'}
         />
       </div>
 

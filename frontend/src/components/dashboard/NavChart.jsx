@@ -46,9 +46,11 @@ function CustomTooltip({ active, payload, label }) {
           />
           <span className="text-slate-500">{entry.name}:</span>
           <span className="font-mono font-medium text-slate-800">
-            {entry.dataKey === 'cash_pct'
-              ? `${entry.value?.toFixed(1)}%`
-              : entry.value?.toFixed(2)}
+            {entry.value != null
+              ? (entry.dataKey === 'cash_pct'
+                ? `${Number(entry.value).toFixed(1)}%`
+                : Number(entry.value).toFixed(2))
+              : '--'}
           </span>
         </div>
       ))}
@@ -78,10 +80,12 @@ export default function NavChart() {
     );
   }
 
-  // Format data for display
+  // Format data for display — convert string values to numbers for Recharts
   const chartData = data.map((d) => ({
-    ...d,
     dateLabel: formatDateShort(d.date),
+    nav: d.nav != null ? Number(d.nav) : null,
+    benchmark: d.benchmark != null ? Number(d.benchmark) : null,
+    cash_pct: d.cash_pct != null ? Number(d.cash_pct) : null,
   }));
 
   // Compute tick interval to avoid overcrowding

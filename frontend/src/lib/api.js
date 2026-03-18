@@ -35,6 +35,13 @@ export async function apiFetch(url, options = {}) {
   const response = await fetch(fullUrl, config);
 
   if (response.status === 401) {
+    let detail = 'Unauthorized';
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // no JSON body
+    }
     if (
       typeof window !== 'undefined' &&
       !url.includes('/auth/login') &&
@@ -43,7 +50,7 @@ export async function apiFetch(url, options = {}) {
     ) {
       window.location.href = '/login';
     }
-    throw new ApiError('Unauthorized', 401, null);
+    throw new ApiError(detail, 401, null);
   }
 
   if (!response.ok) {

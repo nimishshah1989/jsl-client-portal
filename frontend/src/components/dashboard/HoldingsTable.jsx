@@ -25,7 +25,10 @@ export default function HoldingsTable() {
   const [sort, setSort] = useState('weight_pct');
   const [order, setOrder] = useState('desc');
   const [assetClass, setAssetClass] = useState('ALL');
-  const { data, loading, error } = useHoldings(sort, order, assetClass === 'ALL' ? '' : assetClass);
+  // Map frontend field names to backend-accepted sort keys
+  const SORT_MAP = { weight_pct: 'weight', unrealized_pnl: 'pnl', current_value: 'value', symbol: 'name' };
+  const apiSort = SORT_MAP[sort] || 'weight';
+  const { data, loading, error } = useHoldings(apiSort, order, assetClass === 'ALL' ? '' : assetClass);
 
   function handleSort(field) {
     if (sort === field) {

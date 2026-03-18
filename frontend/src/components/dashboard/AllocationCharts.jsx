@@ -192,7 +192,7 @@ export default function AllocationCharts() {
                 />
               ))}
               <Tooltip
-                formatter={(value, name) => [`${value.toFixed(1)}%`, name]}
+                formatter={(value, name) => [`${value != null ? Number(value).toFixed(1) : 0}%`, name]}
                 contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0' }}
               />
             </AreaChart>

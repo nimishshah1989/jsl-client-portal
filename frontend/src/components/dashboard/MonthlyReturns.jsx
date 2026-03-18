@@ -78,14 +78,14 @@ function HeatmapGrid({ monthlyData = [] }) {
                       <div
                         className={`rounded px-1.5 py-1 text-center font-mono tabular-nums ${getCellColor(val)}`}
                       >
-                        {val != null ? `${val >= 0 ? '+' : ''}${val.toFixed(1)}` : ''}
+                        {val != null ? `${Number(val) >= 0 ? '+' : ''}${Number(val).toFixed(1)}` : ''}
                       </div>
                     </td>
                   );
                 })}
                 <td className="px-1 py-0.5">
                   <div className={`rounded px-1.5 py-1 text-center font-mono tabular-nums font-medium ${getCellColor(total)}`}>
-                    {total >= 0 ? '+' : ''}{total.toFixed(1)}
+                    {total >= 0 ? '+' : ''}{Number(total).toFixed(1)}
                   </div>
                 </td>
               </tr>
@@ -147,7 +147,7 @@ export default function MonthlyReturns() {
         <div className="bg-slate-50 rounded-xl p-3">
           <p className="text-xs text-slate-500">Hit Rate</p>
           <p className="text-lg font-bold font-mono text-teal-600">
-            {monthly_hit_rate != null ? `${monthly_hit_rate.toFixed(1)}%` : '--'}
+            {monthly_hit_rate != null ? `${Number(monthly_hit_rate).toFixed(1)}%` : '--'}
           </p>
         </div>
         <div className="bg-slate-50 rounded-xl p-3">

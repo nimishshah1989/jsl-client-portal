@@ -97,12 +97,12 @@ export default function PerformanceTable() {
                   <React.Fragment key={p.period}>
                     <td className={`text-center px-2 py-2.5 font-mono tabular-nums text-xs ${isRatio ? '' : pnlColor(portVal)}`}>
                       {isRatio
-                        ? (portVal != null ? portVal.toFixed(2) : '--')
+                        ? (portVal != null ? Number(portVal).toFixed(2) : '--')
                         : formatPct(portVal)}
                     </td>
                     <td className={`text-center px-2 py-2.5 font-mono tabular-nums text-xs text-slate-400`}>
                       {isRatio
-                        ? (benchVal != null ? benchVal.toFixed(2) : '--')
+                        ? (benchVal != null ? Number(benchVal).toFixed(2) : '--')
                         : formatPct(benchVal)}
                     </td>
                   </React.Fragment>

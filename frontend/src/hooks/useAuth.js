@@ -11,7 +11,7 @@ import { apiFetch } from '@/lib/api';
 export function useAuth() {
   const router = useRouter();
   const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const checkAuth = useCallback(async () => {
@@ -44,7 +44,8 @@ export function useAuth() {
         body: JSON.stringify({ username, password }),
       });
       setUser(data);
-      router.push('/dashboard');
+      // Use full page navigation to ensure the cookie is picked up
+      window.location.href = data.is_admin ? '/admin' : '/dashboard';
       return data;
     } catch (err) {
       setError(err.message || 'Login failed. Please check your credentials.');
@@ -52,7 +53,7 @@ export function useAuth() {
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, []);
 
   const logout = useCallback(async () => {
     try {

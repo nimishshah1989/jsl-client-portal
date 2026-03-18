@@ -63,8 +63,9 @@ export default function UnderwaterChart() {
   }
 
   const chartData = data.map((d) => ({
-    ...d,
     dateLabel: formatDateShort(d.dd_date || d.date),
+    drawdown_pct: d.drawdown_pct != null ? Number(d.drawdown_pct) : null,
+    bench_drawdown: d.bench_drawdown != null ? Number(d.bench_drawdown) : null,
   }));
 
   const tickInterval = Math.max(1, Math.floor(chartData.length / 8));
@@ -113,7 +114,7 @@ export default function UnderwaterChart() {
             tickLine={false}
             axisLine={false}
             domain={['auto', 0]}
-            tickFormatter={(v) => `${v.toFixed(0)}%`}
+            tickFormatter={(v) => `${Number(v).toFixed(0)}%`}
           />
           <Tooltip content={<CustomTooltip />} />
           <Legend

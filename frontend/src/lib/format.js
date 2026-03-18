@@ -10,7 +10,9 @@
  * @returns {string}
  */
 export function formatIndianNumber(value, decimals = 2) {
-  if (value == null || isNaN(value)) return '--';
+  if (value == null || value === '') return '--';
+  value = Number(value);
+  if (isNaN(value)) return '--';
   const isNegative = value < 0;
   const absVal = Math.abs(value);
   const parts = absVal.toFixed(decimals).split('.');
@@ -41,7 +43,9 @@ export function formatIndianNumber(value, decimals = 2) {
  * @returns {string}
  */
 export function formatINR(value, decimals = 2) {
-  if (value == null || isNaN(value)) return '--';
+  if (value == null || value === '') return '--';
+  value = Number(value);
+  if (isNaN(value)) return '--';
   return `\u20B9${formatIndianNumber(value, decimals)}`;
 }
 
@@ -51,7 +55,9 @@ export function formatINR(value, decimals = 2) {
  * @returns {string}
  */
 export function formatINRShort(value) {
-  if (value == null || isNaN(value)) return '--';
+  if (value == null || value === '') return '--';
+  value = Number(value);
+  if (isNaN(value)) return '--';
   const isNegative = value < 0;
   const absVal = Math.abs(value);
   const prefix = isNegative ? '-' : '';
@@ -75,9 +81,11 @@ export function formatINRShort(value) {
  * @returns {string}
  */
 export function formatPct(value, decimals = 2) {
-  if (value == null || isNaN(value)) return '--';
-  const prefix = value > 0 ? '+' : '';
-  return `${prefix}${value.toFixed(decimals)}%`;
+  if (value == null || value === '') return '--';
+  const num = Number(value);
+  if (isNaN(num)) return '--';
+  const prefix = num > 0 ? '+' : '';
+  return `${prefix}${num.toFixed(decimals)}%`;
 }
 
 /**
@@ -118,7 +126,9 @@ export function formatDateShort(dateVal) {
  * @returns {string}
  */
 export function pnlColor(value) {
-  if (value == null || isNaN(value)) return 'text-slate-800';
+  if (value == null || value === '') return 'text-slate-800';
+  value = Number(value);
+  if (isNaN(value)) return 'text-slate-800';
   if (value > 0) return 'text-emerald-600';
   if (value < 0) return 'text-red-600';
   return 'text-slate-800';

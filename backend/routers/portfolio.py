@@ -253,7 +253,9 @@ async def get_allocation(
         val = h.current_value or Decimal("0")
         total_value += val
         class_map[h.asset_class or "OTHER"] = class_map.get(h.asset_class or "OTHER", Decimal("0")) + val
-        sector_map[h.sector or "Unknown"] = sector_map.get(h.sector or "Unknown", Decimal("0")) + val
+        # Exclude CASH holdings from sector breakdown (they have no sector)
+        if (h.asset_class or "").upper() != "CASH":
+            sector_map[h.sector or "Unknown"] = sector_map.get(h.sector or "Unknown", Decimal("0")) + val
 
     def _to_items(mapping: dict[str, Decimal]) -> list[AllocationItem]:
         return [

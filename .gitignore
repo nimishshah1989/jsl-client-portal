@@ -1,0 +1,36 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Node
+node_modules/
+.next/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# QA
+qa_screenshots/
+QA_REPORT.md
+
+# Data files (uploaded by admin)
+data/*.xlsx
+data/*.csv
+!data/sample_*.csv
+
+# Docker
+.docker/
+
+# Logs
+*.log

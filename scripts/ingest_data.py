@@ -95,24 +95,32 @@ def test_parse_txn(filepath: str) -> None:
 
 async def full_ingest(nav_path: str | None, txn_path: str | None) -> None:
     """Full ingestion with database writes."""
-    from backend.database import get_db_session
+    from backend.database import AsyncSessionLocal
     from backend.services.ingestion_service import (
         ingest_nav_file,
         ingest_transaction_file,
     )
 
-    async with get_db_session() as session:
-        if nav_path:
-            logger.info("=== Ingesting NAV file ===")
-            result = await ingest_nav_file(nav_path, uploaded_by=None, db=session)
-            logger.info("NAV ingestion result: %s", result)
+    async with AsyncSessionLocal() as session:
+        try:
+            if nav_path:
+                logger.info("=== Ingesting NAV file ===")
+                result = await ingest_nav_file(nav_path, uploaded_by=None, db=session)
+                logger.info("NAV ingestion result: %s", result)
 
-        if txn_path:
-            logger.info("=== Ingesting Transaction file ===")
-            result = await ingest_transaction_file(
-                txn_path, uploaded_by=None, db=session
-            )
-            logger.info("Transaction ingestion result: %s", result)
+            if txn_path:
+                logger.info("=== Ingesting Transaction file ===")
+                result = await ingest_transaction_file(
+                    txn_path, uploaded_by=None, db=session
+                )
+                logger.info("Transaction ingestion result: %s", result)
+
+            await session.commit()
+            logger.info("All changes committed successfully")
+        except Exception:
+            await session.rollback()
+            logger.exception("Ingestion failed, rolled back")
+            raise
 
 
 def main() -> None:

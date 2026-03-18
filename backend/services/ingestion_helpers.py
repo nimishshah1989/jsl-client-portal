@@ -38,9 +38,17 @@ async def find_or_create_client(
     if row:
         return row[0]
 
-    username = client_code.lower()
+    username = client_code.lower().replace(" ", "")
     # Placeholder hash — admin must set real password via bulk-create or manual update
     placeholder_hash = "$2b$12$placeholder.hash.will.be.reset.by.admin.AAAAAAAAAAAAAAA"
+
+    # Check if username already taken by different client
+    existing = await db.execute(
+        text("SELECT id FROM cpp_clients WHERE username = :uname AND client_code != :code"),
+        {"uname": username, "code": client_code},
+    )
+    if existing.fetchone():
+        username = f"{username}_{client_code.lower()}"
 
     result = await db.execute(
         text("""

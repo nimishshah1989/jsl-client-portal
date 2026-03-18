@@ -1,0 +1,35 @@
+# FastAPI + ASGI server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# SQLAlchemy async
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
+
+# Pydantic
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# File upload
+python-multipart==0.0.20
+
+# Data processing
+pandas==2.2.3
+numpy==2.2.1
+scipy==1.15.0
+openpyxl==3.1.5
+
+# Market data
+yfinance==0.2.51
+
+# Environment
+python-dotenv==1.0.1
+
+# HTTP client
+httpx==0.28.1

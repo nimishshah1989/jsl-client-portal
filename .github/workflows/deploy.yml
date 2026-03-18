@@ -1,0 +1,64 @@
+# ============================================================
+# JSL Client Portfolio Portal — Deploy to EC2
+# Triggers on push to main branch.
+# SSH into EC2, pull latest code, rebuild Docker, health check.
+# ============================================================
+
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 300s
+          script: |
+            set -e
+            echo "=== Deploying Client Portal ==="
+
+            cd ~/apps/client-portal
+
+            echo "[1/5] Pulling latest code..."
+            git pull origin main
+
+            echo "[2/5] Building Docker image..."
+            docker build -t client-portal .
+
+            echo "[3/5] Stopping old container..."
+            docker stop client-portal 2>/dev/null || true
+            docker rm client-portal 2>/dev/null || true
+
+            echo "[4/5] Starting new container..."
+            docker run -d \
+              --name client-portal \
+              --env-file .env \
+              -p 8007:3000 \
+              --restart unless-stopped \
+              client-portal
+
+            echo "[5/5] Health check..."
+            sleep 8
+            if curl -sf http://localhost:8007/api/health > /dev/null; then
+              echo "Health check PASSED"
+            else
+              echo "Health check FAILED — rolling back"
+              docker logs client-portal --tail 50
+              exit 1
+            fi
+
+            echo "=== Deploy complete ==="

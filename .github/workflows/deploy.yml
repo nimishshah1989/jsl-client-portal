@@ -34,7 +34,8 @@ jobs:
             cd ~/apps/client-portal
 
             echo "[1/5] Pulling latest code..."
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
 
             echo "[2/5] Building Docker image..."
             docker build -t client-portal .

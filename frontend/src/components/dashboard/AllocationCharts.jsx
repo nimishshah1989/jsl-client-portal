@@ -69,7 +69,10 @@ export default function AllocationCharts() {
     );
   }
 
-  const { by_class = [], by_sector = [], over_time = [] } = data;
+  const { by_class: rawByClass = [], by_sector: rawBySector = [], over_time = [] } = data;
+  // API returns weight_pct as string — convert to number for Recharts
+  const by_class = rawByClass.map((d) => ({ ...d, weight_pct: Number(d.weight_pct) }));
+  const by_sector = rawBySector.map((d) => ({ ...d, weight_pct: Number(d.weight_pct) }));
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">
@@ -85,7 +88,7 @@ export default function AllocationCharts() {
             <PieChart>
               <Pie
                 data={by_class}
-                dataKey="weight"
+                dataKey="weight_pct"
                 nameKey="name"
                 cx="50%"
                 cy="50%"
@@ -111,7 +114,7 @@ export default function AllocationCharts() {
                   className="w-2.5 h-2.5 rounded-full"
                   style={{ backgroundColor: ASSET_CLASS_COLORS[entry.name] || '#94a3b8' }}
                 />
-                {entry.name} ({formatPctUnsigned(entry.weight, 1)})
+                {entry.name} ({formatPctUnsigned(entry.weight_pct, 1)})
               </div>
             ))}
           </div>
@@ -125,7 +128,7 @@ export default function AllocationCharts() {
               <PieChart>
                 <Pie
                   data={by_sector}
-                  dataKey="weight"
+                  dataKey="weight_pct"
                   nameKey="name"
                   cx="50%"
                   cy="50%"
@@ -151,7 +154,7 @@ export default function AllocationCharts() {
                     className="w-2.5 h-2.5 rounded-full"
                     style={{ backgroundColor: SECTOR_COLORS[idx % SECTOR_COLORS.length] }}
                   />
-                  {entry.name} ({formatPctUnsigned(entry.weight, 1)})
+                  {entry.name} ({formatPctUnsigned(entry.weight_pct, 1)})
                 </div>
               ))}
               {by_sector.length > 8 && (

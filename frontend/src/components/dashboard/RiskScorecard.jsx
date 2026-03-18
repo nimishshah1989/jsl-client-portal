@@ -28,7 +28,7 @@ function Skeleton() {
   );
 }
 
-function MetricCard({ label, value, subtitle, color = 'text-slate-800' }) {
+function MetricCard({ label, value, subtitle, explanation, color = 'text-slate-800' }) {
   return (
     <div className="bg-slate-50 rounded-xl p-4">
       <p className="text-xs text-slate-500 mb-1">{label}</p>
@@ -37,6 +37,9 @@ function MetricCard({ label, value, subtitle, color = 'text-slate-800' }) {
       </p>
       {subtitle && (
         <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>
+      )}
+      {explanation && (
+        <p className="text-[11px] text-slate-400 mt-1.5 leading-tight">{explanation}</p>
       )}
     </div>
   );
@@ -106,47 +109,55 @@ export default function RiskScorecard() {
         <MetricCard
           label="Up Capture"
           value={formatPctUnsigned(m.up_capture, 1)}
-          subtitle="vs benchmark on up days"
+          subtitle={num(m.up_capture) >= 100 ? 'Capturing more than market gains' : 'Capturing less than market gains'}
+          explanation="% of benchmark gains captured on up days. >100% = outperforming on rallies."
           color={num(m.up_capture) >= 100 ? 'text-emerald-600' : 'text-slate-800'}
         />
         <MetricCard
           label="Down Capture"
           value={formatPctUnsigned(m.down_capture, 1)}
-          subtitle="vs benchmark on down days"
+          subtitle={num(m.down_capture) < 100 ? 'Losing less than market on down days' : 'Losing more than market on down days'}
+          explanation="% of benchmark losses absorbed on down days. <100% = better downside protection."
           color={num(m.down_capture) < 100 ? 'text-emerald-600' : 'text-red-600'}
         />
         <MetricCard
           label="Beta"
           value={safe(m.beta)}
-          subtitle={num(m.beta) < 1 ? 'Defensive' : 'Aggressive'}
+          subtitle={num(m.beta) < 1 ? `Defensive (${safe(m.beta)}x market sensitivity)` : `Aggressive (${safe(m.beta)}x market sensitivity)`}
+          explanation="Sensitivity to market moves. <1 = less volatile than market, >1 = more volatile."
           color={num(m.beta) < 1 ? 'text-emerald-600' : 'text-amber-600'}
         />
         <MetricCard
           label="Alpha"
           value={formatPct(m.alpha)}
-          subtitle="Jensen's Alpha"
+          subtitle={num(m.alpha) > 0 ? 'Excess return above market risk' : 'Underperforming vs market risk'}
+          explanation="Return beyond what beta-adjusted market exposure would predict. Positive = manager skill adds value."
           color={num(m.alpha) > 0 ? 'text-emerald-600' : 'text-red-600'}
         />
         <MetricCard
           label="Information Ratio"
           value={safe(m.information_ratio)}
-          subtitle={num(m.information_ratio) > 0.5 ? 'Good' : 'Average'}
+          subtitle={num(m.information_ratio) > 1 ? 'Excellent active mgmt' : num(m.information_ratio) > 0.5 ? 'Good active mgmt' : 'Average active mgmt'}
+          explanation="Risk-adjusted excess return vs benchmark. >0.5 = good, >1.0 = excellent."
         />
         <MetricCard
           label="Tracking Error"
           value={formatPctUnsigned(m.tracking_error)}
-          subtitle="Active management"
+          subtitle={num(m.tracking_error) > 10 ? 'Highly active strategy' : 'Moderate active deviation'}
+          explanation="How much the portfolio deviates from the benchmark. Higher = more active management."
         />
         <MetricCard
           label="Max Consec. Loss"
           value={`${num(m.max_consecutive_loss)} months`}
-          subtitle="Longest losing streak"
+          subtitle={num(m.max_consecutive_loss) <= 2 ? 'Within normal range' : num(m.max_consecutive_loss) <= 4 ? 'Notable losing streak' : 'Extended downturn period'}
+          explanation="Longest unbroken run of negative monthly returns. Tests investor patience."
           color={num(m.max_consecutive_loss) > 3 ? 'text-red-600' : 'text-slate-800'}
         />
         <MetricCard
           label="Market Correlation"
           value={safe(m.market_correlation)}
-          subtitle={num(m.market_correlation) < 0.7 ? 'Independent' : 'Market-linked'}
+          subtitle={num(m.market_correlation) < 0.7 ? 'Independent return sources' : 'Closely tracks market'}
+          explanation="Pearson correlation with NIFTY 50 daily returns. <0.7 = meaningful diversification."
         />
       </div>
 
@@ -155,17 +166,20 @@ export default function RiskScorecard() {
         <MetricCard
           label="Current Cash"
           value={formatPctUnsigned(m.current_cash, 1)}
-          subtitle="As of latest"
+          subtitle="Cash + liquid funds as of latest NAV"
+          explanation="Current allocation to cash and liquid fund equivalents."
         />
         <MetricCard
           label="Avg Cash Held"
           value={formatPctUnsigned(m.avg_cash_held, 1)}
-          subtitle="Historical average"
+          subtitle="Average defensive positioning since inception"
+          explanation="Higher avg cash = more conservative approach over time."
         />
         <MetricCard
           label="Max Cash Held"
           value={formatPctUnsigned(m.max_cash_held, 1)}
-          subtitle="Peak defensive"
+          subtitle="Peak defensive position ever taken"
+          explanation="Shows willingness to go heavily into cash during risky markets."
         />
       </div>
     </div>

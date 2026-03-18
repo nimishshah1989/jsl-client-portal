@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import numpy as np
+
 from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.drawdown import DrawdownSeries
@@ -71,19 +73,38 @@ async def get_summary(
         else Decimal("0")
     )
 
+    # Compute TWR-adjusted YTD return. Raw nav_value includes corpus infusions
+    # as value increases, which would be incorrectly counted as returns.
+    # Fetch all NAV rows from Jan 1 to compute chain-linked TWR.
     jan1 = dt.date(latest_nav.nav_date.year, 1, 1)
     ytd_stmt = (
-        select(NavSeries.nav_value)
+        select(NavSeries.nav_value, NavSeries.invested_amount)
         .where(NavSeries.client_id == client_id)
         .where(NavSeries.portfolio_id == portfolio.id)
         .where(NavSeries.nav_date >= jan1)
         .order_by(NavSeries.nav_date)
-        .limit(1)
     )
-    ytd_nav_row = (await db.execute(ytd_stmt)).scalar_one_or_none()
+    ytd_rows = (await db.execute(ytd_stmt)).all()
     ytd_return = Decimal("0")
-    if ytd_nav_row and ytd_nav_row != Decimal("0"):
-        ytd_return = (latest_nav.nav_value - ytd_nav_row) / ytd_nav_row * Decimal("100")
+    if len(ytd_rows) >= 2:
+        nav_vals = np.array([float(r[0]) for r in ytd_rows])
+        corpus_vals = np.array([float(r[1]) for r in ytd_rows])
+        # Chain-link TWR from Jan 1: on corpus-change days, adjust
+        # the previous NAV to remove the infusion effect.
+        twr = 1.0
+        for i in range(1, len(nav_vals)):
+            prev = nav_vals[i - 1]
+            if prev == 0:
+                continue
+            corpus_chg = corpus_vals[i] - corpus_vals[i - 1]
+            if corpus_chg != 0:
+                adj_prev = prev + corpus_chg
+                if adj_prev <= 0:
+                    continue
+                twr *= nav_vals[i] / adj_prev
+            else:
+                twr *= nav_vals[i] / prev
+        ytd_return = Decimal(str(round((twr - 1) * 100, 6)))
 
     return SummaryResponse(
         invested=dec2(invested),
@@ -123,22 +144,38 @@ async def get_nav_series(
     if not rows:
         return []
 
-    first_nav = rows[0].nav_value
+    # Compute TWR-adjusted base-100 index for portfolio.
+    # Raw nav_value includes corpus infusions as value increases, which would
+    # make the chart show inflated returns after each cash infusion.
+    nav_vals = [float(r.nav_value) for r in rows]
+    corpus_vals = [float(r.invested_amount) for r in rows]
+    twr_vals = [100.0]
+    for i in range(1, len(nav_vals)):
+        prev = nav_vals[i - 1]
+        if prev == 0:
+            twr_vals.append(twr_vals[-1])
+            continue
+        corpus_chg = corpus_vals[i] - corpus_vals[i - 1]
+        if corpus_chg != 0:
+            adj_prev = prev + corpus_chg
+            if adj_prev <= 0:
+                twr_vals.append(twr_vals[-1])
+                continue
+            daily_ret = (nav_vals[i] / adj_prev) - 1
+        else:
+            daily_ret = (nav_vals[i] / prev) - 1
+        twr_vals.append(twr_vals[-1] * (1 + daily_ret))
+
     first_bench = rows[0].benchmark_value
     points: list[NavSeriesPoint] = []
 
-    for row in rows:
-        nav_idx = (
-            (row.nav_value / first_nav * Decimal("100"))
-            if first_nav and first_nav != Decimal("0")
-            else Decimal("100")
-        )
+    for i, row in enumerate(rows):
         bench_idx: str | None = None
         if row.benchmark_value and first_bench and first_bench != Decimal("0"):
             bench_idx = dec2(row.benchmark_value / first_bench * Decimal("100"))
         points.append(NavSeriesPoint(
             date=row.nav_date,
-            nav=dec2(nav_idx),
+            nav=dec2(Decimal(str(round(twr_vals[i], 2)))),
             benchmark=bench_idx,
             cash_pct=dec2(row.cash_pct) if row.cash_pct is not None else None,
         ))

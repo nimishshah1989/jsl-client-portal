@@ -22,6 +22,12 @@ export const ASSET_CLASS_COLORS = {
   Debt: '#3b82f6',
   Gold: '#eab308',
   Others: '#8b5cf6',
+  // Uppercase variants (API returns uppercase asset class names)
+  EQUITY: '#0d9488',
+  CASH: '#d97706',
+  DEBT: '#3b82f6',
+  GOLD: '#eab308',
+  OTHERS: '#8b5cf6',
 };
 
 export const SECTOR_COLORS = [

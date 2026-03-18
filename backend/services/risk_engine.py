@@ -27,6 +27,7 @@ from backend.services.risk_metrics import (
     cash_metrics,
     compute_daily_returns,
     compute_drawdown_series,
+    compute_twr_series,
     down_capture,
     information_ratio,
     market_correlation,
@@ -68,7 +69,7 @@ _PERIOD_COL_MAP = {
     "Since Inception": "inception",
 }
 
-_RF_RATE = 6.50
+_RF_RATE = 7.00
 
 
 def _slice_nav_df(nav_df: pd.DataFrame, days: int | None) -> pd.DataFrame:
@@ -87,7 +88,9 @@ def _compute_period_metrics(
     if len(slice_df) < 2:
         return {}
 
-    port_series = slice_df["nav_value"].astype(float)
+    # Use TWR-adjusted values for portfolio return calculations
+    value_col = "twr_value" if "twr_value" in slice_df.columns else "nav_value"
+    port_series = slice_df[value_col].astype(float)
     port_series.index = slice_df["nav_date"]
 
     bench_series = slice_df["benchmark_value"].astype(float)
@@ -118,10 +121,10 @@ def _compute_period_metrics(
         "bench_volatility": bench_vol,
         "port_max_dd": port_dd["max_dd_pct"],
         "bench_max_dd": bench_dd["max_dd_pct"],
-        "port_sharpe": sharpe_ratio(port_cagr, port_vol, risk_free_rate),
-        "bench_sharpe": sharpe_ratio(bench_cagr, bench_vol, risk_free_rate),
-        "port_sortino": sortino_ratio(port_cagr, port_ret, risk_free_rate),
-        "bench_sortino": sortino_ratio(bench_cagr, bench_ret, risk_free_rate),
+        "port_sharpe": sharpe_ratio(port_ret, risk_free_rate),
+        "bench_sharpe": sharpe_ratio(bench_ret, risk_free_rate),
+        "port_sortino": sortino_ratio(port_ret, risk_free_rate),
+        "bench_sortino": sortino_ratio(bench_ret, risk_free_rate),
     }
 
 
@@ -155,7 +158,9 @@ def compute_all_metrics(
     Compute ALL risk metrics for a single client+portfolio.
 
     Args:
-        nav_df: DataFrame with columns [nav_date, nav_value, benchmark_value, cash_pct].
+        nav_df: DataFrame with columns [nav_date, nav_value, invested_amount,
+                benchmark_value, cash_pct]. Must contain twr_value column
+                (added by run_risk_engine before calling this).
                 Sorted ascending by nav_date.
         risk_free_rate: Annual risk-free rate in % (default 6.50).
 
@@ -166,7 +171,11 @@ def compute_all_metrics(
         logger.warning("Cannot compute metrics — less than 2 NAV data points")
         return {}
 
-    port_series = nav_df["nav_value"].astype(float)
+    # Use TWR-adjusted values for all return/risk calculations.
+    # Raw nav_value includes corpus infusions as value increases, which
+    # would be incorrectly counted as returns.
+    value_col = "twr_value" if "twr_value" in nav_df.columns else "nav_value"
+    port_series = nav_df[value_col].astype(float)
     port_series.index = pd.DatetimeIndex(nav_df["nav_date"])
 
     bench_series = nav_df["benchmark_value"].astype(float)
@@ -181,7 +190,9 @@ def compute_all_metrics(
         total_days = 1
 
     # Core metrics (inception-to-date)
-    port_cagr = cagr(float(port_series.iloc[0]), float(port_series.iloc[-1]), total_days)
+    # For SI CAGR, use TWR_BASE=100 as start (not actual first unit_nav which
+    # may differ due to pre-inception gains). Matches FIE2 reference.
+    port_cagr = cagr(100.0, float(port_series.iloc[-1]), total_days)
     bench_cagr = cagr(float(bench_series.iloc[0]), float(bench_series.iloc[-1]), total_days)
     port_vol = annualized_volatility(port_ret)
     dd_result = max_drawdown(port_series)
@@ -235,8 +246,8 @@ def compute_all_metrics(
         "cagr": port_cagr,
         "xirr": xirr_val,
         "volatility": port_vol,
-        "sharpe_ratio": sharpe_ratio(port_cagr, port_vol, risk_free_rate),
-        "sortino_ratio": sortino_ratio(port_cagr, port_ret, risk_free_rate),
+        "sharpe_ratio": sharpe_ratio(port_ret, risk_free_rate),
+        "sortino_ratio": sortino_ratio(port_ret, risk_free_rate),
         "max_drawdown": dd_result["max_dd_pct"],
         "max_dd_start": dd_result["dd_start"],
         "max_dd_end": dd_result["dd_end"],
@@ -310,19 +321,25 @@ async def run_risk_engine(
         nav_df[col] = pd.to_numeric(nav_df[col], errors="coerce").fillna(0)
     nav_df = nav_df.sort_values("nav_date").reset_index(drop=True)
 
-    # 2. Compute all metrics
+    # 2. Compute TWR index that adjusts for corpus changes (infusions/withdrawals).
+    #    Raw nav_value includes cash infusions as value increases, which would be
+    #    incorrectly counted as investment returns. The TWR series chain-links
+    #    sub-period returns around corpus change events.
+    nav_df["twr_value"] = compute_twr_series(nav_df)
+
+    # 3. Compute all metrics (using twr_value for return calculations)
     metrics = compute_all_metrics(nav_df, risk_free_rate)
     if not metrics:
         return {}
 
-    # 3. Compute drawdown series
+    # 4. Compute drawdown series (uses twr_value via the column in nav_df)
     dd_df = compute_drawdown_series(nav_df)
 
-    # 4. Upsert risk metrics
+    # 5. Upsert risk metrics
     computed = nav_df["nav_date"].iloc[-1].date()
     await upsert_risk_metrics(db_session, client_id, portfolio_id, computed, metrics)
 
-    # 5. Upsert drawdown series
+    # 6. Upsert drawdown series
     dd_count = await replace_drawdown_series(db_session, client_id, portfolio_id, dd_df)
 
     logger.info(

@@ -17,12 +17,68 @@ def compute_twr_index(nav_series: pd.Series) -> pd.Series:
     """
     Time-Weighted Return index — normalize absolute NAV to base 100.
 
+    Simple normalization WITHOUT corpus adjustment (for benchmark or when
+    no invested_amount data is available).
+
     Formula: TWR_t = (NAV_t / NAV_0) * 100
     """
     first_val = nav_series.iloc[0]
     if first_val == 0:
         return pd.Series(np.zeros(len(nav_series)), index=nav_series.index)
     return (nav_series / first_val) * 100
+
+
+def compute_twr_series(nav_df: pd.DataFrame) -> np.ndarray:
+    """
+    Compute proper TWR index (base 100) adjusting for corpus changes.
+
+    When the invested_amount (corpus) changes between days, it means the client
+    added or withdrew cash. Raw NAV values include these infusions as value
+    increases, which would be incorrectly counted as returns.
+
+    On a normal day (no corpus change):
+        daily_return = (NAV_today / NAV_yesterday) - 1
+
+    On a corpus change day:
+        corpus_change = invested_today - invested_yesterday
+        adjusted_prev = NAV_yesterday + corpus_change
+        daily_return = (NAV_today / adjusted_prev) - 1
+
+    The adjustment subtracts the infusion effect: if NAV went from 100 to 120
+    but 15 was new money, the true return is (120 / (100+15)) - 1 = 4.35%,
+    not (120/100) - 1 = 20%.
+
+    Chain-link: TWR_t = TWR_{t-1} * (1 + daily_return_t), starting at 100.
+    """
+    nav_vals = nav_df["nav_value"].values.astype(float)
+    corpus = nav_df["invested_amount"].values.astype(float)
+
+    # Day-0: if NAV != corpus, capture pre-inception gain/loss ratio.
+    # Matches FIE2 compute_twr_unit_nav(): unit_nav[0] = 100 * (NAV_0 / corpus_0)
+    initial_ratio = nav_vals[0] / corpus[0] if corpus[0] != 0 else 1.0
+    twr = np.ones(len(nav_vals)) * (100.0 * initial_ratio)
+    for i in range(1, len(nav_vals)):
+        prev_nav = nav_vals[i - 1]
+        if prev_nav == 0:
+            twr[i] = twr[i - 1]
+            continue
+
+        corpus_change = corpus[i] - corpus[i - 1]
+        if corpus_change != 0:
+            # Adjust previous NAV by the infusion/withdrawal amount so
+            # the return only reflects market movement, not cash flow.
+            adjusted_prev = prev_nav + corpus_change
+            if adjusted_prev <= 0:
+                # Edge case: withdrawal larger than NAV (shouldn't happen)
+                twr[i] = twr[i - 1]
+                continue
+            daily_ret = (nav_vals[i] / adjusted_prev) - 1
+        else:
+            daily_ret = (nav_vals[i] / prev_nav) - 1
+
+        twr[i] = twr[i - 1] * (1 + daily_ret)
+
+    return twr
 
 
 def compute_daily_returns(series: pd.Series) -> pd.Series:
@@ -80,40 +136,49 @@ def annualized_volatility(daily_returns: pd.Series) -> float:
 
 
 def sharpe_ratio(
-    cagr_pct: float,
-    volatility_pct: float,
-    risk_free_rate: float = 6.50,
+    daily_returns: pd.Series,
+    risk_free_rate: float = 7.00,
+    trading_days: int = 252,
 ) -> float:
     """
-    Sharpe Ratio — risk-adjusted return.
+    Sharpe Ratio — risk-adjusted return (daily excess approach).
 
-    Formula: (R_p - R_f) / sigma_p
-    Where R_p = portfolio CAGR, R_f = risk-free rate, sigma_p = volatility.
-    All inputs in percentage terms.
+    Formula: mean(R_daily - Rf_daily) / std(R_daily - Rf_daily) * sqrt(252)
+    Where Rf_daily = annual_rf / 252.
+    Matches FIE2/Market Pulse reference implementation.
     """
-    if volatility_pct == 0:
+    if len(daily_returns) < 2:
         return 0.0
-    return (cagr_pct - risk_free_rate) / volatility_pct
+    daily_rf = risk_free_rate / 100.0 / trading_days
+    excess = daily_returns - daily_rf
+    std = float(excess.std())
+    if std == 0:
+        return 0.0
+    return float(excess.mean() / std * np.sqrt(trading_days))
 
 
 def sortino_ratio(
-    cagr_pct: float,
     daily_returns: pd.Series,
-    risk_free_rate: float = 6.50,
+    risk_free_rate: float = 7.00,
+    trading_days: int = 252,
 ) -> float:
     """
     Sortino Ratio — penalizes only downside volatility.
 
-    Formula: (R_p - R_f) / sigma_downside
-    Where sigma_downside = sqrt(252) * sqrt(mean(min(R_daily, 0)^2))
+    Formula: (mean(R_daily) - Rf_daily) / downside_dev * sqrt(252)
+    Where downside = returns below Rf_daily (not below zero).
+    Matches FIE2/Market Pulse reference implementation.
     """
-    downside = daily_returns[daily_returns < 0]
+    if len(daily_returns) < 2:
+        return 0.0
+    daily_rf = risk_free_rate / 100.0 / trading_days
+    downside = daily_returns[daily_returns < daily_rf] - daily_rf
     if len(downside) == 0:
         return 0.0
-    downside_dev = float(np.sqrt((downside**2).mean()) * np.sqrt(252) * 100)
+    downside_dev = float(np.sqrt((downside**2).mean()))
     if downside_dev == 0:
         return 0.0
-    return (cagr_pct - risk_free_rate) / downside_dev
+    return float((daily_returns.mean() - daily_rf) / downside_dev * np.sqrt(trading_days))
 
 
 def max_drawdown(nav_series: pd.Series) -> dict:
@@ -162,13 +227,18 @@ def compute_drawdown_series(nav_df: pd.DataFrame) -> pd.DataFrame:
     """
     Drawdown series for the underwater chart.
 
-    Formula: DD_t = (NAV_t - Peak_t) / Peak_t * 100
-    Where Peak_t = max(NAV from inception to date t).
+    Formula: DD_t = (TWR_t - Peak_t) / Peak_t * 100
+    Where Peak_t = max(TWR from inception to date t).
 
+    Uses TWR-adjusted values so drawdowns reflect true investment performance
+    excluding the effect of capital inflows/outflows.
     Also computes benchmark drawdown for comparison overlay.
     """
-    port_peak = nav_df["nav_value"].cummax()
-    port_dd = ((nav_df["nav_value"] - port_peak) / port_peak) * 100
+    # Use TWR-adjusted values if available, otherwise fall back to raw NAV
+    value_col = "twr_value" if "twr_value" in nav_df.columns else "nav_value"
+    port_vals = nav_df[value_col]
+    port_peak = port_vals.cummax()
+    port_dd = ((port_vals - port_peak) / port_peak) * 100
 
     bench_dd = pd.Series(np.zeros(len(nav_df)), index=nav_df.index)
     if "benchmark_value" in nav_df.columns:
@@ -318,7 +388,9 @@ def monthly_return_profile(nav_df: pd.DataFrame) -> dict:
             "loss_count": 0,
         }
 
-    monthly = nav_df.set_index("nav_date")["nav_value"].resample("ME").last()
+    # Use TWR-adjusted values if available, otherwise fall back to raw NAV
+    value_col = "twr_value" if "twr_value" in nav_df.columns else "nav_value"
+    monthly = nav_df.set_index("nav_date")[value_col].resample("ME").last()
     monthly_ret = monthly.pct_change().dropna() * 100
 
     if len(monthly_ret) == 0:

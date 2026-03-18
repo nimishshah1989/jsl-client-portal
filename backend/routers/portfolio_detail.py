@@ -236,8 +236,26 @@ async def get_methodology(
     if risk is None:
         raise HTTPException(status_code=404, detail="No risk metrics computed yet")
 
+    # Fetch first and last NAV rows for methodology worked examples
+    first_nav_stmt = (
+        select(NavSeries)
+        .where(NavSeries.client_id == client_id)
+        .where(NavSeries.portfolio_id == portfolio.id)
+        .order_by(NavSeries.nav_date)
+        .limit(1)
+    )
+    last_nav_stmt = (
+        select(NavSeries)
+        .where(NavSeries.client_id == client_id)
+        .where(NavSeries.portfolio_id == portfolio.id)
+        .order_by(desc(NavSeries.nav_date))
+        .limit(1)
+    )
+    first_nav = (await db.execute(first_nav_stmt)).scalar_one_or_none()
+    last_nav = (await db.execute(last_nav_stmt)).scalar_one_or_none()
+
     rf = risk.risk_free_rate
-    metrics = _build_methodology_metrics(risk, rf)
+    metrics = _build_methodology_metrics(risk, rf, first_nav, last_nav)
 
     return MethodologyResponse(
         as_of_date=risk.computed_date, risk_free_rate=dec2(rf),
@@ -245,24 +263,52 @@ async def get_methodology(
     )
 
 
-def _build_methodology_metrics(risk, rf: Decimal) -> dict[str, MethodologyMetric]:  # noqa: ANN001
-    """Assemble methodology metrics dict from a RiskMetric row."""
+def _build_methodology_metrics(  # noqa: ANN001
+    risk, rf: Decimal, first_nav=None, last_nav=None,
+) -> dict[str, MethodologyMetric]:
+    """Assemble methodology metrics dict from a RiskMetric row and NAV bookends."""
+    # Compute actual input values from NAV data
+    nav_start = dec2(first_nav.nav_value) if first_nav and first_nav.nav_value else None
+    nav_end = dec2(last_nav.nav_value) if last_nav and last_nav.nav_value else None
+    inception_days: str | None = None
+    if first_nav and last_nav and first_nav.nav_date and last_nav.nav_date:
+        inception_days = str((last_nav.nav_date - first_nav.nav_date).days)
+
+    # Derive downside deviation from sortino ratio: dd = (cagr - rf) / sortino
+    downside_dev: str | None = None
+    if risk.sortino_ratio and risk.cagr and risk.sortino_ratio != Decimal("0"):
+        dd_val = (risk.cagr - rf) / risk.sortino_ratio
+        downside_dev = dec2(dd_val)
+
+    # Derive daily std from volatility: daily_std = vol / sqrt(252)
+    daily_std: str | None = None
+    if risk.volatility and risk.volatility != Decimal("0"):
+        import math
+        ds_val = float(risk.volatility) / math.sqrt(252)
+        daily_std = str(Decimal(str(ds_val)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+
     return {
         "absolute_return": MethodologyMetric(
             value=opt2(risk.absolute_return), benchmark_value=opt2(risk.bench_return_inception),
-            inputs={"start_nav": "First NAV value", "end_nav": "Latest NAV value"},
+            inputs={"nav_start": nav_start, "nav_end": nav_end},
         ),
         "cagr": MethodologyMetric(
             value=opt2(risk.cagr), benchmark_value=opt2(risk.bench_cagr_inception),
-            inputs={"start_value": "First NAV", "end_value": "Latest NAV", "days": "Days since inception"},
+            inputs={"start_value": nav_start, "end_value": nav_end, "days": inception_days},
         ),
         "xirr": MethodologyMetric(
             value=opt2(risk.xirr),
-            inputs={"method": "scipy.optimize.brentq", "cash_flow_source": "Corpus changes in NAV file"},
+            inputs={
+                "method": "scipy.optimize.brentq",
+                "cash_flow_source": "Corpus changes in NAV file",
+                "first_date": str(first_nav.nav_date) if first_nav else None,
+                "latest_date": str(last_nav.nav_date) if last_nav else None,
+                "num_cash_flows": inception_days,  # approximate; exact count unavailable here
+            },
         ),
         "volatility": MethodologyMetric(
             value=opt2(risk.volatility), benchmark_value=opt2(risk.bench_vol_inception),
-            inputs={"trading_days": "252", "formula": "std(daily_returns) * sqrt(252) * 100"},
+            inputs={"daily_std": daily_std, "trading_days": "252"},
         ),
         "sharpe_ratio": MethodologyMetric(
             value=opt2(risk.sharpe_ratio), benchmark_value=opt2(risk.bench_sharpe_inception),
@@ -272,7 +318,7 @@ def _build_methodology_metrics(risk, rf: Decimal) -> dict[str, MethodologyMetric
         "sortino_ratio": MethodologyMetric(
             value=opt2(risk.sortino_ratio), benchmark_value=opt2(risk.bench_sortino_inception),
             inputs={"portfolio_cagr": opt2(risk.cagr), "risk_free_rate": dec2(rf),
-                    "downside_deviation": "Computed from negative daily returns"},
+                    "downside_dev": downside_dev},
         ),
         "max_drawdown": MethodologyMetric(
             value=opt2(risk.max_drawdown),
@@ -282,15 +328,15 @@ def _build_methodology_metrics(risk, rf: Decimal) -> dict[str, MethodologyMetric
         ),
         "alpha": MethodologyMetric(
             value=opt2(risk.alpha),
-            inputs={"portfolio_cagr": opt2(risk.cagr), "benchmark_cagr": opt2(risk.bench_cagr_inception),
-                    "beta": opt2(risk.beta), "risk_free_rate": dec2(rf)},
+            inputs={"port_cagr": opt2(risk.cagr), "bench_cagr": opt2(risk.bench_cagr_inception),
+                    "beta_val": opt2(risk.beta), "risk_free_rate": dec2(rf)},
         ),
         "beta": MethodologyMetric(
             value=opt2(risk.beta), inputs={"formula": "Cov(R_p, R_b) / Var(R_b)"},
         ),
         "information_ratio": MethodologyMetric(
             value=opt2(risk.information_ratio),
-            inputs={"portfolio_cagr": opt2(risk.cagr), "benchmark_cagr": opt2(risk.bench_cagr_inception),
+            inputs={"port_cagr": opt2(risk.cagr), "bench_cagr": opt2(risk.bench_cagr_inception),
                     "tracking_error": opt2(risk.tracking_error)},
         ),
         "tracking_error": MethodologyMetric(

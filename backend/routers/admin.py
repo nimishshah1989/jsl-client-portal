@@ -213,8 +213,10 @@ async def recompute_risk(
     client_id: int | None = None,
     admin: dict = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
+) -> dict:
     """Trigger risk recomputation for all or a specific client."""
+    from backend.database import AsyncSessionLocal
+
     try:
         from backend.services.risk_engine import run_risk_engine
     except ImportError as exc:
@@ -230,24 +232,33 @@ async def recompute_risk(
         await run_risk_engine(client_id, pid, db)
         return {"message": f"Recomputed risk for client_id={client_id}"}
 
+    # Fetch all active client IDs upfront
     stmt = select(Client.id).where(Client.is_active.is_(True))
     client_ids = [row[0] for row in (await db.execute(stmt)).all()]
     count = 0
+    errors: list[str] = []
     for cid in client_ids:
+        # Use a separate session per client so one failure doesn't poison the
+        # transaction for subsequent clients (PostgreSQL aborted-txn behavior).
         try:
-            pid = (await db.execute(
-                text("SELECT id FROM cpp_portfolios WHERE client_id = :cid LIMIT 1"),
-                {"cid": cid},
-            )).scalar()
-            if pid is None:
-                logger.warning("No portfolio found for client_id=%d, skipping", cid)
-                continue
-            await run_risk_engine(cid, pid, db)
-            count += 1
+            async with AsyncSessionLocal() as client_db:
+                pid = (await client_db.execute(
+                    text("SELECT id FROM cpp_portfolios WHERE client_id = :cid LIMIT 1"),
+                    {"cid": cid},
+                )).scalar()
+                if pid is None:
+                    continue
+                await run_risk_engine(cid, pid, client_db)
+                await client_db.commit()
+                count += 1
         except Exception as exc:
             logger.error("Risk recompute failed for client_id=%d: %s", cid, exc)
+            errors.append(f"client_id={cid}: {exc!s}")
             continue
-    return {"message": f"Recomputed risk for {count} clients"}
+    result: dict = {"message": f"Recomputed risk for {count} clients"}
+    if errors:
+        result["errors"] = errors[:20]  # Cap at 20 to avoid huge response
+    return result
 
 
 @router.get("/upload-log", response_model=list[UploadLogResponse])

@@ -77,7 +77,7 @@ export default function AllocationCharts() {
         Portfolio Allocation
       </h2>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+      <div className={`grid grid-cols-1 ${by_sector.length > 0 ? 'md:grid-cols-2' : ''} gap-6 mb-6`}>
         {/* By asset class donut */}
         <div>
           <h3 className="text-sm font-semibold text-slate-600 mb-3 text-center">By Asset Class</h3>
@@ -117,47 +117,49 @@ export default function AllocationCharts() {
           </div>
         </div>
 
-        {/* By sector donut */}
-        <div>
-          <h3 className="text-sm font-semibold text-slate-600 mb-3 text-center">By Sector</h3>
-          <ResponsiveContainer width="100%" height={240}>
-            <PieChart>
-              <Pie
-                data={by_sector}
-                dataKey="weight"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                innerRadius={60}
-                outerRadius={95}
-                paddingAngle={2}
-                strokeWidth={0}
-              >
-                {by_sector.map((entry, idx) => (
-                  <Cell
-                    key={entry.name}
-                    fill={SECTOR_COLORS[idx % SECTOR_COLORS.length]}
+        {/* By sector donut — hidden when no sector data */}
+        {by_sector.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold text-slate-600 mb-3 text-center">By Sector</h3>
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie
+                  data={by_sector}
+                  dataKey="weight"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={60}
+                  outerRadius={95}
+                  paddingAngle={2}
+                  strokeWidth={0}
+                >
+                  {by_sector.map((entry, idx) => (
+                    <Cell
+                      key={entry.name}
+                      fill={SECTOR_COLORS[idx % SECTOR_COLORS.length]}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip content={<DonutTooltip />} />
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="flex flex-wrap justify-center gap-3 mt-2">
+              {by_sector.slice(0, 8).map((entry, idx) => (
+                <div key={entry.name} className="flex items-center gap-1.5 text-xs text-slate-600">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full"
+                    style={{ backgroundColor: SECTOR_COLORS[idx % SECTOR_COLORS.length] }}
                   />
-                ))}
-              </Pie>
-              <Tooltip content={<DonutTooltip />} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div className="flex flex-wrap justify-center gap-3 mt-2">
-            {by_sector.slice(0, 8).map((entry, idx) => (
-              <div key={entry.name} className="flex items-center gap-1.5 text-xs text-slate-600">
-                <span
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{ backgroundColor: SECTOR_COLORS[idx % SECTOR_COLORS.length] }}
-                />
-                {entry.name} ({formatPctUnsigned(entry.weight, 1)})
-              </div>
-            ))}
-            {by_sector.length > 8 && (
-              <span className="text-xs text-slate-400">+{by_sector.length - 8} more</span>
-            )}
+                  {entry.name} ({formatPctUnsigned(entry.weight, 1)})
+                </div>
+              ))}
+              {by_sector.length > 8 && (
+                <span className="text-xs text-slate-400">+{by_sector.length - 8} more</span>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Allocation shift over time */}

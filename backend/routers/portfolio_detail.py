@@ -25,9 +25,9 @@ from backend.schemas.portfolio import (
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 PERIODS = [
-    ("1 Month", "1m"), ("3 Months", "3m"), ("6 Months", "6m"),
-    ("1 Year", "1y"), ("2 Years", "2y"), ("3 Years", "3y"),
-    ("4 Years", "4y"), ("5 Years", "5y"), ("Since Inception", "inception"),
+    ("1 Month", "1m", 30), ("3 Months", "3m", 91), ("6 Months", "6m", 182),
+    ("1 Year", "1y", 365), ("2 Years", "2y", 730), ("3 Years", "3y", 1095),
+    ("4 Years", "4y", 1461), ("5 Years", "5y", 1826), ("Since Inception", "inception", None),
 ]
 
 
@@ -43,9 +43,22 @@ async def get_performance_table(
     if risk is None:
         return []
 
+    # Determine data range to skip periods beyond available data
+    from sqlalchemy import func as sqlfunc
+    date_range = await db.execute(
+        select(sqlfunc.min(NavSeries.nav_date), sqlfunc.max(NavSeries.nav_date))
+        .where(NavSeries.client_id == client_id)
+        .where(NavSeries.portfolio_id == portfolio.id)
+    )
+    min_date, max_date = date_range.one()
+    data_days = (max_date - min_date).days if min_date and max_date else 0
+
     rows: list[PerformanceRow] = []
-    for label, suffix in PERIODS:
-        rows.append(PerformanceRow(
+    for label, suffix, period_days in PERIODS:
+        # Skip periods that exceed client's data range (except inception)
+        if period_days is not None and period_days > data_days + 15:
+            continue
+        row = PerformanceRow(
             period=label,
             port_abs_return=opt2(getattr(risk, f"return_{suffix}", None)),
             bench_abs_return=opt2(getattr(risk, f"bench_return_{suffix}", None)),
@@ -59,7 +72,8 @@ async def get_performance_table(
             bench_sharpe=opt2(getattr(risk, f"bench_sharpe_{suffix}", None)),
             port_sortino=opt2(getattr(risk, f"sortino_{suffix}", None)),
             bench_sortino=opt2(getattr(risk, f"bench_sortino_{suffix}", None)),
-        ))
+        )
+        rows.append(row)
     return rows
 
 

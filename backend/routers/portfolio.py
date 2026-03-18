@@ -228,7 +228,12 @@ async def get_allocation(
             for name, value in sorted(mapping.items(), key=lambda x: x[1], reverse=True)
         ]
 
-    return AllocationResponse(by_class=_to_items(class_map), by_sector=_to_items(sector_map))
+    # Omit sector breakdown when all holdings lack sector data
+    sector_items = _to_items(sector_map)
+    if len(sector_items) == 1 and sector_items[0].name == "Unknown":
+        sector_items = []
+
+    return AllocationResponse(by_class=_to_items(class_map), by_sector=sector_items)
 
 
 @router.get("/holdings", response_model=list[HoldingResponse])

@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
-import { usePathname } from 'next/navigation';
+import { useState, useCallback } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useAuth } from '@/hooks/useAuth';
+import { apiFetch } from '@/lib/api';
 import {
   BarChart3,
   TrendingUp,
@@ -30,11 +30,21 @@ const NAV_ITEMS = [
   { id: 'methodology', label: 'Methodology', icon: Calculator, href: '/dashboard/methodology', isPage: true },
 ];
 
-export default function Sidebar() {
-  const { user, logout } = useAuth();
+export default function Sidebar({ user }) {
+  const router = useRouter();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [activeSection, setActiveSection] = useState('summary');
+
+  const logout = useCallback(async () => {
+    try {
+      await apiFetch('/auth/logout', { method: 'POST' });
+    } catch {
+      // Logout even if API fails
+    } finally {
+      router.push('/login');
+    }
+  }, [router]);
 
   function handleNavClick(item) {
     if (!item.isPage) {

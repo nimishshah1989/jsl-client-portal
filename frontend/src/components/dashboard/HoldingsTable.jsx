@@ -26,7 +26,11 @@ export default function HoldingsTable() {
   const [order, setOrder] = useState('desc');
   const [assetClass, setAssetClass] = useState('ALL');
   // Map frontend field names to backend-accepted sort keys
-  const SORT_MAP = { weight_pct: 'weight', unrealized_pnl: 'pnl', current_value: 'value', symbol: 'name' };
+  const SORT_MAP = {
+    weight_pct: 'weight', unrealized_pnl: 'pnl', current_value: 'value',
+    symbol: 'name', asset_name: 'name', asset_class: 'class',
+    quantity: 'quantity', avg_cost: 'avg_cost', current_price: 'price', pnl_pct: 'pnl_pct'
+  };
   const apiSort = SORT_MAP[sort] || 'weight';
   const { data, loading, error } = useHoldings(apiSort, order, assetClass === 'ALL' ? '' : assetClass);
 
@@ -137,7 +141,7 @@ export default function HoldingsTable() {
                     <span className="text-xs text-slate-600">{h.asset_class}</span>
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs">
-                    {h.quantity?.toLocaleString('en-IN')}
+                    {h.quantity != null ? Number(h.quantity).toLocaleString('en-IN') : '--'}
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs">
                     {formatINR(h.avg_cost)}

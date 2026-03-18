@@ -116,7 +116,7 @@ export default function TransactionHistory() {
                     {txn.asset_class}
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs">
-                    {txn.quantity?.toLocaleString('en-IN')}
+                    {txn.quantity != null ? Number(txn.quantity).toLocaleString('en-IN') : '--'}
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs">
                     {formatINR(txn.price)}

@@ -67,7 +67,10 @@ function HeatmapGrid({ monthlyData = [] }) {
         <tbody>
           {sortedYears.map((year) => {
             const monthValues = years[year];
-            const total = Object.values(monthValues).reduce((sum, v) => sum + (v || 0), 0);
+            const vals = Object.values(monthValues).filter(v => v != null);
+            const total = vals.length > 0
+              ? (vals.reduce((acc, v) => acc * (1 + Number(v) / 100), 1) - 1) * 100
+              : 0;
             return (
               <tr key={year}>
                 <td className="px-2 py-1 font-medium text-slate-700">{year}</td>

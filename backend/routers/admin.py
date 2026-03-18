@@ -1,11 +1,14 @@
 """Admin router — file upload, preview, risk recompute, upload log."""
 
+import logging
 import os
 import tempfile
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from backend.database import get_db
 from backend.middleware.auth_middleware import get_admin_user
@@ -54,7 +57,10 @@ async def _save_and_ingest(
     try:
         import backend.services.ingestion_service as svc
         ingest_fn = getattr(svc, ingest_func_name)
-        result = await ingest_fn(tmp_path, db, admin_id)
+        result = await ingest_fn(tmp_path, admin_id, db)
+        if hasattr(result, '__dataclass_fields__'):
+            from dataclasses import asdict
+            result = asdict(result)
     except (ImportError, AttributeError):
         result = {
             "rows_processed": 0, "rows_failed": 0, "clients_affected": 0,
@@ -215,7 +221,13 @@ async def recompute_risk(
         raise HTTPException(status_code=501, detail="Risk engine not yet implemented") from exc
 
     if client_id is not None:
-        await run_risk_engine(client_id, db)
+        pid = (await db.execute(
+            text("SELECT id FROM cpp_portfolios WHERE client_id = :cid LIMIT 1"),
+            {"cid": client_id},
+        )).scalar()
+        if pid is None:
+            raise HTTPException(status_code=404, detail=f"No portfolio found for client_id={client_id}")
+        await run_risk_engine(client_id, pid, db)
         return {"message": f"Recomputed risk for client_id={client_id}"}
 
     stmt = select(Client.id).where(Client.is_active.is_(True))
@@ -223,9 +235,17 @@ async def recompute_risk(
     count = 0
     for cid in client_ids:
         try:
-            await run_risk_engine(cid, db)
+            pid = (await db.execute(
+                text("SELECT id FROM cpp_portfolios WHERE client_id = :cid LIMIT 1"),
+                {"cid": cid},
+            )).scalar()
+            if pid is None:
+                logger.warning("No portfolio found for client_id=%d, skipping", cid)
+                continue
+            await run_risk_engine(cid, pid, db)
             count += 1
-        except Exception:
+        except Exception as exc:
+            logger.error("Risk recompute failed for client_id=%d: %s", cid, exc)
             continue
     return {"message": f"Recomputed risk for {count} clients"}
 

@@ -66,7 +66,7 @@ export function formatINRShort(value) {
     return `${prefix}\u20B9${(absVal / 1e7).toFixed(2)} Cr`;
   }
   if (absVal >= 1e5) {
-    return `${prefix}\u20B9${(absVal / 1e5).toFixed(2)}L`;
+    return `${prefix}\u20B9${(absVal / 1e5).toFixed(2)} L`;
   }
   if (absVal >= 1e3) {
     return `${prefix}\u20B9${formatIndianNumber(absVal, 0)}`;
@@ -86,6 +86,16 @@ export function formatPct(value, decimals = 2) {
   if (isNaN(num)) return '--';
   const prefix = num > 0 ? '+' : '';
   return `${prefix}${num.toFixed(decimals)}%`;
+}
+
+/**
+ * Format percentage WITHOUT +/- sign prefix (for ratios, weights, allocations).
+ */
+export function formatPctUnsigned(value, decimals = 2) {
+  if (value == null || value === '') return '--';
+  const num = Number(value);
+  if (isNaN(num)) return '--';
+  return `${num.toFixed(decimals)}%`;
 }
 
 /**

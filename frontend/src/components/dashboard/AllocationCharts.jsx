@@ -1,7 +1,7 @@
 'use client';
 
 import { useAllocation } from '@/hooks/usePortfolio';
-import { formatPct } from '@/lib/format';
+import { formatPct, formatPctUnsigned } from '@/lib/format';
 import { ASSET_CLASS_COLORS, SECTOR_COLORS } from '@/lib/constants';
 import {
   PieChart,
@@ -35,7 +35,7 @@ function DonutTooltip({ active, payload }) {
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-2.5 shadow-lg text-sm">
       <p className="font-medium text-slate-700">{name}</p>
-      <p className="font-mono text-slate-800">{formatPct(value, 1)}</p>
+      <p className="font-mono text-slate-800">{formatPctUnsigned(value, 1)}</p>
     </div>
   );
 }
@@ -111,7 +111,7 @@ export default function AllocationCharts() {
                   className="w-2.5 h-2.5 rounded-full"
                   style={{ backgroundColor: ASSET_CLASS_COLORS[entry.name] || '#94a3b8' }}
                 />
-                {entry.name} ({formatPct(entry.weight, 1)})
+                {entry.name} ({formatPctUnsigned(entry.weight, 1)})
               </div>
             ))}
           </div>
@@ -150,7 +150,7 @@ export default function AllocationCharts() {
                   className="w-2.5 h-2.5 rounded-full"
                   style={{ backgroundColor: SECTOR_COLORS[idx % SECTOR_COLORS.length] }}
                 />
-                {entry.name} ({formatPct(entry.weight, 1)})
+                {entry.name} ({formatPctUnsigned(entry.weight, 1)})
               </div>
             ))}
             {by_sector.length > 8 && (

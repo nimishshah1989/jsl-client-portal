@@ -28,7 +28,7 @@ function AccordionItem({ title, value, children }) {
         </div>
         {value != null && (
           <span className="font-mono tabular-nums text-teal-600 font-medium text-sm">
-            {typeof value === 'number' ? formatPct(value) : value}
+            {typeof value === 'string' ? value : formatPct(value)}
           </span>
         )}
       </button>
@@ -110,17 +110,31 @@ export default function MethodologyPage() {
   const benchmark = data?.benchmark_name || 'NIFTY 50';
   const asOf = data?.as_of_date;
 
-  // Helper to safely get metric values
-  function mv(key) {
-    return m[key]?.value;
+  // Helper to safely get metric values — always convert to Number
+  // because Python Decimal values serialize as strings in JSON.
+  // Use n() to safely convert any value to Number before .toFixed() calls.
+  function n(v) {
+    if (v == null || v === '') return null;
+    const num = Number(v);
+    return isNaN(num) ? null : num;
   }
 
+  function mv(key) {
+    return n(m[key]?.value);
+  }
+
+  // mi returns raw value (may be string date, text, or number)
   function mi(key, input) {
-    return m[key]?.inputs?.[input];
+    return m[key]?.inputs?.[input] ?? null;
+  }
+
+  // min returns numeric input value
+  function min(key, input) {
+    return n(m[key]?.inputs?.[input]);
   }
 
   function mb(key) {
-    return m[key]?.benchmark_value;
+    return n(m[key]?.benchmark_value);
   }
 
   return (
@@ -153,10 +167,10 @@ export default function MethodologyPage() {
           </p>
           <Formula>Absolute Return = (NAV_end / NAV_start) - 1</Formula>
           <WorkedExample>
-            <p>NAV at period start = {mi('absolute_return', 'start_nav')?.toFixed(2) || '--'}</p>
-            <p>NAV at period end = {mi('absolute_return', 'end_nav')?.toFixed(2) || '--'}</p>
+            <p>NAV at period start = {min('absolute_return', 'start_nav')?.toFixed(2) || '--'}</p>
+            <p>NAV at period end = {min('absolute_return', 'end_nav')?.toFixed(2) || '--'}</p>
             <p className="mt-2 font-semibold text-slate-800">
-              = ({mi('absolute_return', 'end_nav')?.toFixed(2) || '--'} / {mi('absolute_return', 'start_nav')?.toFixed(2) || '--'}) - 1
+              = ({min('absolute_return', 'end_nav')?.toFixed(2) || '--'} / {min('absolute_return', 'start_nav')?.toFixed(2) || '--'}) - 1
               = <span className="text-teal-600">{formatPct(mv('absolute_return'))}</span>
             </p>
           </WorkedExample>
@@ -171,8 +185,8 @@ export default function MethodologyPage() {
             {'CAGR = ((End Value / Start Value) ^ (365.25 / Days)) - 1'}
           </Formula>
           <WorkedExample>
-            <p>Start Value = {mi('cagr', 'start_value')?.toFixed(2) || '--'}</p>
-            <p>End Value = {mi('cagr', 'end_value')?.toFixed(2) || '--'}</p>
+            <p>Start Value = {min('cagr', 'start_value')?.toFixed(2) || '--'}</p>
+            <p>End Value = {min('cagr', 'end_value')?.toFixed(2) || '--'}</p>
             <p>Days = {mi('cagr', 'days') || '--'}</p>
             <p className="mt-2 font-semibold text-slate-800">
               = <span className="text-teal-600">{formatPct(mv('cagr'))}</span>
@@ -217,9 +231,9 @@ export default function MethodologyPage() {
           </p>
           <Formula>Volatility = Std Dev(daily returns) x sqrt(252)</Formula>
           <WorkedExample>
-            <p>Daily return std dev = {mi('volatility', 'daily_std')?.toFixed(4) || '--'}</p>
+            <p>Daily return std dev = {min('volatility', 'daily_std')?.toFixed(4) || '--'}</p>
             <p className="mt-2 font-semibold text-slate-800">
-              = {mi('volatility', 'daily_std')?.toFixed(4) || '--'} x {Math.sqrt(252).toFixed(2)}
+              = {min('volatility', 'daily_std')?.toFixed(4) || '--'} x {Math.sqrt(252).toFixed(2)}
               = <span className="text-teal-600">{formatPct(mv('volatility'))}</span>
             </p>
           </WorkedExample>
@@ -252,11 +266,11 @@ export default function MethodologyPage() {
           </p>
           <Formula>Sharpe Ratio = (Portfolio CAGR - Risk-Free Rate) / Portfolio Volatility</Formula>
           <WorkedExample>
-            <p>Portfolio CAGR = {formatPct(mi('sharpe_ratio', 'portfolio_cagr'))}</p>
+            <p>Portfolio CAGR = {formatPct(min('sharpe_ratio', 'portfolio_cagr'))}</p>
             <p>Risk-Free Rate = {rfr}% (India 10Y Govt Bond)</p>
-            <p>Portfolio Volatility = {formatPct(mi('sharpe_ratio', 'portfolio_volatility'))}</p>
+            <p>Portfolio Volatility = {formatPct(min('sharpe_ratio', 'portfolio_volatility'))}</p>
             <p className="mt-2 font-semibold text-slate-800">
-              = ({mi('sharpe_ratio', 'portfolio_cagr')?.toFixed(2) || '--'} - {rfr}) / {mi('sharpe_ratio', 'portfolio_volatility')?.toFixed(2) || '--'}
+              = ({min('sharpe_ratio', 'portfolio_cagr')?.toFixed(2) || '--'} - {rfr}) / {min('sharpe_ratio', 'portfolio_volatility')?.toFixed(2) || '--'}
               = <span className="text-teal-600">{mv('sharpe_ratio')?.toFixed(2) || '--'}</span>
             </p>
           </WorkedExample>
@@ -274,9 +288,9 @@ export default function MethodologyPage() {
           </p>
           <Formula>Sortino = (Portfolio CAGR - Risk-Free Rate) / Downside Deviation</Formula>
           <WorkedExample>
-            <p>Portfolio CAGR = {formatPct(mi('sortino_ratio', 'portfolio_cagr'))}</p>
+            <p>Portfolio CAGR = {formatPct(min('sortino_ratio', 'portfolio_cagr'))}</p>
             <p>Risk-Free Rate = {rfr}%</p>
-            <p>Downside Deviation = {formatPct(mi('sortino_ratio', 'downside_dev'))}</p>
+            <p>Downside Deviation = {formatPct(min('sortino_ratio', 'downside_dev'))}</p>
             <p className="mt-2 font-semibold text-slate-800">
               = <span className="text-teal-600">{mv('sortino_ratio')?.toFixed(2) || '--'}</span>
             </p>
@@ -294,9 +308,9 @@ export default function MethodologyPage() {
           </p>
           <Formula>{'Alpha = R_p - [R_f + Beta x (R_b - R_f)]'}</Formula>
           <WorkedExample>
-            <p>Portfolio CAGR (R_p) = {formatPct(mi('alpha', 'port_cagr'))}</p>
-            <p>Benchmark CAGR (R_b) = {formatPct(mi('alpha', 'bench_cagr'))}</p>
-            <p>Beta = {mi('alpha', 'beta')?.toFixed(2) || '--'}</p>
+            <p>Portfolio CAGR (R_p) = {formatPct(min('alpha', 'port_cagr'))}</p>
+            <p>Benchmark CAGR (R_b) = {formatPct(min('alpha', 'bench_cagr'))}</p>
+            <p>Beta = {min('alpha', 'beta')?.toFixed(2) || '--'}</p>
             <p>Risk-Free Rate = {rfr}%</p>
             <p className="mt-2 font-semibold text-slate-800">
               = <span className="text-teal-600">{formatPct(mv('alpha'))}</span>

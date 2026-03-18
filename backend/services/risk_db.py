@@ -23,18 +23,51 @@ DECIMAL_FIELDS = [
     "absolute_return", "cagr", "xirr", "volatility", "sharpe_ratio",
     "sortino_ratio", "max_drawdown", "alpha", "beta", "information_ratio",
     "tracking_error", "up_capture", "down_capture", "ulcer_index",
-    "avg_cash_held", "max_cash_held", "market_correlation",
+    "avg_cash_held", "max_cash_held", "current_cash", "market_correlation",
     "monthly_hit_rate", "best_month", "worst_month",
     "avg_positive_month", "avg_negative_month", "risk_free_rate",
+    # Period absolute returns — portfolio
     "return_1m", "return_3m", "return_6m", "return_1y",
-    "return_2y", "return_3y", "return_5y", "return_inception",
+    "return_2y", "return_3y", "return_4y", "return_5y", "return_inception",
+    # Period absolute returns — benchmark
     "bench_return_1m", "bench_return_3m", "bench_return_6m",
     "bench_return_1y", "bench_return_2y", "bench_return_3y",
-    "bench_return_5y", "bench_return_inception",
-    "bench_volatility", "bench_max_drawdown", "bench_sharpe", "bench_sortino",
+    "bench_return_4y", "bench_return_5y", "bench_return_inception",
+    # Period CAGR — portfolio
+    "cagr_1m", "cagr_3m", "cagr_6m", "cagr_1y", "cagr_2y", "cagr_3y",
+    "cagr_4y", "cagr_5y", "cagr_inception",
+    # Period CAGR — benchmark
+    "bench_cagr_1m", "bench_cagr_3m", "bench_cagr_6m", "bench_cagr_1y",
+    "bench_cagr_2y", "bench_cagr_3y", "bench_cagr_4y", "bench_cagr_5y",
+    "bench_cagr_inception",
+    # Period volatility — portfolio
+    "vol_1m", "vol_3m", "vol_6m", "vol_1y", "vol_2y", "vol_3y", "vol_inception",
+    # Period volatility — benchmark
+    "bench_vol_1m", "bench_vol_3m", "bench_vol_6m", "bench_vol_1y",
+    "bench_vol_2y", "bench_vol_3y", "bench_vol_inception",
+    # Period max drawdown — portfolio
+    "dd_1m", "dd_3m", "dd_6m", "dd_1y", "dd_2y", "dd_3y", "dd_inception",
+    # Period max drawdown — benchmark
+    "bench_dd_1m", "bench_dd_3m", "bench_dd_6m", "bench_dd_1y",
+    "bench_dd_2y", "bench_dd_3y", "bench_dd_inception",
+    # Period Sharpe — portfolio
+    "sharpe_1m", "sharpe_3m", "sharpe_6m", "sharpe_1y", "sharpe_2y", "sharpe_3y",
+    "sharpe_inception",
+    # Period Sharpe — benchmark
+    "bench_sharpe_1m", "bench_sharpe_3m", "bench_sharpe_6m", "bench_sharpe_1y",
+    "bench_sharpe_2y", "bench_sharpe_3y", "bench_sharpe_inception",
+    # Period Sortino — portfolio
+    "sortino_1m", "sortino_3m", "sortino_6m", "sortino_1y", "sortino_2y", "sortino_3y",
+    "sortino_inception",
+    # Period Sortino — benchmark
+    "bench_sortino_1m", "bench_sortino_3m", "bench_sortino_6m", "bench_sortino_1y",
+    "bench_sortino_2y", "bench_sortino_3y", "bench_sortino_inception",
 ]
 
-_ALL_EXTRA = ["max_dd_start", "max_dd_end", "max_dd_recovery", "max_consecutive_loss"]
+_ALL_EXTRA = [
+    "max_dd_start", "max_dd_end", "max_dd_recovery",
+    "max_consecutive_loss", "win_months", "loss_months",
+]
 _ALL_COLS = DECIMAL_FIELDS + _ALL_EXTRA
 
 # Build SQL fragments once at import time
@@ -90,6 +123,8 @@ async def upsert_risk_metrics(
     row["max_dd_end"] = to_date(metrics.get("max_dd_end"))
     row["max_dd_recovery"] = to_date(metrics.get("max_dd_recovery"))
     row["max_consecutive_loss"] = metrics.get("max_consecutive_loss", 0)
+    row["win_months"] = metrics.get("win_months", 0)
+    row["loss_months"] = metrics.get("loss_months", 0)
 
     await db.execute(text(_UPSERT_SQL), row)
     logger.debug("Upserted risk metrics for client=%d portfolio=%d", client_id, portfolio_id)

@@ -1,7 +1,7 @@
 'use client';
 
 import { useRiskScorecard } from '@/hooks/usePortfolio';
-import { formatPct } from '@/lib/format';
+import { formatPct, formatPctUnsigned } from '@/lib/format';
 
 /** Safely convert to number, return fallback if null/NaN */
 function num(v, fallback = 0) {
@@ -105,13 +105,13 @@ export default function RiskScorecard() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <MetricCard
           label="Up Capture"
-          value={formatPct(m.up_capture, 1)}
+          value={formatPctUnsigned(m.up_capture, 1)}
           subtitle="vs benchmark on up days"
           color={num(m.up_capture) >= 100 ? 'text-emerald-600' : 'text-slate-800'}
         />
         <MetricCard
           label="Down Capture"
-          value={formatPct(m.down_capture, 1)}
+          value={formatPctUnsigned(m.down_capture, 1)}
           subtitle="vs benchmark on down days"
           color={num(m.down_capture) < 100 ? 'text-emerald-600' : 'text-red-600'}
         />
@@ -134,7 +134,7 @@ export default function RiskScorecard() {
         />
         <MetricCard
           label="Tracking Error"
-          value={formatPct(m.tracking_error)}
+          value={formatPctUnsigned(m.tracking_error)}
           subtitle="Active management"
         />
         <MetricCard
@@ -154,17 +154,17 @@ export default function RiskScorecard() {
       <div className="mt-4 grid grid-cols-3 gap-3">
         <MetricCard
           label="Current Cash"
-          value={formatPct(m.current_cash, 1)}
+          value={formatPctUnsigned(m.current_cash, 1)}
           subtitle="As of latest"
         />
         <MetricCard
           label="Avg Cash Held"
-          value={formatPct(m.avg_cash_held, 1)}
+          value={formatPctUnsigned(m.avg_cash_held, 1)}
           subtitle="Historical average"
         />
         <MetricCard
           label="Max Cash Held"
-          value={formatPct(m.max_cash_held, 1)}
+          value={formatPctUnsigned(m.max_cash_held, 1)}
           subtitle="Peak defensive"
         />
       </div>

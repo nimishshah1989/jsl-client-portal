@@ -91,7 +91,7 @@ export default function SummaryCards() {
       label: 'Profit / Loss',
       value: formatINRShort(data.profit_amount),
       subtitle: formatPct(data.profit_pct),
-      iconColor: data.profit_amount >= 0 ? 'bg-emerald-50' : 'bg-red-50',
+      iconColor: Number(data.profit_amount) >= 0 ? 'bg-emerald-50' : 'bg-red-50',
       valueColor: profitColor,
     },
     {

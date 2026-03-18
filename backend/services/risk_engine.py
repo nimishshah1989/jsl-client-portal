@@ -63,6 +63,7 @@ _PERIOD_COL_MAP = {
     "1 Year": "1y",
     "2 Years": "2y",
     "3 Years": "3y",
+    "4 Years": "4y",
     "5 Years": "5y",
     "Since Inception": "inception",
 }
@@ -207,17 +208,27 @@ def compute_all_metrics(
     perf = performance_table(nav_df, risk_free_rate)
     period_returns: dict[str, float] = {}
     bench_period_returns: dict[str, float] = {}
-    bench_risk: dict[str, float] = {}
     for row in perf:
         suffix = _PERIOD_COL_MAP.get(row["period"])
         if suffix:
-            period_returns[f"return_{suffix}"] = row["port_cagr"]
-            bench_period_returns[f"bench_return_{suffix}"] = row["bench_cagr"]
-        if row["period"] == "Since Inception":
-            bench_risk["bench_volatility"] = row["bench_volatility"]
-            bench_risk["bench_max_drawdown"] = row["bench_max_dd"]
-            bench_risk["bench_sharpe"] = row["bench_sharpe"]
-            bench_risk["bench_sortino"] = row["bench_sortino"]
+            # Absolute returns
+            period_returns[f"return_{suffix}"] = row["port_abs_return"]
+            bench_period_returns[f"bench_return_{suffix}"] = row["bench_abs_return"]
+            # CAGR
+            period_returns[f"cagr_{suffix}"] = row["port_cagr"]
+            bench_period_returns[f"bench_cagr_{suffix}"] = row["bench_cagr"]
+            # Volatility
+            period_returns[f"vol_{suffix}"] = row["port_volatility"]
+            bench_period_returns[f"bench_vol_{suffix}"] = row["bench_volatility"]
+            # Max drawdown
+            period_returns[f"dd_{suffix}"] = row["port_max_dd"]
+            bench_period_returns[f"bench_dd_{suffix}"] = row["bench_max_dd"]
+            # Sharpe
+            period_returns[f"sharpe_{suffix}"] = row["port_sharpe"]
+            bench_period_returns[f"bench_sharpe_{suffix}"] = row["bench_sharpe"]
+            # Sortino
+            period_returns[f"sortino_{suffix}"] = row["port_sortino"]
+            bench_period_returns[f"bench_sortino_{suffix}"] = row["bench_sortino"]
 
     result = {
         "absolute_return": absolute_return(port_series),
@@ -238,8 +249,11 @@ def compute_all_metrics(
         "down_capture": down_capture(port_ret, bench_ret),
         "ulcer_index": ulcer_index(port_series),
         "max_consecutive_loss": monthly_profile["max_consecutive_loss"],
+        "win_months": monthly_profile["win_count"],
+        "loss_months": monthly_profile["loss_count"],
         "avg_cash_held": cash_stats["avg_cash_held"],
         "max_cash_held": cash_stats["max_cash_held"],
+        "current_cash": cash_stats["current_cash"],
         "market_correlation": market_correlation(port_ret, bench_ret),
         "monthly_hit_rate": monthly_profile["hit_rate"],
         "best_month": monthly_profile["best_month"],
@@ -250,7 +264,6 @@ def compute_all_metrics(
     }
     result.update(period_returns)
     result.update(bench_period_returns)
-    result.update(bench_risk)
     return result
 
 

@@ -42,7 +42,7 @@ jobs:
             git reset --hard origin/main
 
             echo "[2/5] Building Docker image..."
-            docker build -t client-portal .
+            docker build --build-arg CACHEBUST=$(date +%s) -t client-portal .
 
             echo "[3/5] Stopping old container..."
             docker rm -f client-portal 2>/dev/null || true

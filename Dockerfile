@@ -11,6 +11,9 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci --ignore-scripts
 COPY frontend/ ./
+
+# Cache-bust: changes on every commit to ensure fresh builds
+ARG CACHEBUST=1
 RUN npm run build
 
 # --- Stage 2: Runtime ---

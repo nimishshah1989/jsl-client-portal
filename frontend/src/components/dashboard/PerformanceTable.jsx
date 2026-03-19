@@ -20,7 +20,7 @@ function Skeleton() {
 const METRIC_LABELS = [
   {
     key: 'abs_return',
-    label: 'Absolute Return',
+    label: 'Abs Return',
     description: 'Total percentage gain or loss over the period. Formula: (End Value / Start Value - 1) × 100',
   },
   {
@@ -35,20 +35,40 @@ const METRIC_LABELS = [
   },
   {
     key: 'max_dd',
-    label: 'Max Drawdown',
+    label: 'Max DD',
     description: 'Largest peak-to-trough decline during the period. Shows the worst-case scenario an investor would have experienced.',
   },
   {
     key: 'sharpe',
-    label: 'Sharpe Ratio',
+    label: 'Sharpe',
     description: 'Risk-adjusted return: (Return - Risk Free Rate) / Volatility. Higher is better. >1 = good, >2 = excellent. Uses 7% risk-free rate (India 10Y bond).',
   },
   {
     key: 'sortino',
-    label: 'Sortino Ratio',
+    label: 'Sortino',
     description: 'Like Sharpe but only penalizes downside volatility. Better for portfolios that have more upside than downside movement. Higher is better.',
   },
 ];
+
+function CellValue({ metric, value, isBench }) {
+  const isRatio = metric === 'sharpe' || metric === 'sortino';
+  if (isBench) {
+    return (
+      <span className="text-slate-400">
+        {isRatio
+          ? (value != null ? Number(value).toFixed(2) : '--')
+          : formatPct(value)}
+      </span>
+    );
+  }
+  return (
+    <span className={isRatio ? '' : pnlColor(value)}>
+      {isRatio
+        ? (value != null ? Number(value).toFixed(2) : '--')
+        : formatPct(value)}
+    </span>
+  );
+}
 
 export default function PerformanceTable() {
   const { data, loading, error } = usePerformanceTable();
@@ -69,7 +89,6 @@ export default function PerformanceTable() {
     );
   }
 
-  // data is an array of period objects
   const periods = data;
 
   return (
@@ -80,78 +99,69 @@ export default function PerformanceTable() {
 
       <div className="relative">
         <div className="overflow-x-auto -mx-3 px-3 sm:-mx-5 sm:px-5" style={{ WebkitOverflowScrolling: 'touch' }}>
-          {/* Right-edge fade hint on mobile */}
           <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-white to-transparent z-10 sm:hidden" />
-      <table className="w-full text-sm min-w-[700px]">
-        <thead>
-          <tr className="border-b border-slate-200">
-            <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2">
-              Metric
-            </th>
-            {periods.map((p) => (
-              <th
-                key={p.period}
-                className="text-center text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2"
-                colSpan={2}
-              >
-                {p.period}
-              </th>
-            ))}
-          </tr>
-          <tr className="border-b border-slate-100">
-            <th />
-            {periods.map((p) => (
-              <React.Fragment key={p.period}>
-                <th className="text-center text-xs text-teal-600 font-medium px-2 py-1">Port</th>
-                <th className="text-center text-xs text-slate-400 font-medium px-2 py-1">Bench</th>
-              </React.Fragment>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {METRIC_LABELS.map((metric) => (
-            <tr key={metric.key} className="border-b border-slate-50 hover:bg-slate-50">
-              <td className="px-3 py-2.5 font-medium text-slate-700 whitespace-nowrap">
-                <span className="inline-flex items-center gap-1">
-                  {metric.label}
-                  <span className="relative group">
-                    <span className="text-slate-400 hover:text-slate-600 cursor-default select-none text-xs leading-none">
-                      ⓘ
+          <table className="w-full text-sm min-w-[700px]">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2">
+                  Period
+                </th>
+                {METRIC_LABELS.map((m) => (
+                  <th
+                    key={m.key}
+                    className="text-center text-xs font-semibold text-slate-400 uppercase tracking-wider px-2 py-2"
+                    colSpan={2}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      {m.label}
+                      <span className="relative group">
+                        <span className="text-slate-400 hover:text-slate-600 cursor-default select-none leading-none">
+                          ⓘ
+                        </span>
+                        <span className="absolute left-1/2 -translate-x-1/2 top-5 z-50 hidden group-hover:block w-[220px] sm:w-[260px] rounded-lg bg-white border border-slate-200 shadow-lg px-3 py-2 text-xs text-slate-600 font-normal leading-relaxed text-left normal-case tracking-normal">
+                          {m.description}
+                        </span>
+                      </span>
                     </span>
-                    <span className="absolute left-0 top-5 z-50 hidden group-hover:block w-[220px] sm:w-[280px] rounded-lg bg-white border border-slate-200 shadow-lg px-3 py-2 text-xs text-slate-600 font-normal leading-relaxed">
-                      {metric.description}
-                    </span>
-                  </span>
-                </span>
-              </td>
-              {periods.map((p) => {
-                const portKey = `port_${metric.key}`;
-                const benchKey = `bench_${metric.key}`;
-                const portVal = p[portKey];
-                const benchVal = p[benchKey];
-                const isRatio = metric.key === 'sharpe' || metric.key === 'sortino';
-
-                return (
-                  <React.Fragment key={p.period}>
-                    <td className={`text-center px-2 py-2.5 font-mono tabular-nums text-xs ${isRatio ? '' : pnlColor(portVal)}`}>
-                      {isRatio
-                        ? (portVal != null ? Number(portVal).toFixed(2) : '--')
-                        : formatPct(portVal)}
-                    </td>
-                    <td className={`text-center px-2 py-2.5 font-mono tabular-nums text-xs text-slate-400`}>
-                      {isRatio
-                        ? (benchVal != null ? Number(benchVal).toFixed(2) : '--')
-                        : formatPct(benchVal)}
-                    </td>
+                  </th>
+                ))}
+              </tr>
+              <tr className="border-b border-slate-100">
+                <th />
+                {METRIC_LABELS.map((m) => (
+                  <React.Fragment key={m.key}>
+                    <th className="text-center text-xs text-teal-600 font-medium px-1 py-1">Port</th>
+                    <th className="text-center text-xs text-slate-400 font-medium px-1 py-1">Bench</th>
                   </React.Fragment>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {periods.map((p) => (
+                <tr key={p.period} className="border-b border-slate-50 hover:bg-slate-50">
+                  <td className="px-3 py-2.5 font-medium text-slate-700 whitespace-nowrap">
+                    {p.period}
+                  </td>
+                  {METRIC_LABELS.map((metric) => {
+                    const portVal = p[`port_${metric.key}`];
+                    const benchVal = p[`bench_${metric.key}`];
+                    return (
+                      <React.Fragment key={metric.key}>
+                        <td className="text-center px-1 py-2.5 font-mono tabular-nums text-xs">
+                          <CellValue metric={metric.key} value={portVal} isBench={false} />
+                        </td>
+                        <td className="text-center px-1 py-2.5 font-mono tabular-nums text-xs">
+                          <CellValue metric={metric.key} value={benchVal} isBench={true} />
+                        </td>
+                      </React.Fragment>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-        <p className="text-xs text-slate-400 mt-2 sm:hidden">Scroll sideways to see all periods</p>
+        <p className="text-xs text-slate-400 mt-2 sm:hidden">Scroll sideways to see all metrics</p>
       </div>
     </div>
   );

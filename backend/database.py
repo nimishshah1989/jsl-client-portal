@@ -1,5 +1,6 @@
 """SQLAlchemy 2.0 async engine, session factory, and Base model."""
 
+import ssl
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import MetaData, create_engine
@@ -32,6 +33,11 @@ class Base(DeclarativeBase):
     metadata = metadata
 
 
+# ── SSL context for RDS (required by pg_hba.conf) ──
+_ssl_context = ssl.create_default_context()
+_ssl_context.check_hostname = False
+_ssl_context.verify_mode = ssl.CERT_NONE
+
 # ── Async engine (for FastAPI) ──
 async_engine = create_async_engine(
     settings.DATABASE_URL,
@@ -40,6 +46,7 @@ async_engine = create_async_engine(
     max_overflow=20,
     pool_pre_ping=True,
     pool_recycle=3600,
+    connect_args={"ssl": _ssl_context},
 )
 
 AsyncSessionLocal = async_sessionmaker(

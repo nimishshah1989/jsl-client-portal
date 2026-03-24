@@ -30,11 +30,43 @@ export const ASSET_CLASS_COLORS = {
   OTHERS: '#8b5cf6',
 };
 
-export const SECTOR_COLORS = [
-  '#0d9488', '#3b82f6', '#8b5cf6', '#ec4899',
-  '#f59e0b', '#ef4444', '#06b6d4', '#84cc16',
-  '#94a3b8',
-];
+export const SECTOR_COLORS = {
+  'Banking': '#0d9488',
+  'Financial Services': '#14b8a6',
+  'IT': '#6366f1',
+  'Pharma': '#ec4899',
+  'Healthcare': '#f472b6',
+  'FMCG': '#22c55e',
+  'Automobiles': '#3b82f6',
+  'Auto Ancillaries': '#60a5fa',
+  'Capital Goods': '#8b5cf6',
+  'Metals': '#f59e0b',
+  'Oil & Gas': '#ef4444',
+  'Power': '#f97316',
+  'Infrastructure': '#a855f7',
+  'Chemicals': '#06b6d4',
+  'Telecom': '#84cc16',
+  'Real Estate': '#d946ef',
+  'Cement': '#78716c',
+  'Consumer Durables': '#0ea5e9',
+  'Consumer': '#0ea5e9',
+  'Insurance': '#10b981',
+  'Conglomerate': '#64748b',
+  'Building Materials': '#a3a3a3',
+  'Cash': '#d97706',
+  'Diversified': '#94a3b8',
+  'Other': '#94a3b8',
+  'Paints': '#22d3ee',
+  'Hospitality': '#fb923c',
+  'Aviation': '#38bdf8',
+  'Agri & Sugar': '#a3e635',
+  'Media & Entertainment': '#c084fc',
+  'Internet & E-Commerce': '#2dd4bf',
+  'Housing Finance': '#67e8f9',
+  'Textiles': '#fbbf24',
+  'Logistics': '#818cf8',
+  'Staffing': '#a78bfa',
+};
 
 export const TXN_TYPE_STYLES = {
   BUY: { bg: 'bg-emerald-100', text: 'text-emerald-700' },

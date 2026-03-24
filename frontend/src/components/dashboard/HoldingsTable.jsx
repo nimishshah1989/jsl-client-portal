@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import { useHoldings } from '@/hooks/usePortfolio';
 import { formatINR, formatINRShort, formatPct, pnlColor } from '@/lib/format';
-import { ASSET_CLASS_COLORS } from '@/lib/constants';
-import { ChevronUp, ChevronDown, ChevronsUpDown, Filter } from 'lucide-react';
+import { SECTOR_COLORS } from '@/lib/constants';
+import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 
 function Skeleton() {
   return (
@@ -19,20 +19,19 @@ function Skeleton() {
   );
 }
 
-const ASSET_CLASSES = ['ALL', 'Equity', 'Cash', 'Debt', 'Gold', 'Others'];
+// Filter pills removed — sector-only view, no asset_class filtering
 
 export default function HoldingsTable() {
   const [sort, setSort] = useState('weight_pct');
   const [order, setOrder] = useState('desc');
-  const [assetClass, setAssetClass] = useState('ALL');
   // Map frontend field names to backend-accepted sort keys
   const SORT_MAP = {
     weight_pct: 'weight', unrealized_pnl: 'pnl', current_value: 'value',
-    symbol: 'name', asset_name: 'name', asset_class: 'class',
+    symbol: 'name', asset_name: 'name', sector: 'name',
     quantity: 'quantity', avg_cost: 'avg_cost', current_price: 'price', pnl_pct: 'pnl_pct'
   };
   const apiSort = SORT_MAP[sort] || 'weight';
-  const { data, loading, error } = useHoldings(apiSort, order, assetClass === 'ALL' ? '' : assetClass);
+  const { data, loading, error } = useHoldings(apiSort, order, '');
 
   function handleSort(field) {
     if (sort === field) {
@@ -63,26 +62,8 @@ export default function HoldingsTable() {
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
+      <div className="mb-4">
         <h2 className="text-lg sm:text-xl font-semibold text-slate-800">Current Holdings</h2>
-        <div className="flex items-center gap-2">
-          <Filter className="w-4 h-4 text-slate-400" />
-          <div className="flex flex-wrap gap-1">
-            {ASSET_CLASSES.map((cls) => (
-              <button
-                key={cls}
-                onClick={() => setAssetClass(cls)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
-                  assetClass === cls
-                    ? 'bg-teal-600 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {cls}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
 
       <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
@@ -91,7 +72,7 @@ export default function HoldingsTable() {
             <tr className="bg-slate-50 border-b border-slate-200">
               {[
                 { key: 'asset_name', label: 'Name', align: 'left' },
-                { key: 'asset_class', label: 'Class', align: 'left' },
+                { key: 'sector', label: 'Sector', align: 'left' },
                 { key: 'quantity', label: 'Qty', align: 'right' },
                 { key: 'avg_cost', label: 'Avg Cost', align: 'right' },
                 { key: 'current_price', label: 'CMP', align: 'right' },
@@ -136,9 +117,9 @@ export default function HoldingsTable() {
                   <td className="px-3 py-2.5">
                     <span
                       className="inline-block w-2 h-2 rounded-full mr-1.5"
-                      style={{ backgroundColor: ASSET_CLASS_COLORS[h.asset_class] || '#94a3b8' }}
+                      style={{ backgroundColor: SECTOR_COLORS[h.sector] || '#94a3b8' }}
                     />
-                    <span className="text-xs text-slate-600">{h.asset_class}</span>
+                    <span className="text-xs text-slate-600">{h.sector || 'Other'}</span>
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs">
                     {h.quantity != null ? Number(h.quantity).toLocaleString('en-IN') : '--'}

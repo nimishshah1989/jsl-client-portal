@@ -108,14 +108,22 @@ async def get_summary(
 
     # True cash = Cash + ETF (LIQUIDBEES) + Bank Balance
     # The PMS file's Liquidity% excludes ETF, so we compute from components.
+    # Fallback to Liquidity% if breakdown columns are not yet populated (pre-re-upload).
     etf = latest_nav.etf_value if latest_nav.etf_value is not None else Decimal("0")
     cash_val = latest_nav.cash_value if latest_nav.cash_value is not None else Decimal("0")
     bank = latest_nav.bank_balance if latest_nav.bank_balance is not None else Decimal("0")
     ledger_cash = cash_val + bank  # Cash on books (no ETF)
     cash_amount = etf + ledger_cash  # Total cash position
     nav_val = latest_nav.nav_value if latest_nav.nav_value and latest_nav.nav_value != Decimal("0") else Decimal("1")
-    cash_pct_computed = cash_amount / nav_val * Decimal("100")
-    cash_pct_clamped = max(Decimal("0"), cash_pct_computed)
+
+    if cash_amount > 0:
+        cash_pct_clamped = max(Decimal("0"), cash_amount / nav_val * Decimal("100"))
+    else:
+        # Fallback: use Liquidity% and derive cash_amount from it
+        fallback_pct = latest_nav.cash_pct if latest_nav.cash_pct is not None else Decimal("0")
+        cash_pct_clamped = max(Decimal("0"), fallback_pct)
+        cash_amount = current * cash_pct_clamped / Decimal("100") if current else Decimal("0")
+        ledger_cash = cash_amount  # Best approximation before re-upload
 
     return SummaryResponse(
         invested=dec2(invested),

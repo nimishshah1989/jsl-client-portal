@@ -123,6 +123,8 @@ class RiskScorecardResponse(BaseModel):
     max_consecutive_loss: int | None = None
     win_months: int | None = None
     loss_months: int | None = None
+    # Monthly return series for heatmap (year, month, return_pct)
+    monthly_returns: list[dict] = []
     # Cash
     avg_cash_held: str | None = None
     max_cash_held: str | None = None

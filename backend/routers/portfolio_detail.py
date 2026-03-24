@@ -89,6 +89,9 @@ async def get_risk_scorecard(
     if risk is None:
         raise HTTPException(status_code=404, detail="No risk metrics computed yet")
 
+    # Compute monthly returns from NAV series for heatmap
+    monthly_returns = await _compute_monthly_returns(db, client_id, portfolio.id)
+
     return RiskScorecardResponse(
         alpha=opt2(risk.alpha), beta=opt2(risk.beta),
         information_ratio=opt2(risk.information_ratio),
@@ -105,6 +108,7 @@ async def get_risk_scorecard(
         avg_negative_month=opt2(risk.avg_negative_month),
         max_consecutive_loss=risk.max_consecutive_loss,
         win_months=risk.win_months, loss_months=risk.loss_months,
+        monthly_returns=monthly_returns,
         avg_cash_held=opt2(risk.avg_cash_held),
         max_cash_held=opt2(risk.max_cash_held),
         current_cash=opt2(risk.current_cash),
@@ -112,6 +116,48 @@ async def get_risk_scorecard(
         sharpe_ratio=opt2(risk.sharpe_ratio),
         sortino_ratio=opt2(risk.sortino_ratio),
     )
+
+
+async def _compute_monthly_returns(
+    db: AsyncSession, client_id: int, portfolio_id: int
+) -> list[dict]:
+    """Compute month-over-month returns from NAV series for heatmap grid."""
+    from backend.models.risk_metric import RiskMetric  # noqa: F811
+
+    stmt = (
+        select(NavSeries.nav_date, NavSeries.nav_value)
+        .where(NavSeries.client_id == client_id)
+        .where(NavSeries.portfolio_id == portfolio_id)
+        .order_by(NavSeries.nav_date)
+    )
+    rows = (await db.execute(stmt)).all()
+    if len(rows) < 2:
+        return []
+
+    # Group by (year, month) → take last NAV of each month
+    monthly_last: dict[tuple[int, int], Decimal] = {}
+    for nav_date, nav_value in rows:
+        key = (nav_date.year, nav_date.month)
+        monthly_last[key] = nav_value
+
+    sorted_keys = sorted(monthly_last.keys())
+    results: list[dict] = []
+    for i in range(1, len(sorted_keys)):
+        prev_key = sorted_keys[i - 1]
+        curr_key = sorted_keys[i]
+        prev_val = monthly_last[prev_key]
+        curr_val = monthly_last[curr_key]
+        if prev_val and prev_val > 0:
+            ret = float((curr_val - prev_val) / prev_val * 100)
+            year, month = curr_key
+            results.append({
+                "year": year,
+                "month": month - 1,  # 0-indexed for frontend (Jan=0)
+                "return_pct": round(ret, 2),
+                "label": f"{['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month-1]} {year}",
+            })
+
+    return results
 
 
 @router.get("/transactions", response_model=PaginatedTransactions)

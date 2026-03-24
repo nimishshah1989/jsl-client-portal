@@ -188,6 +188,49 @@ export function useRecomputeRisk() {
 }
 
 /**
+ * Hook for data status (last upload + last data date).
+ */
+export function useDataStatus() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const fetch = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await apiGet('/admin/data-status');
+      setData(result);
+    } catch {
+      // silent
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { data, loading, refetch: fetch };
+}
+
+/**
+ * Hook for impersonating a client (view their dashboard).
+ */
+export function useImpersonate() {
+  const [loading, setLoading] = useState(false);
+
+  const impersonate = useCallback(async (clientId) => {
+    setLoading(true);
+    try {
+      const result = await apiPost(`/admin/impersonate/${clientId}`, {});
+      return result;
+    } catch (err) {
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { impersonate, loading };
+}
+
+/**
  * Hook for file upload preview.
  */
 export function useUploadPreview() {

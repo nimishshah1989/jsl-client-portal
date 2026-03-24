@@ -1,22 +1,25 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useClients, useUploadLog, useRecomputeRisk } from '@/hooks/useAdmin';
+import { useClients, useUploadLog, useRecomputeRisk, useDataStatus, useImpersonate } from '@/hooks/useAdmin';
 import { formatDate } from '@/lib/format';
 import Button from '@/components/ui/Button';
 import Badge from '@/components/ui/Badge';
 import Spinner from '@/components/ui/Spinner';
-import { Users, Upload, RefreshCcw, AlertCircle } from 'lucide-react';
+import { Users, Upload, RefreshCcw, AlertCircle, Calendar, Clock, Eye } from 'lucide-react';
 
 export default function AdminDashboard() {
   const { data: clients, loading: clientsLoading, refetch: refetchClients } = useClients();
   const { data: logs, loading: logsLoading, refetch: refetchLogs } = useUploadLog();
   const { recompute, loading: recomputing } = useRecomputeRisk();
+  const { data: dataStatus, loading: statusLoading, refetch: refetchStatus } = useDataStatus();
+  const { impersonate, loading: impersonating } = useImpersonate();
 
   useEffect(() => {
     refetchClients();
     refetchLogs();
-  }, [refetchClients, refetchLogs]);
+    refetchStatus();
+  }, [refetchClients, refetchLogs, refetchStatus]);
 
   async function handleRecompute() {
     try {
@@ -24,6 +27,16 @@ export default function AdminDashboard() {
       alert('Risk metrics recomputed for all clients.');
     } catch (err) {
       alert(`Recomputation failed: ${err.message}`);
+    }
+  }
+
+  async function handleViewClient(clientId) {
+    try {
+      await impersonate(clientId);
+      sessionStorage.setItem('admin_viewing', 'true');
+      window.location.href = '/dashboard';
+    } catch (err) {
+      alert(`Failed to view client: ${err.message}`);
     }
   }
 
@@ -37,11 +50,47 @@ export default function AdminDashboard() {
         </Button>
       </div>
 
+      {/* Data Status Banner */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex flex-wrap items-center gap-6 text-sm">
+          <div className="flex items-center gap-2">
+            <Clock className="w-4 h-4 text-teal-600" />
+            <span className="text-slate-500">Last Updated On:</span>
+            {statusLoading ? (
+              <span className="text-slate-400">Loading...</span>
+            ) : dataStatus?.last_uploaded_at ? (
+              <span className="font-semibold text-slate-800">
+                {formatDate(dataStatus.last_uploaded_at)}
+              </span>
+            ) : (
+              <span className="text-slate-400">No uploads yet</span>
+            )}
+          </div>
+          <div className="w-px h-5 bg-slate-200 hidden sm:block" />
+          <div className="flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-teal-600" />
+            <span className="text-slate-500">Last Date in File:</span>
+            {statusLoading ? (
+              <span className="text-slate-400">Loading...</span>
+            ) : dataStatus?.last_data_date ? (
+              <span className="font-semibold text-slate-800">
+                {formatDate(dataStatus.last_data_date)}
+              </span>
+            ) : (
+              <span className="text-slate-400">No data</span>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Client List */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center gap-2 mb-4">
           <Users className="w-5 h-5 text-teal-600" />
           <h3 className="text-base font-semibold text-slate-800">Clients</h3>
+          <span className="text-xs text-slate-400 ml-1">
+            (click to view portfolio)
+          </span>
         </div>
 
         {clientsLoading ? (
@@ -58,11 +107,16 @@ export default function AdminDashboard() {
                   <th className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase">Code</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase">Status</th>
                   <th className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase">Last Login</th>
+                  <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase">View</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {(Array.isArray(clients) ? clients : []).map((c) => (
-                  <tr key={c.id} className="hover:bg-slate-50">
+                  <tr
+                    key={c.id}
+                    className="hover:bg-teal-50 cursor-pointer transition-colors"
+                    onClick={() => !c.is_admin && handleViewClient(c.id)}
+                  >
                     <td className="px-3 py-2 font-medium text-slate-800">{c.name}</td>
                     <td className="px-3 py-2 text-slate-600 font-mono text-xs">{c.username}</td>
                     <td className="px-3 py-2 text-slate-600 font-mono text-xs">{c.client_code}</td>
@@ -73,6 +127,23 @@ export default function AdminDashboard() {
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-500">
                       {c.last_login ? formatDate(c.last_login) : 'Never'}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      {c.is_admin ? (
+                        <span className="text-xs text-slate-300">-</span>
+                      ) : (
+                        <button
+                          className="inline-flex items-center gap-1 text-xs text-teal-600 hover:text-teal-800 font-medium"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleViewClient(c.id);
+                          }}
+                          disabled={impersonating}
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          View
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

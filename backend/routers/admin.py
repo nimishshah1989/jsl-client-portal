@@ -1,18 +1,19 @@
-"""Admin router — file upload, preview, risk recompute, upload log."""
+"""Admin router — file upload, preview, risk recompute, upload log, impersonate."""
 
 import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from sqlalchemy import select, desc, text
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
+from sqlalchemy import select, desc, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 from backend.database import get_db
-from backend.middleware.auth_middleware import get_admin_user
+from backend.middleware.auth_middleware import create_access_token, get_admin_user
 from backend.models.client import Client
+from backend.models.nav_series import NavSeries
 from backend.models.upload_log import UploadLog
 from backend.schemas.admin import UploadLogResponse, UploadPreviewResponse, UploadResponse
 
@@ -290,3 +291,60 @@ async def get_upload_log(
         )
         for log in logs
     ]
+
+
+@router.get("/data-status")
+async def data_status(
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return last upload timestamp and latest NAV date across all clients."""
+    # Last upload timestamp
+    last_upload_stmt = (
+        select(UploadLog.uploaded_at)
+        .order_by(desc(UploadLog.uploaded_at))
+        .limit(1)
+    )
+    last_upload = (await db.execute(last_upload_stmt)).scalar_one_or_none()
+
+    # Latest NAV date in the data (across all clients)
+    last_nav_stmt = select(func.max(NavSeries.nav_date))
+    last_nav_date = (await db.execute(last_nav_stmt)).scalar_one_or_none()
+
+    return {
+        "last_uploaded_at": last_upload.isoformat() if last_upload else None,
+        "last_data_date": last_nav_date.isoformat() if last_nav_date else None,
+    }
+
+
+@router.post("/impersonate/{client_id}")
+async def impersonate_client(
+    client_id: int,
+    response: Response,
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Issue a JWT for viewing a client's dashboard. Admin only."""
+    stmt = select(Client).where(Client.id == client_id)
+    client = (await db.execute(stmt)).scalar_one_or_none()
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Create a token scoped to the target client (not admin)
+    token = create_access_token(client.id, is_admin=False)
+
+    from backend.config import get_settings
+    settings = get_settings()
+    secure_cookie = "http://" not in settings.CORS_ORIGINS
+
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+        path="/",
+        max_age=48 * 3600,
+    )
+
+    return {"client_name": client.name, "client_id": client.id}

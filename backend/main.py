@@ -29,7 +29,7 @@ logger = logging.getLogger("cpp")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Verify database connectivity on startup, dispose engine on shutdown."""
+    """Verify database connectivity on startup, start scheduler, dispose on shutdown."""
     logger.info("Starting %s (env=%s)", settings.APP_NAME, settings.APP_ENV)
     try:
         async with async_engine.connect() as conn:
@@ -41,7 +41,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise RuntimeError(
             f"Cannot connect to database. Check DATABASE_URL. Error: {exc}"
         ) from exc
+
+    # Start background scheduler for periodic price refresh
+    from backend.services.scheduler import start_scheduler, stop_scheduler
+
+    try:
+        start_scheduler()
+    except Exception as exc:
+        logger.warning("Scheduler failed to start (non-fatal): %s", exc)
+
     yield
+
+    stop_scheduler()
     await async_engine.dispose()
     logger.info("Application shutdown complete")
 

@@ -15,6 +15,7 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  ReferenceLine,
 } from 'recharts';
 
 function ChartSkeleton() {
@@ -35,18 +36,20 @@ function ChartSkeleton() {
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || payload.length === 0) return null;
+  const cashFlowEntry = payload.find((e) => e.payload?.cash_flow != null && e.payload.cash_flow !== 0);
+  const cashFlowAmt = cashFlowEntry ? Number(cashFlowEntry.payload.cash_flow) : null;
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
       <p className="font-medium text-slate-700 mb-1">{label}</p>
       {payload.map((entry) => {
         if (entry.value == null) return null;
+        if (entry.dataKey === 'cash_flow') return null;
         let displayValue;
         if (entry.dataKey === 'cash_pct') {
           displayValue = `${Number(entry.value).toFixed(1)}%`;
         } else if (entry.dataKey === 'invested') {
           displayValue = formatINRShort(entry.value);
         } else {
-          // nav and benchmark — show both short and full on hover
           displayValue = formatINRShort(entry.value);
         }
         return (
@@ -62,6 +65,13 @@ function CustomTooltip({ active, payload, label }) {
           </div>
         );
       })}
+      {cashFlowAmt != null && (
+        <div className="mt-1 pt-1 border-t border-slate-100 flex items-center gap-2">
+          <span className={`text-xs font-semibold ${cashFlowAmt > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+            {cashFlowAmt > 0 ? '+ Inflow' : '- Outflow'}: {formatINRShort(Math.abs(cashFlowAmt))}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -95,7 +105,17 @@ export default function NavChart() {
     benchmark: d.benchmark != null ? Number(d.benchmark) : null,
     invested: d.invested != null ? Number(d.invested) : null,
     cash_pct: d.cash_pct != null ? Math.min(100, Math.max(0, Number(d.cash_pct))) : null,
+    cash_flow: d.cash_flow != null ? Number(d.cash_flow) : null,
   }));
+
+  // Identify cash flow dates for vertical markers
+  const cashFlowPoints = chartData
+    .filter((d) => d.cash_flow != null && d.cash_flow !== 0)
+    .map((d) => ({
+      dateLabel: d.dateLabel,
+      amount: d.cash_flow,
+      isInflow: d.cash_flow > 0,
+    }));
 
   // Compute tick interval to avoid overcrowding on X-axis
   const tickInterval = Math.max(1, Math.floor(chartData.length / 8));
@@ -222,12 +242,30 @@ export default function NavChart() {
             barSize={3}
             radius={[1, 1, 0, 0]}
           />
+          {/* Cash flow date markers — vertical lines where inflows/outflows occurred */}
+          {cashFlowPoints.map((cf) => (
+            <ReferenceLine
+              key={cf.dateLabel}
+              x={cf.dateLabel}
+              yAxisId="nav"
+              stroke={cf.isInflow ? '#059669' : '#dc2626'}
+              strokeDasharray="4 3"
+              strokeWidth={1}
+              strokeOpacity={0.6}
+            />
+          ))}
         </ComposedChart>
       </ResponsiveContainer>
 
-      <p className="text-xs text-slate-400 mt-2 px-1">
-        Cash % includes ledger cash, bank balance, and liquid ETF instruments (LIQUIDBEES, LIQUIDETF).
-      </p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400 mt-2 px-1">
+        <span>Cash % includes ledger cash, bank balance, and liquid ETF instruments (LIQUIDBEES, LIQUIDETF).</span>
+        {cashFlowPoints.length > 0 && (
+          <span className="flex items-center gap-2">
+            <span className="inline-block w-4 border-t border-dashed border-emerald-500" /> Inflow
+            <span className="inline-block w-4 border-t border-dashed border-red-500" /> Outflow
+          </span>
+        )}
+      </div>
     </div>
   );
 }

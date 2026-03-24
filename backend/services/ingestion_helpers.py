@@ -87,7 +87,7 @@ async def find_or_create_portfolio(
             ON CONFLICT (client_id, portfolio_name) DO NOTHING
             RETURNING id
         """),
-        {"cid": client_id, "pname": portfolio_name, "idate": inception_date.date()},
+        {"cid": client_id, "pname": portfolio_name, "idate": inception_date.date() if hasattr(inception_date, 'hour') else inception_date},
     )
     row = result.fetchone()
     if row:

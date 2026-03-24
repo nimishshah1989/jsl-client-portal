@@ -13,7 +13,7 @@ Cash flows can come from two sources:
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 import pandas as pd
 from scipy.optimize import brentq
@@ -146,7 +146,15 @@ def compute_xirr(
         )
         return 0.0
 
-    # Days from first cash flow as year fractions
+    # Normalize all dates to date objects (avoid datetime vs date subtraction errors)
+    def to_date(d):
+        if isinstance(d, datetime):
+            return d.date()
+        if isinstance(d, pd.Timestamp):
+            return d.date()
+        return d
+
+    dates = [to_date(d) for d in dates]
     d0 = dates[0]
     day_offsets = [(d - d0).days / 365.0 for d in dates]
 

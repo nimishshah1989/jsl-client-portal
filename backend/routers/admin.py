@@ -265,7 +265,7 @@ async def recompute_risk(
                 await client_db.commit()
                 count += 1
         except Exception as exc:
-            logger.error("Risk recompute failed for client_id=%d: %s", cid, exc)
+            logger.error("Risk recompute failed for client_id=%d: %s", cid, exc, exc_info=True)
             errors.append(f"client_id={cid}: {exc!s}")
             continue
     result: dict = {"message": f"Recomputed risk for {count} clients"}

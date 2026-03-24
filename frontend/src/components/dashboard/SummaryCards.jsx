@@ -9,6 +9,7 @@ import {
   Target,
   Calendar,
   ShieldAlert,
+  Banknote,
 } from 'lucide-react';
 
 const SKELETON_PULSE = 'animate-pulse bg-slate-200 rounded';

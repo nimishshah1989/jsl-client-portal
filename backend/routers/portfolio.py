@@ -106,6 +106,11 @@ async def get_summary(
                 twr *= nav_vals[i] / prev
         ytd_return = Decimal(str(round((twr - 1) * 100, 6)))
 
+    # Cash amount = current_value × cash_pct / 100
+    cash_pct_val = latest_nav.cash_pct if latest_nav.cash_pct is not None else Decimal("0")
+    cash_pct_clamped = max(Decimal("0"), cash_pct_val)
+    cash_amount = current * cash_pct_clamped / Decimal("100") if current else Decimal("0")
+
     return SummaryResponse(
         invested=dec2(invested),
         current_value=dec2(current),
@@ -115,6 +120,8 @@ async def get_summary(
         ytd_return=dec2(ytd_return),
         max_drawdown=dec2(risk.max_drawdown) if risk else "0.00",
         as_of_date=latest_nav.nav_date,
+        cash_amount=dec2(cash_amount),
+        cash_pct=dec2(cash_pct_clamped),
     )
 
 
@@ -228,6 +235,11 @@ async def get_nav_series(
             clamped = max(Decimal("0"), min(Decimal("100"), row.cash_pct))
             cash = dec2(clamped)
 
+        # Include cash flow amount if this date has an inflow/outflow
+        cf_str: str | None = None
+        if row.nav_date in flow_map:
+            cf_str = dec2(Decimal(str(flow_map[row.nav_date])))
+
         points.append(NavSeriesPoint(
             date=row.nav_date,
             nav=dec2(row.current_value),
@@ -235,6 +247,7 @@ async def get_nav_series(
             invested=dec2(row.invested_amount) if row.invested_amount is not None else None,
             benchmark_raw=bench_raw,
             cash_pct=cash,
+            cash_flow=cf_str,
         ))
     return points
 

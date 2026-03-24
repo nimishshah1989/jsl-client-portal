@@ -16,6 +16,8 @@ class SummaryResponse(BaseModel):
     ytd_return: str
     max_drawdown: str
     as_of_date: dt.date
+    cash_amount: str | None = None   # Current cash in ₹ (from Cash & Cash Equivalent)
+    cash_pct: str | None = None      # Current cash as % of NAV
 
 
 class NavSeriesPoint(BaseModel):
@@ -33,6 +35,7 @@ class NavSeriesPoint(BaseModel):
     invested: str | None = None
     benchmark_raw: str | None = None
     cash_pct: str | None = None
+    cash_flow: str | None = None  # Non-null on dates with inflow/outflow (₹ amount, negative=outflow)
 
 
 class PerformanceRow(BaseModel):

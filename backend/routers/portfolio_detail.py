@@ -121,11 +121,17 @@ async def get_risk_scorecard(
 async def _compute_monthly_returns(
     db: AsyncSession, client_id: int, portfolio_id: int
 ) -> list[dict]:
-    """Compute month-over-month returns from NAV series for heatmap grid."""
-    from backend.models.risk_metric import RiskMetric  # noqa: F811
+    """Compute month-over-month returns from TWR-adjusted NAV for heatmap grid.
+
+    Uses TWR (Time-Weighted Return) values so that cash inflows/outflows
+    are NOT counted as investment returns.
+    """
+    import numpy as np
+    import pandas as pd
+    from backend.services.risk_metrics import compute_twr_series
 
     stmt = (
-        select(NavSeries.nav_date, NavSeries.nav_value)
+        select(NavSeries.nav_date, NavSeries.nav_value, NavSeries.invested_amount)
         .where(NavSeries.client_id == client_id)
         .where(NavSeries.portfolio_id == portfolio_id)
         .order_by(NavSeries.nav_date)
@@ -134,11 +140,18 @@ async def _compute_monthly_returns(
     if len(rows) < 2:
         return []
 
-    # Group by (year, month) → take last NAV of each month
-    monthly_last: dict[tuple[int, int], Decimal] = {}
-    for nav_date, nav_value in rows:
-        key = (nav_date.year, nav_date.month)
-        monthly_last[key] = nav_value
+    # Build DataFrame and compute TWR series (adjusts for corpus changes)
+    nav_df = pd.DataFrame(
+        [(r[0], float(r[1]), float(r[2])) for r in rows],
+        columns=["nav_date", "nav_value", "invested_amount"],
+    )
+    nav_df["twr_value"] = compute_twr_series(nav_df)
+
+    # Group by (year, month) → take last TWR value of each month
+    monthly_last: dict[tuple[int, int], float] = {}
+    for _, row in nav_df.iterrows():
+        key = (row["nav_date"].year, row["nav_date"].month)
+        monthly_last[key] = row["twr_value"]
 
     sorted_keys = sorted(monthly_last.keys())
     results: list[dict] = []
@@ -148,7 +161,7 @@ async def _compute_monthly_returns(
         prev_val = monthly_last[prev_key]
         curr_val = monthly_last[curr_key]
         if prev_val and prev_val > 0:
-            ret = float((curr_val - prev_val) / prev_val * 100)
+            ret = ((curr_val - prev_val) / prev_val) * 100
             year, month = curr_key
             results.append({
                 "year": year,

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useHoldings } from '@/hooks/usePortfolio';
+import { useHoldings, useSummary } from '@/hooks/usePortfolio';
 import { formatINR, formatINRShort, formatPct, pnlColor } from '@/lib/format';
 import { SECTOR_COLORS } from '@/lib/constants';
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
@@ -32,6 +32,7 @@ export default function HoldingsTable() {
   };
   const apiSort = SORT_MAP[sort] || 'weight';
   const { data, loading, error } = useHoldings(apiSort, order, '');
+  const { data: summaryData } = useSummary();
 
   function handleSort(field) {
     if (sort === field) {
@@ -59,6 +60,16 @@ export default function HoldingsTable() {
   }
 
   const holdings = data?.holdings || data || [];
+
+  // Compute totals for footer row
+  const totals = holdings.reduce(
+    (acc, h) => ({
+      current_value: acc.current_value + (Number(h.current_value) || 0),
+      unrealized_pnl: acc.unrealized_pnl + (Number(h.unrealized_pnl) || 0),
+      weight_pct: acc.weight_pct + (Number(h.weight_pct) || 0),
+    }),
+    { current_value: 0, unrealized_pnl: 0, weight_pct: 0 }
+  );
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
@@ -146,6 +157,37 @@ export default function HoldingsTable() {
               ))
             )}
           </tbody>
+          {holdings.length > 0 && (
+            <tfoot>
+              <tr className="bg-slate-50 border-t-2 border-slate-300">
+                <td colSpan={5} className="px-3 py-2.5 text-xs font-semibold text-slate-700">
+                  Total ({holdings.length} holdings)
+                </td>
+                <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs font-semibold text-slate-800">
+                  {formatINRShort(totals.current_value)}
+                </td>
+                <td className={`px-3 py-2.5 text-right font-mono tabular-nums text-xs font-semibold ${pnlColor(totals.unrealized_pnl)}`}>
+                  {formatINRShort(totals.unrealized_pnl)}
+                </td>
+                <td className="px-3 py-2.5" />
+                <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs font-semibold text-slate-700">
+                  {formatPct(totals.weight_pct, 1)}
+                </td>
+              </tr>
+              {summaryData?.ledger_cash != null && Number(summaryData.ledger_cash) > 0 && (
+                <tr className="border-t border-slate-200">
+                  <td colSpan={5} className="px-3 py-2 text-xs text-slate-500">
+                    Cash on Ledger
+                    <span className="text-slate-400 ml-1">(as of {summaryData.as_of_date || '--'})</span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums text-xs text-slate-600">
+                    {formatINRShort(summaryData.ledger_cash)}
+                  </td>
+                  <td colSpan={3} className="px-3 py-2" />
+                </tr>
+              )}
+            </tfoot>
+          )}
         </table>
       </div>
     </div>

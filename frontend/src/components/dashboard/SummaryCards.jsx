@@ -48,8 +48,8 @@ export default function SummaryCards() {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-        {Array.from({ length: 6 }).map((_, i) => (
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+        {Array.from({ length: 7 }).map((_, i) => (
           <SkeletonCard key={i} />
         ))}
       </div>
@@ -119,10 +119,18 @@ export default function SummaryCards() {
       iconColor: 'bg-red-50',
       valueColor: 'text-red-600',
     },
+    {
+      icon: Banknote,
+      label: 'Cash Position',
+      value: formatINRShort(data.cash_amount),
+      subtitle: data.cash_pct != null ? `${Number(data.cash_pct).toFixed(1)}% of portfolio` : '',
+      iconColor: 'bg-amber-50',
+      valueColor: 'text-slate-800',
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
       {cards.map((card) => (
         <StatCard key={card.label} {...card} />
       ))}

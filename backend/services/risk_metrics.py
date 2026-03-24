@@ -444,16 +444,38 @@ def market_correlation(
 
 def cash_metrics(nav_df: pd.DataFrame) -> dict:
     """
-    Cash position statistics from the Liquidity % column.
+    Cash position statistics.
+
+    Uses true cash = ETF + Cash + Bank when breakdown columns are available,
+    otherwise falls back to Liquidity % column.
 
     Returns avg_cash_held, max_cash_held, current_cash (all in %).
     """
-    if "cash_pct" not in nav_df.columns or len(nav_df) == 0:
+    if len(nav_df) == 0:
         return {"avg_cash_held": 0.0, "max_cash_held": 0.0, "current_cash": 0.0}
 
-    cash = nav_df["cash_pct"].astype(float)
+    has_breakdown = all(
+        col in nav_df.columns for col in ("etf_value", "cash_value", "bank_balance")
+    )
+    nav_vals = nav_df["nav_value"].astype(float)
+
+    if has_breakdown and nav_df["etf_value"].sum() + nav_df["cash_value"].sum() > 0:
+        # True cash = ETF (LIQUIDBEES) + ledger cash + bank balance
+        total_cash = (
+            nav_df["etf_value"].astype(float)
+            + nav_df["cash_value"].astype(float)
+            + nav_df["bank_balance"].astype(float)
+        )
+        # Cash as % of NAV for each day
+        cash_pct = (total_cash / nav_vals.replace(0, float("nan"))) * 100
+        cash_pct = cash_pct.fillna(0).clip(lower=0)
+    elif "cash_pct" in nav_df.columns:
+        cash_pct = nav_df["cash_pct"].astype(float)
+    else:
+        return {"avg_cash_held": 0.0, "max_cash_held": 0.0, "current_cash": 0.0}
+
     return {
-        "avg_cash_held": float(cash.mean()),
-        "max_cash_held": float(cash.max()),
-        "current_cash": float(cash.iloc[-1]),
+        "avg_cash_held": float(cash_pct.mean()),
+        "max_cash_held": float(cash_pct.max()),
+        "current_cash": float(cash_pct.iloc[-1]),
     }

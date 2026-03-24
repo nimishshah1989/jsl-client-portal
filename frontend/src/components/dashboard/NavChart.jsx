@@ -224,6 +224,10 @@ export default function NavChart() {
           />
         </ComposedChart>
       </ResponsiveContainer>
+
+      <p className="text-xs text-slate-400 mt-2 px-1">
+        Cash % includes ledger cash, bank balance, and liquid ETF instruments (LIQUIDBEES, LIQUIDETF).
+      </p>
     </div>
   );
 }

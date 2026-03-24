@@ -66,25 +66,32 @@ export default function GrowthViz() {
     );
   }
 
-  const invested = data.invested || 0;
+  const invested = Number(data.invested) || 0;
+  const portfolio = Number(data.portfolio) || 0;
+  const nifty = Number(data.nifty) || 0;
+  const fd = Number(data.fd) || 0;
   const chartData = [
     { name: 'Invested', value: invested, return_pct: null },
     {
       name: 'Portfolio',
-      value: data.portfolio,
-      return_pct: invested > 0 ? ((data.portfolio / invested) - 1) * 100 : 0,
+      value: portfolio,
+      return_pct: invested > 0 ? ((portfolio / invested) - 1) * 100 : 0,
     },
     {
       name: 'NIFTY 50',
-      value: data.nifty,
-      return_pct: invested > 0 ? ((data.nifty / invested) - 1) * 100 : 0,
+      value: nifty,
+      return_pct: invested > 0 ? ((nifty / invested) - 1) * 100 : 0,
     },
     {
       name: 'Fixed Deposit',
-      value: data.fd,
-      return_pct: invested > 0 ? ((data.fd / invested) - 1) * 100 : 0,
+      value: fd,
+      return_pct: invested > 0 ? ((fd / invested) - 1) * 100 : 0,
     },
   ];
+
+  // Y-axis domain: start from 0, add 15% headroom above max for label space
+  const maxVal = Math.max(...chartData.map((d) => d.value));
+  const yMax = Math.ceil(maxVal * 1.15);
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
@@ -95,23 +102,29 @@ export default function GrowthViz() {
         {formatINRShort(invested)} invested &mdash; comparison across instruments
       </p>
 
-      <ResponsiveContainer width="100%" height={240} className="sm:!h-[280px]">
-        <BarChart data={chartData} margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
+      <ResponsiveContainer width="100%" height={260} className="sm:!h-[300px]">
+        <BarChart
+          data={chartData}
+          margin={{ top: 30, right: 20, left: 10, bottom: 5 }}
+          barCategoryGap="25%"
+        >
           <CartesianGrid strokeDasharray="3 3" stroke={CHART_COLORS.grid} vertical={false} />
           <XAxis
             dataKey="name"
-            tick={{ fontSize: 11, fill: '#64748b' }}
+            tick={{ fontSize: 12, fill: '#64748b', fontWeight: 500 }}
             tickLine={false}
             axisLine={{ stroke: '#e2e8f0' }}
           />
           <YAxis
-            tick={{ fontSize: 11, fill: '#94a3b8' }}
+            tick={{ fontSize: 10, fill: '#94a3b8' }}
             tickLine={false}
             axisLine={false}
+            domain={[0, yMax]}
             tickFormatter={(v) => formatINRShort(v)}
+            width={65}
           />
           <Tooltip content={<CustomTooltip />} />
-          <Bar dataKey="value" radius={[6, 6, 0, 0]} maxBarSize={60}>
+          <Bar dataKey="value" radius={[6, 6, 0, 0]} maxBarSize={80} barSize={50}>
             {chartData.map((entry) => (
               <Cell key={entry.name} fill={BAR_COLORS[entry.name] || '#94a3b8'} />
             ))}
@@ -120,6 +133,7 @@ export default function GrowthViz() {
               position="top"
               formatter={(v) => formatINRShort(v)}
               className="text-xs fill-slate-600 font-mono"
+              offset={8}
             />
           </Bar>
         </BarChart>

@@ -16,8 +16,9 @@ class SummaryResponse(BaseModel):
     ytd_return: str
     max_drawdown: str
     as_of_date: dt.date
-    cash_amount: str | None = None   # Current cash in ₹ (from Cash & Cash Equivalent)
-    cash_pct: str | None = None      # Current cash as % of NAV
+    cash_amount: str | None = None   # Total cash in ₹ (ledger + ETF + bank)
+    cash_pct: str | None = None      # Total cash as % of NAV
+    ledger_cash: str | None = None   # Ledger cash only (cash + bank, no ETF)
 
 
 class NavSeriesPoint(BaseModel):

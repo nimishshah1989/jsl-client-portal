@@ -106,10 +106,16 @@ async def get_summary(
                 twr *= nav_vals[i] / prev
         ytd_return = Decimal(str(round((twr - 1) * 100, 6)))
 
-    # Cash amount = current_value × cash_pct / 100
-    cash_pct_val = latest_nav.cash_pct if latest_nav.cash_pct is not None else Decimal("0")
-    cash_pct_clamped = max(Decimal("0"), cash_pct_val)
-    cash_amount = current * cash_pct_clamped / Decimal("100") if current else Decimal("0")
+    # True cash = Cash + ETF (LIQUIDBEES) + Bank Balance
+    # The PMS file's Liquidity% excludes ETF, so we compute from components.
+    etf = latest_nav.etf_value if latest_nav.etf_value is not None else Decimal("0")
+    cash_val = latest_nav.cash_value if latest_nav.cash_value is not None else Decimal("0")
+    bank = latest_nav.bank_balance if latest_nav.bank_balance is not None else Decimal("0")
+    ledger_cash = cash_val + bank  # Cash on books (no ETF)
+    cash_amount = etf + ledger_cash  # Total cash position
+    nav_val = latest_nav.nav_value if latest_nav.nav_value and latest_nav.nav_value != Decimal("0") else Decimal("1")
+    cash_pct_computed = cash_amount / nav_val * Decimal("100")
+    cash_pct_clamped = max(Decimal("0"), cash_pct_computed)
 
     return SummaryResponse(
         invested=dec2(invested),
@@ -122,6 +128,7 @@ async def get_summary(
         as_of_date=latest_nav.nav_date,
         cash_amount=dec2(cash_amount),
         cash_pct=dec2(cash_pct_clamped),
+        ledger_cash=dec2(ledger_cash),
     )
 
 
@@ -229,9 +236,17 @@ async def get_nav_series(
                 bench_equiv = dec2(Decimal(str(nifty_units * bench_price)))
             bench_raw = dec2(row.benchmark_value / first_bench * Decimal("100"))
 
-        # Clamp cash_pct to [0, 100]
+        # True cash % = (ETF + Cash + Bank) / NAV × 100
+        # Falls back to Liquidity% if breakdown columns are not populated
         cash: str | None = None
-        if row.cash_pct is not None:
+        etf_v = row.etf_value or Decimal("0")
+        cash_v = row.cash_value or Decimal("0")
+        bank_v = row.bank_balance or Decimal("0")
+        total_cash = etf_v + cash_v + bank_v
+        if total_cash > 0 and row.nav_value and row.nav_value != Decimal("0"):
+            true_pct = total_cash / row.nav_value * Decimal("100")
+            cash = dec2(max(Decimal("0"), min(Decimal("100"), true_pct)))
+        elif row.cash_pct is not None:
             clamped = max(Decimal("0"), min(Decimal("100"), row.cash_pct))
             cash = dec2(clamped)
 

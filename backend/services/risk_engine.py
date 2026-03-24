@@ -304,7 +304,10 @@ async def run_risk_engine(
     result = await db_session.execute(
         text("""
             SELECT nav_date, nav_value, invested_amount, current_value,
-                   benchmark_value, cash_pct
+                   benchmark_value, cash_pct,
+                   COALESCE(etf_value, 0) AS etf_value,
+                   COALESCE(cash_value, 0) AS cash_value,
+                   COALESCE(bank_balance, 0) AS bank_balance
             FROM cpp_nav_series
             WHERE client_id = :cid AND portfolio_id = :pid
             ORDER BY nav_date ASC
@@ -319,10 +322,11 @@ async def run_risk_engine(
 
     nav_df = pd.DataFrame(rows, columns=[
         "nav_date", "nav_value", "invested_amount", "current_value",
-        "benchmark_value", "cash_pct",
+        "benchmark_value", "cash_pct", "etf_value", "cash_value", "bank_balance",
     ])
     nav_df["nav_date"] = pd.to_datetime(nav_df["nav_date"])
-    for col in ["nav_value", "invested_amount", "current_value", "benchmark_value", "cash_pct"]:
+    for col in ["nav_value", "invested_amount", "current_value", "benchmark_value",
+                 "cash_pct", "etf_value", "cash_value", "bank_balance"]:
         nav_df[col] = pd.to_numeric(nav_df[col], errors="coerce").fillna(0)
     nav_df = nav_df.sort_values("nav_date").reset_index(drop=True)
 

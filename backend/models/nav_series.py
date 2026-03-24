@@ -50,6 +50,15 @@ class NavSeries(Base):
     cash_pct: Mapped[Decimal | None] = mapped_column(
         Numeric(8, 4), nullable=True, comment="Liquidity % from NAV file"
     )
+    etf_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 2), nullable=True, comment="Investments in ETF (LIQUIDBEES etc)"
+    )
+    cash_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 2), nullable=True, comment="Cash And Cash Equivalent from NAV file"
+    )
+    bank_balance: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 2), nullable=True, comment="Bank Balance from NAV file"
+    )
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

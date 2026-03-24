@@ -117,14 +117,17 @@ async def upsert_nav_rows(
             text("""
                 INSERT INTO cpp_nav_series
                     (client_id, portfolio_id, nav_date, nav_value, invested_amount,
-                     current_value, cash_pct)
-                VALUES (:cid, :pid, :nd, :nv, :ia, :cv, :cp)
+                     current_value, cash_pct, etf_value, cash_value, bank_balance)
+                VALUES (:cid, :pid, :nd, :nv, :ia, :cv, :cp, :etf, :cash, :bank)
                 ON CONFLICT (client_id, portfolio_id, nav_date)
                 DO UPDATE SET
                     nav_value = EXCLUDED.nav_value,
                     invested_amount = EXCLUDED.invested_amount,
                     current_value = EXCLUDED.current_value,
-                    cash_pct = EXCLUDED.cash_pct
+                    cash_pct = EXCLUDED.cash_pct,
+                    etf_value = EXCLUDED.etf_value,
+                    cash_value = EXCLUDED.cash_value,
+                    bank_balance = EXCLUDED.bank_balance
             """),
             {
                 "cid": client_id,
@@ -134,6 +137,9 @@ async def upsert_nav_rows(
                 "ia": rec["corpus"],
                 "cv": rec["nav"],
                 "cp": rec["liquidity_pct"],
+                "etf": rec.get("etf_value", _ZERO),
+                "cash": rec.get("cash_value", _ZERO),
+                "bank": rec.get("bank_balance", _ZERO),
             },
         )
         count += 1

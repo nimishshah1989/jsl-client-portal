@@ -244,7 +244,10 @@ async def get_allocation(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AllocationResponse:
-    """Holdings grouped by asset class and sector."""
+    """Holdings grouped by sector. Every holding maps to a sector.
+
+    LIQUID* instruments → 'Cash', GOLDBEES/SILVERBEES → 'Metals', etc.
+    """
     client_id: int = user["client_id"]
     portfolio = await get_default_portfolio(db, client_id)
 
@@ -256,34 +259,25 @@ async def get_allocation(
     )
     holdings = list((await db.execute(stmt)).scalars().all())
 
-    class_map: dict[str, Decimal] = {}
     sector_map: dict[str, Decimal] = {}
     total_value = Decimal("0")
 
     for h in holdings:
         val = h.current_value or Decimal("0")
         total_value += val
-        class_map[h.asset_class or "OTHER"] = class_map.get(h.asset_class or "OTHER", Decimal("0")) + val
-        # Exclude CASH holdings from sector breakdown (they have no sector)
-        if (h.asset_class or "").upper() != "CASH":
-            sector_map[h.sector or "Unknown"] = sector_map.get(h.sector or "Unknown", Decimal("0")) + val
+        sector = h.sector or "Other"
+        sector_map[sector] = sector_map.get(sector, Decimal("0")) + val
 
-    def _to_items(mapping: dict[str, Decimal]) -> list[AllocationItem]:
-        return [
-            AllocationItem(
-                name=name, value=dec2(value),
-                weight_pct=dec2(value / total_value * Decimal("100")
-                                if total_value != Decimal("0") else Decimal("0")),
-            )
-            for name, value in sorted(mapping.items(), key=lambda x: x[1], reverse=True)
-        ]
+    by_sector = [
+        AllocationItem(
+            name=name, value=dec2(value),
+            weight_pct=dec2(value / total_value * Decimal("100")
+                            if total_value != Decimal("0") else Decimal("0")),
+        )
+        for name, value in sorted(sector_map.items(), key=lambda x: x[1], reverse=True)
+    ]
 
-    # Omit sector breakdown when all holdings lack sector data
-    sector_items = _to_items(sector_map)
-    if len(sector_items) == 1 and sector_items[0].name == "Unknown":
-        sector_items = []
-
-    return AllocationResponse(by_class=_to_items(class_map), by_sector=sector_items)
+    return AllocationResponse(by_sector=by_sector)
 
 
 @router.get("/holdings", response_model=list[HoldingResponse])

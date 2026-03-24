@@ -46,6 +46,7 @@ jobs:
 
             echo "[3/5] Stopping old container..."
             docker rm -f client-portal 2>/dev/null || true
+            sleep 3  # Wait for removal to fully complete
 
             echo "[4/5] Starting new container..."
             docker run -d \
@@ -56,7 +57,13 @@ jobs:
               client-portal
 
             echo "[5/5] Health check..."
-            sleep 8
+            for i in 1 2 3 4 5; do
+              sleep 5
+              if curl -sf http://localhost:8007/api/health > /dev/null; then
+                break
+              fi
+              echo "Attempt $i: waiting for container..."
+            done
             if curl -sf http://localhost:8007/api/health > /dev/null; then
               echo "Health check PASSED"
             else

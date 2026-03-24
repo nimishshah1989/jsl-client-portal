@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.benchmark_service import fetch_and_align
 from backend.services.holdings_service import compute_holdings
+from backend.services.txn_parser import classify_sector
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,18 @@ async def recompute_holdings(
     if holdings_df.empty:
         return 0
 
+    # Preserve existing sector mappings before deleting holdings
+    existing_sectors: dict[str, str] = {}
+    sector_result = await db.execute(
+        text("""
+            SELECT symbol, sector FROM cpp_holdings
+            WHERE client_id = :cid AND portfolio_id = :pid AND sector IS NOT NULL AND sector != ''
+        """),
+        {"cid": client_id, "pid": portfolio_id},
+    )
+    for row in sector_result.fetchall():
+        existing_sectors[row[0]] = row[1]
+
     await db.execute(
         text("DELETE FROM cpp_holdings WHERE client_id = :cid AND portfolio_id = :pid"),
         {"cid": client_id, "pid": portfolio_id},
@@ -251,18 +264,22 @@ async def recompute_holdings(
 
     count = 0
     for _, h in holdings_df.iterrows():
+        symbol = h["symbol"]
+        # Sector priority: known ETF/LIQUID mapping → existing DB sector → None
+        sector = classify_sector(symbol) or existing_sectors.get(symbol) or None
         await db.execute(
             text("""
                 INSERT INTO cpp_holdings
-                    (client_id, portfolio_id, symbol, asset_class, quantity,
+                    (client_id, portfolio_id, symbol, asset_class, sector, quantity,
                      avg_cost, current_price, current_value, unrealized_pnl, weight_pct)
-                VALUES (:cid, :pid, :sym, :ac, :qty, :avgc, :cp, :cv, :pnl, :wt)
+                VALUES (:cid, :pid, :sym, :ac, :sec, :qty, :avgc, :cp, :cv, :pnl, :wt)
             """),
             {
                 "cid": client_id,
                 "pid": portfolio_id,
-                "sym": h["symbol"],
+                "sym": symbol,
                 "ac": h["asset_class"],
+                "sec": sector,
                 "qty": h["quantity"],
                 "avgc": h["avg_cost"],
                 "cp": h["current_price"],

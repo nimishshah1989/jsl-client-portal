@@ -44,8 +44,41 @@ _COL_SALE_AMOUNT = 18
 _NAME_PATTERN = re.compile(r"^(.+?)\s*\[(\w+)\]$")
 _DATE_PATTERN = re.compile(r"Date\s*:\s*(\d{2}/\d{2}/\d{2})")
 
-# Cash/liquid instruments — treated as asset_class = "CASH"
-CASH_INSTRUMENTS = frozenset({"LIQUIDBEES", "LIQUIDETF", "LIQUIDCASE", "LIQUIDPLUS"})
+# Sector mapping for instruments that can't be inferred from name alone.
+# Anything containing "LIQUID" (case-insensitive) → "Cash"
+# Gold/silver ETFs → "Metals"
+# ETF-style instruments → their underlying sector
+SYMBOL_SECTOR_MAP: dict[str, str] = {
+    "GOLDBEES": "Metals",
+    "GOLDCASE": "Metals",
+    "GOLDSHARE": "Metals",
+    "GOLDETF": "Metals",
+    "SILVERBEES": "Metals",
+    "SILVERETF": "Metals",
+    "SILVERSHARE": "Metals",
+    "GOLDHERA": "Metals",
+    "GOLDPETAL": "Metals",
+    "BANKBEES": "Banking",
+    "PSUBNKBEES": "Banking",
+    "NIFTYBEES": "Diversified",
+    "JUNIORBEES": "Diversified",
+    "CPSEETF": "Diversified",
+    "PHARMABEES": "Pharma",
+    "FMCGIETF": "FMCG",
+    "HNGSNGBEES": "Diversified",
+}
+
+
+def classify_sector(symbol: str) -> str:
+    """Determine sector from symbol name.
+
+    - Any symbol containing 'liquid' (case-insensitive) → 'Cash'
+    - Known ETFs/commodities → mapped sector
+    - Everything else → empty string (filled during holdings ingestion from DB)
+    """
+    if "LIQUID" in symbol.upper():
+        return "Cash"
+    return SYMBOL_SECTOR_MAP.get(symbol, "")
 
 
 def _safe_decimal(value: object) -> Decimal:
@@ -193,7 +226,8 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
         symbol, inst_type = parse_script(script_str)
         stno = str(cells[_COL_STNO]).strip() if cells[_COL_STNO] is not None else ""
         exchange = str(cells[_COL_EXCH]).strip() if cells[_COL_EXCH] is not None else ""
-        asset_class = "CASH" if symbol in CASH_INSTRUMENTS else "EQUITY"
+        asset_class = "CASH" if "LIQUID" in symbol.upper() else "EQUITY"
+        sector = classify_sector(symbol)
 
         buy_qty = _safe_float(cells[_COL_BUY_QTY])
         sale_qty = _safe_float(cells[_COL_SALE_QTY])
@@ -215,6 +249,7 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
                     "cost_rate": _safe_decimal(cells[_COL_BUY_COST_RATE]),
                     "amount": _safe_decimal(cells[_COL_BUY_AMOUNT]),
                     "asset_class": asset_class,
+                    "sector": sector,
                 }
             )
 
@@ -234,6 +269,7 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
                     "cost_rate": _safe_decimal(cells[_COL_SALE_COST_RATE]),
                     "amount": _safe_decimal(cells[_COL_SALE_AMOUNT]),
                     "asset_class": asset_class,
+                    "sector": sector,
                 }
             )
 

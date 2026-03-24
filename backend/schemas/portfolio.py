@@ -71,8 +71,7 @@ class AllocationItem(BaseModel):
 
 
 class AllocationResponse(BaseModel):
-    """GET /api/portfolio/allocation."""
-    by_class: list[AllocationItem]
+    """GET /api/portfolio/allocation — sector-only breakdown."""
     by_sector: list[AllocationItem]
 
 

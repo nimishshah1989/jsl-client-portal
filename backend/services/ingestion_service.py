@@ -20,6 +20,7 @@ from backend.services.ingestion_helpers import (
     log_upload,
     recompute_holdings,
     update_benchmark_values,
+    upsert_cash_flows,
     upsert_nav_rows,
     upsert_transactions,
 )
@@ -216,6 +217,73 @@ async def ingest_transaction_file(
 
     logger.info(
         "Transaction ingestion complete: %d rows, %d failed, %d clients",
+        upload.rows_processed, upload.rows_failed, upload.clients_affected,
+    )
+    return upload
+
+
+async def ingest_cashflow_file(
+    filepath: str | Path,
+    uploaded_by: int,
+    db: AsyncSession,
+) -> UploadResult:
+    """
+    Cash flow ingestion pipeline:
+      1. Parse .xlsx with cashflow_parser
+      2. For each client: find-or-create client + portfolio
+      3. Upsert cash flow records
+      4. Log upload
+    """
+    filepath = Path(filepath)
+    upload = UploadResult(file_type="CASHFLOWS", filename=filepath.name)
+
+    logger.info("Starting cash flow ingestion: %s", filepath.name)
+    try:
+        from backend.services.cashflow_parser import parse_cashflow_file
+        records = parse_cashflow_file(filepath)
+    except Exception as exc:
+        upload.errors.append({"stage": "parse", "error": str(exc)})
+        logger.error("Cash flow parse failed: %s", exc)
+        await _log(db, upload, uploaded_by)
+        return upload
+
+    if not records:
+        upload.errors.append({"stage": "parse", "error": "No records parsed from file"})
+        await _log(db, upload, uploaded_by)
+        return upload
+
+    clients = _group_by_client(records)
+    upload.clients_affected = len(clients)
+    upload.client_codes = list(clients.keys())
+
+    for idx, (client_code, client_records) in enumerate(clients.items()):
+        client_name = client_records[0]["client_name"]
+        logger.info("Processing cash flows for %s (%d of %d)", client_code, idx + 1, len(clients))
+
+        try:
+            client_id = await find_or_create_client(db, client_code, client_name)
+            inception = min(r["date"] for r in client_records)
+            portfolio_id = await find_or_create_portfolio(db, client_id, inception)
+
+            cf_count = await upsert_cash_flows(db, client_id, portfolio_id, client_records)
+            upload.rows_processed += cf_count
+            await db.commit()
+
+        except Exception as exc:
+            upload.rows_failed += len(client_records)
+            upload.errors.append({
+                "stage": "client_processing",
+                "client_code": client_code,
+                "error": str(exc),
+            })
+            logger.error("Failed processing cash flows for %s: %s", client_code, exc, exc_info=True)
+            await db.rollback()
+
+    await _log(db, upload, uploaded_by)
+    await db.commit()
+
+    logger.info(
+        "Cash flow ingestion complete: %d rows processed, %d failed, %d clients",
         upload.rows_processed, upload.rows_failed, upload.clients_affected,
     )
     return upload

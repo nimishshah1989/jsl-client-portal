@@ -7,9 +7,9 @@ cash flows equal to zero.
 
 Formula: sum(CF_i / (1 + r) ^ ((date_i - date_0) / 365)) = 0
 
-Cash flows are derived from Corpus changes in the NAV file:
-  - Corpus goes from 3.33L to 5.33L on date X -> CF = +2.00L on date X
-  - Final entry: CF = -(current portfolio value) on latest date
+Cash flows can come from two sources:
+  1. Actual cash flow records in cpp_cash_flows (preferred)
+  2. Inferred from Corpus changes in the NAV file (fallback)
 """
 
 import logging
@@ -21,10 +21,41 @@ from scipy.optimize import brentq
 logger = logging.getLogger(__name__)
 
 
-def extract_cash_flows(nav_df: pd.DataFrame) -> list[tuple[datetime, float]]:
+def extract_cash_flows_from_db(
+    cashflow_records: list[tuple],  # (flow_date, flow_type, amount)
+    terminal_date: datetime,
+    terminal_value: float,
+) -> list[tuple[datetime, float]]:
     """
-    Extract investment cash flows from corpus changes in NAV data.
+    Build XIRR cash flow list from actual cash flow records in cpp_cash_flows.
 
+    INFLOW = client investing money -> positive cash flow (money going IN to PMS)
+    OUTFLOW = client withdrawing / fees -> negative cash flow (money coming OUT)
+    Terminal = -(current portfolio value) on latest date
+    """
+    flows: list[tuple[datetime, float]] = []
+    for flow_date, flow_type, amount in cashflow_records:
+        if isinstance(flow_date, pd.Timestamp):
+            flow_date = flow_date.to_pydatetime()
+        amt = float(amount)
+        if flow_type == "INFLOW":
+            flows.append((flow_date, amt))
+        elif flow_type == "OUTFLOW":
+            flows.append((flow_date, -amt))
+
+    # Terminal value (negative — represents the current value you could withdraw)
+    if isinstance(terminal_date, pd.Timestamp):
+        terminal_date = terminal_date.to_pydatetime()
+    flows.append((terminal_date, -terminal_value))
+
+    return flows
+
+
+def extract_cash_flows_from_corpus(nav_df: pd.DataFrame) -> list[tuple[datetime, float]]:
+    """
+    Fallback: extract investment cash flows from corpus changes in NAV data.
+
+    Used when no actual cash flow records exist in cpp_cash_flows.
     The Corpus column in the NAV file tracks total invested amount.
     When corpus increases, a new investment was made.
     When corpus decreases, a redemption occurred.

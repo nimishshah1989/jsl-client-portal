@@ -223,7 +223,26 @@ CREATE TABLE IF NOT EXISTS cpp_upload_log (
 );
 
 -- ══════════════════════════════════════════════
--- 9. SEED ADMIN USER
+-- 9. CASH FLOWS (capital inflows/outflows from PMS backoffice)
+-- ══════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS cpp_cash_flows (
+    id              SERIAL PRIMARY KEY,
+    client_id       INTEGER NOT NULL REFERENCES cpp_clients(id) ON DELETE CASCADE,
+    portfolio_id    INTEGER NOT NULL REFERENCES cpp_portfolios(id) ON DELETE CASCADE,
+    flow_date       DATE NOT NULL,
+    flow_type       VARCHAR(20) NOT NULL,       -- INFLOW, OUTFLOW
+    amount          NUMERIC(18, 2) NOT NULL,
+    description     VARCHAR(300),
+    source_ucc      VARCHAR(50),
+    created_at      TIMESTAMP DEFAULT NOW(),
+    UNIQUE(client_id, portfolio_id, flow_date, flow_type, amount)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cpp_cashflows_client
+    ON cpp_cash_flows(client_id, portfolio_id, flow_date);
+
+-- ══════════════════════════════════════════════
+-- 10. SEED ADMIN USER
 -- Password: change-me-immediately (bcrypt hash below)
 -- Generate new hash: python -c "from passlib.context import CryptContext; print(CryptContext(schemes=['bcrypt']).hash('change-me-immediately'))"
 -- ══════════════════════════════════════════════

@@ -217,10 +217,13 @@ async def get_xirr(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> XIRRResponse:
-    """XIRR based on corpus changes detected in NAV series."""
+    """XIRR based on actual cash flows (preferred) or corpus changes (fallback)."""
+    from sqlalchemy import text as sa_text
+
     client_id: int = user["client_id"]
     portfolio = await get_default_portfolio(db, client_id)
 
+    # Fetch NAV data for terminal value and fallback
     stmt = (
         select(NavSeries)
         .where(NavSeries.client_id == client_id)
@@ -231,23 +234,54 @@ async def get_xirr(
     if len(navs) < 2:
         raise HTTPException(status_code=404, detail="Insufficient NAV data for XIRR")
 
-    cash_flows: list[tuple[dt.date, Decimal]] = []
-    prev_corpus = navs[0].invested_amount
-    cash_flows.append((navs[0].nav_date, -prev_corpus))
+    # Try real cash flows from cpp_cash_flows first
+    cf_result = await db.execute(
+        sa_text("""
+            SELECT flow_date, flow_type, amount
+            FROM cpp_cash_flows
+            WHERE client_id = :cid AND portfolio_id = :pid
+            ORDER BY flow_date ASC
+        """),
+        {"cid": client_id, "pid": portfolio.id},
+    )
+    cf_rows = cf_result.fetchall()
 
-    for nav_row in navs[1:]:
-        if nav_row.invested_amount != prev_corpus:
-            change = nav_row.invested_amount - prev_corpus
-            cash_flows.append((nav_row.nav_date, -change))
-            prev_corpus = nav_row.invested_amount
+    cash_flow_source: str
+    if cf_rows:
+        # Use actual cash flow records
+        cash_flow_source = "actual"
+        terminal_date = navs[-1].nav_date
+        terminal_value = float(navs[-1].current_value)
+        cash_flows: list[tuple[dt.date, Decimal]] = []
+        for flow_date, flow_type, amount in cf_rows:
+            amt = Decimal(str(amount))
+            if flow_type == "INFLOW":
+                cash_flows.append((flow_date, -amt))  # money in = negative for XIRR
+            elif flow_type == "OUTFLOW":
+                cash_flows.append((flow_date, amt))  # money out = positive for XIRR
+        cash_flows.append((terminal_date, Decimal(str(terminal_value))))
+    else:
+        # Fallback: infer from corpus changes
+        cash_flow_source = "inferred"
+        cash_flows = []
+        prev_corpus = navs[0].invested_amount
+        cash_flows.append((navs[0].nav_date, -prev_corpus))
 
-    cash_flows.append((navs[-1].nav_date, navs[-1].current_value))
+        for nav_row in navs[1:]:
+            if nav_row.invested_amount != prev_corpus:
+                change = nav_row.invested_amount - prev_corpus
+                cash_flows.append((nav_row.nav_date, -change))
+                prev_corpus = nav_row.invested_amount
+
+        cash_flows.append((navs[-1].nav_date, navs[-1].current_value))
+
     xirr_val = _compute_xirr(cash_flows) if len(cash_flows) >= 2 else Decimal("0")
 
     return XIRRResponse(
         xirr=dec2(xirr_val), cash_flows_count=len(cash_flows),
         first_investment_date=navs[0].nav_date,
         total_invested=dec2(navs[-1].invested_amount),
+        cash_flow_source=cash_flow_source,
     )
 
 
@@ -346,7 +380,7 @@ def _build_methodology_metrics(  # noqa: ANN001
             value=opt2(risk.xirr),
             inputs={
                 "method": "scipy.optimize.brentq",
-                "cash_flow_source": "Corpus changes in NAV file",
+                "cash_flow_source": "Actual PMS cash flow records (inflows/outflows with exact dates and amounts). Falls back to corpus-change detection from NAV data if cash flow files are not uploaded.",
                 "first_date": str(first_nav.nav_date) if first_nav else None,
                 "latest_date": str(last_nav.nav_date) if last_nav else None,
                 "num_cash_flows": inception_days,  # approximate; exact count unavailable here

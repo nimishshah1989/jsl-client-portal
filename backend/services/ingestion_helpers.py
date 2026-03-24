@@ -292,6 +292,44 @@ async def recompute_holdings(
     return count
 
 
+async def upsert_cash_flows(
+    db: AsyncSession,
+    client_id: int,
+    portfolio_id: int,
+    records: list[dict],
+) -> int:
+    """Upsert cash flow records for a single client. Returns count."""
+    if not records:
+        return 0
+
+    count = 0
+    for rec in records:
+        flow_date = rec["date"]
+        await db.execute(
+            text("""
+                INSERT INTO cpp_cash_flows
+                    (client_id, portfolio_id, flow_date, flow_type, amount,
+                     description, source_ucc)
+                VALUES (:cid, :pid, :fd, :ft, :amt, :desc, :ucc)
+                ON CONFLICT (client_id, portfolio_id, flow_date, flow_type, amount)
+                DO UPDATE SET
+                    description = EXCLUDED.description,
+                    source_ucc = EXCLUDED.source_ucc
+            """),
+            {
+                "cid": client_id,
+                "pid": portfolio_id,
+                "fd": flow_date,
+                "ft": rec["flow_type"],
+                "amt": rec["amount"],
+                "desc": rec.get("description", ""),
+                "ucc": rec.get("client_code", ""),
+            },
+        )
+        count += 1
+    return count
+
+
 async def log_upload(
     db: AsyncSession,
     file_type: str,

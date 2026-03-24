@@ -117,6 +117,18 @@ async def upload_transactions(
     )
 
 
+@router.post("/upload-cashflows", response_model=UploadResponse)
+async def upload_cashflows(
+    file: UploadFile,
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> UploadResponse:
+    """Upload cash flow file, parse, ingest to cpp_cash_flows."""
+    return await _save_and_ingest(
+        file, "ingest_cashflow_file", "CASHFLOWS", admin["client_id"], db,
+    )
+
+
 @router.post("/upload-preview", response_model=UploadPreviewResponse)
 async def upload_preview(
     file: UploadFile,

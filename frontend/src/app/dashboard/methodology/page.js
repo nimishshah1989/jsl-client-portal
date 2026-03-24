@@ -201,21 +201,25 @@ export default function MethodologyPage() {
         <AccordionItem title="XIRR (Extended Internal Rate of Return)" value={mv('xirr')}>
           <p>
             Your personalized return accounting for the exact timing and amount of each
-            investment you made. Unlike CAGR, XIRR reflects when you actually put money in.
+            investment you made. Unlike CAGR (which only uses start and end values), XIRR
+            reflects when you actually put money in and took money out.
           </p>
           <Formula>
             {'XIRR: Find rate r where Sum(CF_i / (1+r)^((date_i - date_0)/365)) = 0'}
           </Formula>
           <WorkedExample>
-            <p>Number of cash flows: {mi('xirr', 'num_cash_flows') || '--'}</p>
+            <p>Cash flow source: {mi('xirr', 'cash_flow_source') || 'Actual PMS records'}</p>
             <p>First investment date: {mi('xirr', 'first_date') || '--'}</p>
-            <p>Total invested: {mi('xirr', 'total_invested') || '--'}</p>
+            <p>Total invested: ₹{mi('xirr', 'total_invested') || '--'}</p>
             <p className="mt-2 font-semibold text-slate-800">
               = <span className="text-teal-600">{formatPct(mv('xirr'))}</span>
             </p>
           </WorkedExample>
           <Interpretation>
-            <p>Solved numerically using Brent's method (scipy.optimize.brentq).</p>
+            <p>Solved numerically using Brent's method. Cash flows are sourced from actual
+            PMS inflow/outflow records (capital additions and withdrawals with exact dates
+            and amounts). The terminal cash flow is the current portfolio value treated as
+            a final withdrawal.</p>
           </Interpretation>
         </AccordionItem>
       </div>
@@ -431,9 +435,8 @@ export default function MethodologyPage() {
       <div className="space-y-3">
         <AccordionItem title="NAV Calculation">
           <p>
-            NAV (Net Asset Value) is the total portfolio value reported daily by the PMS
-            backoffice system. It includes equity holdings at market price, cash and cash
-            equivalents, and bank balance.
+            NAV (Net Asset Value) is the total portfolio value reported daily. It includes
+            equity holdings at market price, cash and cash equivalents, and bank balance.
           </p>
         </AccordionItem>
 
@@ -441,8 +444,45 @@ export default function MethodologyPage() {
           <p>
             Time-Weighted Return normalizes both portfolio and benchmark to a starting value
             of 100, enabling fair comparison regardless of invested amounts or cash flows.
+            On days when new capital is added or withdrawn, the previous day's NAV is adjusted
+            by the cash flow amount before computing the daily return — so the TWR only reflects
+            market performance, not the effect of money moving in or out.
           </p>
-          <Formula>TWR Index = (Current NAV / Inception NAV) x 100</Formula>
+          <Formula>
+            {'Normal day: daily_return = (NAV_today / NAV_yesterday) - 1'}
+          </Formula>
+          <Formula>
+            {'Cash flow day: daily_return = (NAV_today / (NAV_yesterday + cash_flow)) - 1'}
+          </Formula>
+          <Formula>
+            {'TWR_t = TWR_{t-1} x (1 + daily_return_t), starting at 100'}
+          </Formula>
+        </AccordionItem>
+
+        <AccordionItem title="Benchmark Comparison (Cash-Flow Adjusted)">
+          <p>
+            The benchmark line on the portfolio chart answers: "What would my money be worth
+            if every rupee had been invested in {benchmark} instead, at the exact same time?"
+          </p>
+          <p>
+            On each date when capital was added or withdrawn, we simulate buying or selling
+            equivalent {benchmark} units at that day's index price. The benchmark value at any
+            point equals the total accumulated units multiplied by the current index price.
+          </p>
+          <Formula>
+            {'On inflow of ₹X on date D: nifty_units += X / Nifty_price_D'}
+          </Formula>
+          <Formula>
+            {'On outflow of ₹Y on date D: nifty_units -= Y / Nifty_price_D'}
+          </Formula>
+          <Formula>
+            {'Benchmark equivalent on date T = nifty_units x Nifty_price_T'}
+          </Formula>
+          <Interpretation>
+            <p>This ensures the portfolio vs benchmark comparison is fair — both lines reflect
+            the same money invested at the same times. Without this adjustment, new capital
+            would appear as outperformance.</p>
+          </Interpretation>
         </AccordionItem>
 
         <AccordionItem title="Holdings P&L (Weighted Average Cost)">
@@ -458,6 +498,18 @@ export default function MethodologyPage() {
             {'P&L = (Current Price - Avg Cost) x Quantity'}
           </Formula>
         </AccordionItem>
+
+        <AccordionItem title="Growth Comparison (Portfolio vs Nifty vs FD)">
+          <p>
+            Shows what your total invested capital would be worth today under three scenarios:
+            your actual portfolio, a {benchmark} index fund, or a Fixed Deposit at {n(rfr) || 7}% p.a.
+          </p>
+          <p>
+            For each cash flow (inflow or outflow), the same amount is simulated as invested in
+            {benchmark} or compounded at the FD rate from that date. This accounts for the timing
+            of multiple investments rather than treating all capital as a single lump sum.
+          </p>
+        </AccordionItem>
       </div>
 
       {/* Data Sources */}
@@ -465,11 +517,13 @@ export default function MethodologyPage() {
       <div className="space-y-3">
         <AccordionItem title="Data Sources">
           <ul className="list-disc list-inside space-y-1">
-            <li>NAV Data: PMS backoffice daily valuation reports</li>
+            <li>NAV Data: Daily valuation reports</li>
+            <li>Cash Flows: Actual capital inflow/outflow records with exact dates and amounts</li>
             <li>Benchmark: {benchmark} Total Return Index via market data feeds</li>
             <li>Risk-Free Rate: {rfr}% (India 10Y Govt Bond Yield proxy)</li>
             <li>Trading days per year: 252</li>
-            <li>Cash instruments: LIQUIDBEES, LIQUIDETF treated as cash</li>
+            <li>CAGR uses 365.25 days/year to account for leap years</li>
+            <li>Cash instruments: LIQUIDBEES, LIQUIDETF treated as cash equivalent</li>
             {asOf && <li>Data as of: {formatDate(asOf)}</li>}
           </ul>
         </AccordionItem>

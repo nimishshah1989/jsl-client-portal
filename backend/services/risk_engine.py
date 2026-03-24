@@ -39,7 +39,11 @@ from backend.services.risk_metrics import (
     ulcer_index,
     up_capture,
 )
-from backend.services.xirr_service import compute_xirr, extract_cash_flows
+from backend.services.xirr_service import (
+    compute_xirr,
+    extract_cash_flows_from_corpus,
+    extract_cash_flows_from_db,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +203,8 @@ def compute_all_metrics(
     beta_val = beta(port_ret, bench_ret)
     te_val = tracking_error(excess_ret)
 
-    # XIRR from corpus changes
+    # XIRR from corpus changes (fallback — may be overridden by real cash flows
+    # in run_risk_engine if cpp_cash_flows data exists)
     xirr_val = 0.0
     if "invested_amount" in nav_df.columns:
         xirr_df = pd.DataFrame({
@@ -207,7 +212,7 @@ def compute_all_metrics(
             "corpus": nav_df["invested_amount"].astype(float),
             "nav": nav_df["nav_value"].astype(float),
         })
-        cash_flows = extract_cash_flows(xirr_df)
+        cash_flows = extract_cash_flows_from_corpus(xirr_df)
         if len(cash_flows) >= 2:
             xirr_val = compute_xirr(cash_flows)
 
@@ -331,6 +336,29 @@ async def run_risk_engine(
     metrics = compute_all_metrics(nav_df, risk_free_rate)
     if not metrics:
         return {}
+
+    # 3b. Recompute XIRR using real cash flows if available in cpp_cash_flows
+    cf_result = await db_session.execute(
+        text("""
+            SELECT flow_date, flow_type, amount
+            FROM cpp_cash_flows
+            WHERE client_id = :cid AND portfolio_id = :pid
+            ORDER BY flow_date ASC
+        """),
+        {"cid": client_id, "pid": portfolio_id},
+    )
+    cf_rows = cf_result.fetchall()
+    if cf_rows:
+        terminal_date = nav_df["nav_date"].iloc[-1].to_pydatetime()
+        terminal_value = float(nav_df["nav_value"].iloc[-1])
+        real_flows = extract_cash_flows_from_db(cf_rows, terminal_date, terminal_value)
+        if len(real_flows) >= 2:
+            xirr_val = compute_xirr(real_flows)
+            metrics["xirr"] = xirr_val
+            logger.info(
+                "XIRR for client=%d portfolio=%d computed from %d actual cash flows",
+                client_id, portfolio_id, len(cf_rows),
+            )
 
     # 4. Compute drawdown series (uses twr_value via the column in nav_df)
     dd_df = compute_drawdown_series(nav_df)

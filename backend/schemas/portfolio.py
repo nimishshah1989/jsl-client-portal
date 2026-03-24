@@ -162,6 +162,7 @@ class XIRRResponse(BaseModel):
     cash_flows_count: int
     first_investment_date: dt.date | None = None
     total_invested: str
+    cash_flow_source: str = "inferred"  # "actual" or "inferred"
 
 
 class MethodologyMetricInput(BaseModel):

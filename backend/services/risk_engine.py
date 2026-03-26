@@ -73,7 +73,7 @@ _PERIOD_COL_MAP = {
     "Since Inception": "inception",
 }
 
-_RF_RATE = 7.00
+_RF_RATE = 6.50  # India 10Y govt bond yield proxy — must match methodology page
 
 
 def _slice_nav_df(nav_df: pd.DataFrame, days: int | None) -> pd.DataFrame:
@@ -194,9 +194,7 @@ def compute_all_metrics(
         total_days = 1
 
     # Core metrics (inception-to-date)
-    # For SI CAGR, use TWR_BASE=100 as start (not actual first unit_nav which
-    # may differ due to pre-inception gains). Matches FIE2 reference.
-    port_cagr = cagr(100.0, float(port_series.iloc[-1]), total_days)
+    port_cagr = cagr(float(port_series.iloc[0]), float(port_series.iloc[-1]), total_days)
     bench_cagr = cagr(float(bench_series.iloc[0]), float(bench_series.iloc[-1]), total_days)
     port_vol = annualized_volatility(port_ret)
     dd_result = max_drawdown(port_series)

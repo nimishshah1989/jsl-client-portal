@@ -36,7 +36,7 @@ async def aggregate_nav_series(
         return await get_aggregate_nav_series(db, range_filter=time_range)
     except Exception as exc:
         logger.exception("Failed to compute aggregate NAV series")
-        raise HTTPException(status_code=500, detail=f"Computation error: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to compute aggregate NAV series") from exc
 
 
 @router.get("/performance-table")
@@ -49,7 +49,7 @@ async def aggregate_performance_table(
         return await get_aggregate_performance_table(db)
     except Exception as exc:
         logger.exception("Failed to compute aggregate performance table")
-        raise HTTPException(status_code=500, detail=f"Computation error: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to compute aggregate performance table") from exc
 
 
 @router.get("/risk-scorecard")
@@ -62,7 +62,7 @@ async def aggregate_risk_scorecard(
         return await get_aggregate_risk_metrics(db)
     except Exception as exc:
         logger.exception("Failed to compute aggregate risk metrics")
-        raise HTTPException(status_code=500, detail=f"Computation error: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to compute aggregate risk metrics") from exc
 
 
 @router.get("/allocation")
@@ -75,7 +75,7 @@ async def aggregate_allocation(
         return await get_aggregate_allocation(db)
     except Exception as exc:
         logger.exception("Failed to compute aggregate allocation")
-        raise HTTPException(status_code=500, detail=f"Computation error: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to compute aggregate allocation") from exc
 
 
 @router.get("/monthly-returns")
@@ -88,4 +88,4 @@ async def aggregate_monthly_returns(
         return await get_aggregate_monthly_returns(db)
     except Exception as exc:
         logger.exception("Failed to compute aggregate monthly returns")
-        raise HTTPException(status_code=500, detail=f"Computation error: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to compute aggregate monthly returns") from exc

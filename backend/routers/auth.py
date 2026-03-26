@@ -65,7 +65,7 @@ async def login(
         value=token,
         httponly=True,
         secure=_SECURE_COOKIE,
-        samesite="lax",
+        samesite="strict",
         path="/",
         max_age=COOKIE_MAX_AGE,
     )
@@ -87,7 +87,7 @@ async def logout(response: Response) -> dict[str, str]:
         key="access_token",
         httponly=True,
         secure=_SECURE_COOKIE,
-        samesite="lax",
+        samesite="strict",
         path="/",
     )
     return {"message": "logged out"}

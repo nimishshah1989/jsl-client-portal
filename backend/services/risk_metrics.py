@@ -139,7 +139,7 @@ def annualized_volatility(daily_returns: pd.Series) -> float:
 
 def sharpe_ratio(
     daily_returns: pd.Series,
-    risk_free_rate: float = 7.00,
+    risk_free_rate: float = 6.50,
     trading_days: int = 252,
 ) -> float:
     """
@@ -161,7 +161,7 @@ def sharpe_ratio(
 
 def sortino_ratio(
     daily_returns: pd.Series,
-    risk_free_rate: float = 7.00,
+    risk_free_rate: float = 6.50,
     trading_days: int = 252,
 ) -> float:
     """

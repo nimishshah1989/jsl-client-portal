@@ -40,7 +40,7 @@ from backend.services.risk_metrics_analysis import (
 
 logger = logging.getLogger(__name__)
 
-RISK_FREE_RATE = 7.00  # India 10Y govt bond yield proxy
+RISK_FREE_RATE = 6.50  # India 10Y govt bond yield proxy — must match methodology page
 
 # In-memory cache for expensive composite index (TTL = 5 minutes)
 _CACHE_TTL = 300

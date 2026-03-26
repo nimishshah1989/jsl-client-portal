@@ -580,7 +580,7 @@ async def impersonate_client(
         value=token,
         httponly=True,
         secure=secure_cookie,
-        samesite="lax",
+        samesite="strict",
         path="/",
         max_age=48 * 3600,
     )

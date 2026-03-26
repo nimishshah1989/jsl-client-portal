@@ -8,6 +8,7 @@ using the same functions used for individual client metrics.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import numpy as np
@@ -40,6 +41,10 @@ from backend.services.risk_metrics_analysis import (
 logger = logging.getLogger(__name__)
 
 RISK_FREE_RATE = 7.00  # India 10Y govt bond yield proxy
+
+# In-memory cache for expensive composite index (TTL = 5 minutes)
+_CACHE_TTL = 300
+_cache: dict[str, Any] = {"ts": 0, "agg": None, "port": None, "bench": None}
 
 
 async def _fetch_aggregate_nav(db: AsyncSession) -> pd.DataFrame:
@@ -78,6 +83,27 @@ async def _fetch_aggregate_nav(db: AsyncSession) -> pd.DataFrame:
         columns=["nav_date", "total_aum", "total_invested",
                  "total_benchmark", "weighted_cash_pct"],
     )
+
+
+async def _get_cached_composite(db: AsyncSession) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    """Return (agg_df, port_composite, bench_composite) with 5-min TTL cache."""
+    now = time.time()
+    if now - _cache["ts"] < _CACHE_TTL and _cache["agg"] is not None:
+        return _cache["agg"], _cache["port"], _cache["bench"]
+
+    agg = await _fetch_aggregate_nav(db)
+    per_client = await _fetch_per_client_nav(db)
+    if per_client.empty:
+        port_s = pd.Series(dtype=float)
+        bench_s = pd.Series(dtype=float)
+    else:
+        port_s, bench_s = _build_composite_index(per_client)
+
+    _cache["ts"] = now
+    _cache["agg"] = agg
+    _cache["port"] = port_s
+    _cache["bench"] = bench_s
+    return agg, port_s, bench_s
 
 
 async def _fetch_per_client_nav(db: AsyncSession) -> pd.DataFrame:
@@ -186,22 +212,15 @@ async def get_aggregate_nav_series(
     adjusted for the same cash inflows/outflows as the actual portfolio.
     Cash %: AUM-weighted average cash allocation.
     """
-    agg = await _fetch_aggregate_nav(db)
+    agg, _, bench_composite = await _get_cached_composite(db)
     if agg.empty:
         return []
-
-    # Also build the composite index for Nifty-equivalent calculation
-    per_client = await _fetch_per_client_nav(db)
-    _, bench_composite = _build_composite_index(per_client) if not per_client.empty else (None, None)
 
     agg = _apply_range_filter(agg, range_filter)
     if agg.empty:
         return []
 
-    # Portfolio: actual total AUM in crores
     total_aum = agg["total_aum"].values
-    # Nifty equivalent: scale invested amount by benchmark composite growth
-    # This shows "what would all client money be worth if invested in Nifty"
     first_invested = agg["total_invested"].iloc[0]
 
     results = []
@@ -232,11 +251,7 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
     Uses AUM-weighted daily returns across all clients to build a composite
     index. This eliminates distortion from new clients joining the firm.
     """
-    per_client = await _fetch_per_client_nav(db)
-    if per_client.empty or len(per_client["nav_date"].unique()) < 2:
-        return _empty_risk_response()
-
-    port_series, bench_series = _build_composite_index(per_client)
+    agg, port_series, bench_series = await _get_cached_composite(db)
     if len(port_series) < 2:
         return _empty_risk_response()
 
@@ -286,10 +301,7 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
         "loss_count": int(len(neg_rets)),
     }
 
-    # Fetch aggregate NAV for cash metrics
-    agg = await _fetch_aggregate_nav(db)
-
-    # Cash metrics
+    # Cash metrics (agg already fetched via cache)
     cash_pct = agg["weighted_cash_pct"] if not agg.empty else pd.Series([0.0])
     avg_cash = float(cash_pct.mean())
     max_cash = float(cash_pct.max())
@@ -329,11 +341,7 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
 
 async def get_aggregate_performance_table(db: AsyncSession) -> list[dict[str, Any]]:
     """Multi-period performance table using AUM-weighted composite index."""
-    per_client = await _fetch_per_client_nav(db)
-    if per_client.empty:
-        return []
-
-    port_composite, bench_composite = _build_composite_index(per_client)
+    _, port_composite, bench_composite = await _get_cached_composite(db)
     if len(port_composite) < 2:
         return []
 
@@ -418,11 +426,7 @@ async def get_aggregate_monthly_returns(db: AsyncSession) -> dict[str, Any]:
     Uses the composite index (not raw AUM sums) to avoid distortion
     from new clients joining — which would show as huge monthly "returns".
     """
-    per_client = await _fetch_per_client_nav(db)
-    if per_client.empty:
-        return {"heatmap": [], "stats": _empty_monthly_stats()}
-
-    port_composite, _ = _build_composite_index(per_client)
+    _, port_composite, _ = await _get_cached_composite(db)
     if len(port_composite) < 30:
         return {"heatmap": [], "stats": _empty_monthly_stats()}
 

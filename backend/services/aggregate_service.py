@@ -92,12 +92,12 @@ async def _get_cached_composite(db: AsyncSession) -> tuple[pd.DataFrame, pd.Seri
         return _cache["agg"], _cache["port"], _cache["bench"]
 
     agg = await _fetch_aggregate_nav(db)
-    per_client = await _fetch_per_client_nav(db)
-    if per_client.empty:
+    daily_rets = await _fetch_daily_composite_returns(db)
+    if daily_rets.empty:
         port_s = pd.Series(dtype=float)
         bench_s = pd.Series(dtype=float)
     else:
-        port_s, bench_s = _build_composite_index(per_client)
+        port_s, bench_s = _build_composite_from_returns(daily_rets)
 
     _cache["ts"] = now
     _cache["agg"] = agg
@@ -106,91 +106,80 @@ async def _get_cached_composite(db: AsyncSession) -> tuple[pd.DataFrame, pd.Seri
     return agg, port_s, bench_s
 
 
-async def _fetch_per_client_nav(db: AsyncSession) -> pd.DataFrame:
-    """Fetch per-client daily NAV for AUM-weighted return computation.
+async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
+    """Compute AUM-weighted daily returns in SQL for speed.
 
-    Returns DataFrame with columns: nav_date, client_id, nav_value, benchmark_value.
+    Uses window functions to get prev-day NAV per client, compute returns,
+    and weight by AUM — all in the database. Returns ~2000 rows (one per date)
+    instead of ~366K rows.
     """
     result = await db.execute(text("""
-        SELECT n.nav_date, n.client_id, n.nav_value, n.benchmark_value
-        FROM cpp_nav_series n
-        JOIN cpp_clients c ON c.id = n.client_id
-        WHERE c.is_active = true AND c.is_admin = false
-          AND n.nav_value > 0
-        ORDER BY n.nav_date, n.client_id
+        WITH client_nav AS (
+            SELECT
+                n.nav_date,
+                n.client_id,
+                n.nav_value,
+                COALESCE(n.benchmark_value, 0) AS benchmark_value,
+                LAG(n.nav_value) OVER (PARTITION BY n.client_id ORDER BY n.nav_date) AS prev_nav,
+                LAG(COALESCE(n.benchmark_value, 0)) OVER (PARTITION BY n.client_id ORDER BY n.nav_date) AS prev_bench
+            FROM cpp_nav_series n
+            JOIN cpp_clients c ON c.id = n.client_id
+            WHERE c.is_active = true AND c.is_admin = false
+              AND n.nav_value > 0
+        ),
+        daily_rets AS (
+            SELECT
+                nav_date,
+                prev_nav,
+                (nav_value - prev_nav) / prev_nav AS port_ret,
+                CASE WHEN prev_bench > 0
+                     THEN (benchmark_value - prev_bench) / prev_bench
+                     ELSE 0 END AS bench_ret
+            FROM client_nav
+            WHERE prev_nav > 0
+        )
+        SELECT
+            nav_date,
+            SUM(prev_nav * port_ret) / SUM(prev_nav) AS weighted_port_ret,
+            SUM(prev_nav * bench_ret) / SUM(prev_nav) AS weighted_bench_ret
+        FROM daily_rets
+        GROUP BY nav_date
+        ORDER BY nav_date
     """))
     rows = result.fetchall()
     if not rows:
-        return pd.DataFrame(columns=["nav_date", "client_id", "nav_value", "benchmark_value"])
+        return pd.DataFrame(columns=["nav_date", "weighted_port_ret", "weighted_bench_ret"])
     return pd.DataFrame(
-        [(r.nav_date, r.client_id, float(r.nav_value), float(r.benchmark_value or 0)) for r in rows],
-        columns=["nav_date", "client_id", "nav_value", "benchmark_value"],
+        [(r.nav_date, float(r.weighted_port_ret), float(r.weighted_bench_ret)) for r in rows],
+        columns=["nav_date", "weighted_port_ret", "weighted_bench_ret"],
     )
 
 
-def _build_composite_index(per_client: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Build AUM-weighted composite return index from per-client NAV data.
+def _build_composite_from_returns(daily_rets: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Build composite index from pre-computed AUM-weighted daily returns.
 
-    Vectorized: pivots once, computes daily returns and weights as matrices,
-    then multiplies in one shot. ~100x faster than the per-date loop.
-
+    Input: DataFrame with nav_date, weighted_port_ret, weighted_bench_ret.
     Returns (portfolio_index, benchmark_index) both starting at 100.
     """
-    if per_client.empty:
+    if daily_rets.empty:
         return pd.Series(dtype=float), pd.Series(dtype=float)
 
-    # Pivot to matrices: rows=dates, cols=clients
-    pivot_nav = per_client.pivot_table(
-        index="nav_date", columns="client_id", values="nav_value",
-    ).sort_index()
-    pivot_bench = per_client.pivot_table(
-        index="nav_date", columns="client_id", values="benchmark_value",
-    ).sort_index()
+    port_ret = daily_rets["weighted_port_ret"].values
+    bench_ret = daily_rets["weighted_bench_ret"].values
 
-    # Per-client daily returns (NaN where client missing on either day)
-    nav_vals = pivot_nav.values  # (T, C) numpy array
-    prev_nav = nav_vals[:-1]     # (T-1, C)
-    curr_nav = nav_vals[1:]      # (T-1, C)
+    port_cum = 100.0 * np.cumprod(1.0 + port_ret)
+    bench_cum = 100.0 * np.cumprod(1.0 + bench_ret)
 
-    # Mask: client present on BOTH consecutive days
-    both_present = ~np.isnan(prev_nav) & ~np.isnan(curr_nav) & (prev_nav > 0)
-
-    # Portfolio daily returns per client
-    with np.errstate(divide="ignore", invalid="ignore"):
-        port_rets = np.where(both_present, (curr_nav - prev_nav) / prev_nav, 0.0)
-
-    # Weights = prev-day AUM / total prev-day AUM (only for present clients)
-    masked_prev = np.where(both_present, prev_nav, 0.0)
-    row_totals = masked_prev.sum(axis=1, keepdims=True)
-    row_totals = np.where(row_totals > 0, row_totals, 1.0)  # avoid /0
-    weights = masked_prev / row_totals
-
-    # Weighted portfolio return per day
-    weighted_port_daily = (port_rets * weights).sum(axis=1)  # (T-1,)
-
-    # Benchmark daily returns per client
-    bench_vals = pivot_bench.values
-    prev_bench = bench_vals[:-1]
-    curr_bench = bench_vals[1:]
-    bench_present = both_present & ~np.isnan(prev_bench) & ~np.isnan(curr_bench) & (prev_bench > 0)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        bench_rets = np.where(bench_present, (curr_bench - prev_bench) / prev_bench, 0.0)
-
-    weighted_bench_daily = (bench_rets * weights).sum(axis=1)  # (T-1,)
-
-    # Compound into index starting at 100
-    port_cum = 100.0 * np.cumprod(1.0 + weighted_port_daily)
-    bench_cum = 100.0 * np.cumprod(1.0 + weighted_bench_daily)
+    # Prepend the base-100 starting point
+    dates = daily_rets["nav_date"].values
+    first_date = dates[0] - pd.Timedelta(days=1)
+    all_dates = np.concatenate([[first_date], dates])
 
     port_index = np.concatenate([[100.0], port_cum])
-    bench_index_arr = np.concatenate([[100.0], bench_cum])
+    bench_index = np.concatenate([[100.0], bench_cum])
 
-    idx = pd.DatetimeIndex(pivot_nav.index)
-    return (
-        pd.Series(port_index, index=idx),
-        pd.Series(bench_index_arr, index=idx),
-    )
+    idx = pd.DatetimeIndex(all_dates)
+    return pd.Series(port_index, index=idx), pd.Series(bench_index, index=idx)
 
 
 def _apply_range_filter(df: pd.DataFrame, range_filter: str) -> pd.DataFrame:

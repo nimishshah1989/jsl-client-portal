@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useAggregateNavSeries } from '@/hooks/useAggregate';
-import { formatDateShort, formatINRShort } from '@/lib/format';
+import { formatDateShort, formatINRShort, formatINRCrores } from '@/lib/format';
 import { CHART_COLORS, TIME_RANGES } from '@/lib/constants';
 import {
   ComposedChart,
@@ -44,7 +44,7 @@ function CustomTooltip({ active, payload, label }) {
         if (entry.dataKey === 'cash_pct') {
           displayValue = `${Number(entry.value).toFixed(1)}%`;
         } else {
-          displayValue = Number(entry.value).toFixed(2);
+          displayValue = formatINRShort(entry.value);
         }
         return (
           <div key={entry.dataKey} className="flex items-center gap-2">
@@ -98,7 +98,7 @@ export default function AggregateNavChart() {
     <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
         <h2 className="text-lg sm:text-xl font-semibold text-slate-800">
-          MaaL Aggregate Performance (Base 100)
+          MaaL Aggregate Portfolio vs Nifty Equivalent
         </h2>
         <div className="flex flex-wrap gap-1">
           {TIME_RANGES.map((r) => (
@@ -149,7 +149,7 @@ export default function AggregateNavChart() {
             tickLine={false}
             axisLine={false}
             domain={['auto', 'auto']}
-            tickFormatter={(v) => v.toFixed(0)}
+            tickFormatter={(v) => formatINRShort(v)}
             width={50}
           />
           <YAxis
@@ -173,7 +173,7 @@ export default function AggregateNavChart() {
             yAxisId="nav"
             type="monotone"
             dataKey="portfolio"
-            name="Composite Portfolio"
+            name="MaaL Portfolio (AUM)"
             stroke={CHART_COLORS.portfolio}
             strokeWidth={2}
             fill="url(#aggNavGradient)"
@@ -184,7 +184,7 @@ export default function AggregateNavChart() {
             yAxisId="nav"
             type="monotone"
             dataKey="benchmark"
-            name="NIFTY 50"
+            name="Nifty 50 Equivalent"
             stroke={CHART_COLORS.benchmark}
             strokeWidth={2.5}
             strokeDasharray="8 4"
@@ -203,7 +203,7 @@ export default function AggregateNavChart() {
       </ResponsiveContainer>
 
       <div className="text-xs text-slate-400 mt-2 px-1">
-        <span>Composite portfolio = AUM-weighted blend of all client portfolios, rebased to 100.</span>
+        <span>Portfolio = total AUM across all clients. Nifty Equivalent = what the same invested capital would be worth in Nifty 50, adjusted for all client inflows/outflows.</span>
       </div>
     </div>
   );

@@ -80,6 +80,96 @@ async def _fetch_aggregate_nav(db: AsyncSession) -> pd.DataFrame:
     )
 
 
+async def _fetch_per_client_nav(db: AsyncSession) -> pd.DataFrame:
+    """Fetch per-client daily NAV for AUM-weighted return computation.
+
+    Returns DataFrame with columns: nav_date, client_id, nav_value, benchmark_value.
+    """
+    result = await db.execute(text("""
+        SELECT n.nav_date, n.client_id, n.nav_value, n.benchmark_value
+        FROM cpp_nav_series n
+        JOIN cpp_clients c ON c.id = n.client_id
+        WHERE c.is_active = true AND c.is_admin = false
+          AND n.nav_value > 0
+        ORDER BY n.nav_date, n.client_id
+    """))
+    rows = result.fetchall()
+    if not rows:
+        return pd.DataFrame(columns=["nav_date", "client_id", "nav_value", "benchmark_value"])
+    return pd.DataFrame(
+        [(r.nav_date, r.client_id, float(r.nav_value), float(r.benchmark_value or 0)) for r in rows],
+        columns=["nav_date", "client_id", "nav_value", "benchmark_value"],
+    )
+
+
+def _build_composite_index(per_client: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Build AUM-weighted composite return index from per-client NAV data.
+
+    For each date, computes the AUM-weighted average daily return across
+    all clients who have data on both the current and previous date.
+    This eliminates the distortion caused by new clients joining.
+
+    Returns (portfolio_index, benchmark_index) both starting at 100.
+    """
+    if per_client.empty:
+        return pd.Series(dtype=float), pd.Series(dtype=float)
+
+    # Pivot to get per-client NAV values by date
+    pivot_nav = per_client.pivot_table(
+        index="nav_date", columns="client_id", values="nav_value",
+    )
+    pivot_bench = per_client.pivot_table(
+        index="nav_date", columns="client_id", values="benchmark_value",
+    )
+
+    dates = sorted(pivot_nav.index)
+    port_index = [100.0]
+    bench_index = [100.0]
+
+    for i in range(1, len(dates)):
+        prev_date, curr_date = dates[i - 1], dates[i]
+
+        # Only include clients present on BOTH dates
+        prev_vals = pivot_nav.loc[prev_date].dropna()
+        curr_vals = pivot_nav.loc[curr_date].dropna()
+        common = prev_vals.index.intersection(curr_vals.index)
+
+        if len(common) == 0:
+            port_index.append(port_index[-1])
+            bench_index.append(bench_index[-1])
+            continue
+
+        prev_aum = prev_vals[common]
+        curr_aum = curr_vals[common]
+        total_prev = prev_aum.sum()
+
+        if total_prev <= 0:
+            port_index.append(port_index[-1])
+            bench_index.append(bench_index[-1])
+            continue
+
+        # AUM-weighted portfolio return
+        client_returns = (curr_aum - prev_aum) / prev_aum
+        weights = prev_aum / total_prev
+        weighted_port_ret = (client_returns * weights).sum()
+
+        # AUM-weighted benchmark return
+        prev_bench = pivot_bench.loc[prev_date].reindex(common).fillna(0)
+        curr_bench = pivot_bench.loc[curr_date].reindex(common).fillna(0)
+        safe_prev = prev_bench.replace(0, np.nan)
+        bench_returns = ((curr_bench - prev_bench) / safe_prev).fillna(0)
+        weighted_bench_ret = (bench_returns * weights).sum()
+
+        port_index.append(port_index[-1] * (1 + weighted_port_ret))
+        bench_index.append(bench_index[-1] * (1 + weighted_bench_ret))
+
+    idx = pd.DatetimeIndex(dates)
+    return (
+        pd.Series(port_index, index=idx),
+        pd.Series(bench_index, index=idx),
+    )
+
+
 def _apply_range_filter(df: pd.DataFrame, range_filter: str) -> pd.DataFrame:
     """Slice DataFrame to trailing N days based on range_filter."""
     days = RANGE_DAYS.get(range_filter.upper())
@@ -92,54 +182,72 @@ def _apply_range_filter(df: pd.DataFrame, range_filter: str) -> pd.DataFrame:
 async def get_aggregate_nav_series(
     db: AsyncSession, range_filter: str = "ALL",
 ) -> list[dict[str, Any]]:
-    """Aggregate NAV series normalized to base 100, matching individual nav-series shape."""
+    """Aggregate NAV series — shows actual total AUM + Nifty equivalent.
+
+    Portfolio line: actual total AUM across all clients (₹ crores).
+    Benchmark line: what that same money would be worth in Nifty,
+    adjusted for the same cash inflows/outflows as the actual portfolio.
+    Cash %: AUM-weighted average cash allocation.
+    """
     agg = await _fetch_aggregate_nav(db)
     if agg.empty:
         return []
+
+    # Also build the composite index for Nifty-equivalent calculation
+    per_client = await _fetch_per_client_nav(db)
+    _, bench_composite = _build_composite_index(per_client) if not per_client.empty else (None, None)
 
     agg = _apply_range_filter(agg, range_filter)
     if agg.empty:
         return []
 
-    port_index = compute_twr_index(pd.Series(agg["total_aum"].values))
-    bench_vals = agg["total_benchmark"].values
-    bench_index = (
-        compute_twr_index(pd.Series(bench_vals))
-        if bench_vals[0] > 0 else pd.Series(np.zeros(len(agg)))
-    )
+    # Portfolio: actual total AUM in crores
+    total_aum = agg["total_aum"].values
+    # Nifty equivalent: scale invested amount by benchmark composite growth
+    # This shows "what would all client money be worth if invested in Nifty"
+    first_invested = agg["total_invested"].iloc[0]
 
-    return [
-        {
-            "date": row["nav_date"].isoformat(),
-            "nav": round(float(port_index.iloc[i]), 2),
-            "benchmark": round(float(bench_index.iloc[i]), 2),
+    results = []
+    for i, (_, row) in enumerate(agg.iterrows()):
+        nav_date = row["nav_date"]
+        port_val = float(total_aum[i])
+
+        # Benchmark: invested amount scaled by Nifty composite growth from inception
+        if bench_composite is not None and nav_date in bench_composite.index:
+            bench_growth = float(bench_composite.loc[nav_date]) / 100.0  # composite is base-100
+            bench_val = float(first_invested) * bench_growth
+        else:
+            bench_val = float(row["total_benchmark"]) if row["total_benchmark"] > 0 else 0
+
+        results.append({
+            "date": nav_date.isoformat(),
+            "nav": round(port_val, 0),
+            "benchmark": round(bench_val, 0),
             "cash_pct": round(row["weighted_cash_pct"], 2),
-        }
-        for i, (_, row) in enumerate(agg.iterrows())
-    ]
+        })
+
+    return results
 
 
 async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
-    """Compute risk metrics on the aggregate (firm-wide) NAV series."""
-    agg = await _fetch_aggregate_nav(db)
-    if len(agg) < 2:
+    """Compute risk metrics on the aggregate (firm-wide) NAV series.
+
+    Uses AUM-weighted daily returns across all clients to build a composite
+    index. This eliminates distortion from new clients joining the firm.
+    """
+    per_client = await _fetch_per_client_nav(db)
+    if per_client.empty or len(per_client["nav_date"].unique()) < 2:
         return _empty_risk_response()
 
-    # Use TWR index (base-100) for risk metrics to eliminate the effect
-    # of capital inflows/outflows on volatility and return calculations.
-    raw_port = pd.Series(agg["total_aum"].values, index=pd.to_datetime(agg["nav_date"]))
-    raw_bench = pd.Series(agg["total_benchmark"].values, index=pd.to_datetime(agg["nav_date"]))
-    port_series = compute_twr_index(raw_port)
-    port_series.index = raw_port.index
-    bench_series = compute_twr_index(raw_bench) if float(raw_bench.iloc[0]) > 0 else raw_bench
-    bench_series.index = raw_bench.index
+    port_series, bench_series = _build_composite_index(per_client)
+    if len(port_series) < 2:
+        return _empty_risk_response()
 
     daily_port = compute_daily_returns(port_series)
     daily_bench = compute_daily_returns(bench_series)
     daily_excess = daily_port - daily_bench
 
-    total_days = (agg["nav_date"].iloc[-1] - agg["nav_date"].iloc[0]).days
-    # CAGR from TWR index: start=100, end=current index value
+    total_days = (port_series.index[-1] - port_series.index[0]).days
     port_cagr = cagr(100.0, float(port_series.iloc[-1]), total_days)
     bench_cagr_val = cagr(100.0, float(bench_series.iloc[-1]), total_days)
 
@@ -198,12 +306,16 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
 
 
 async def get_aggregate_performance_table(db: AsyncSession) -> list[dict[str, Any]]:
-    """Multi-period performance table for the aggregate portfolio."""
-    agg = await _fetch_aggregate_nav(db)
-    if len(agg) < 2:
+    """Multi-period performance table using AUM-weighted composite index."""
+    per_client = await _fetch_per_client_nav(db)
+    if per_client.empty:
         return []
 
-    total_data_days = (agg["nav_date"].iloc[-1] - agg["nav_date"].iloc[0]).days
+    port_composite, bench_composite = _build_composite_index(per_client)
+    if len(port_composite) < 2:
+        return []
+
+    total_data_days = (port_composite.index[-1] - port_composite.index[0]).days
 
     periods = [
         ("1 Month", 30), ("3 Months", 91), ("6 Months", 182),
@@ -216,25 +328,25 @@ async def get_aggregate_performance_table(db: AsyncSession) -> list[dict[str, An
         if period_days is not None and period_days > total_data_days + 15:
             continue
 
-        sliced = _apply_range_filter(agg, "ALL") if period_days is None else agg[
-            agg["nav_date"] >= agg["nav_date"].iloc[-1] - pd.Timedelta(days=period_days)
-        ]
-        if len(sliced) < 2:
+        if period_days is None:
+            port_s = port_composite
+            bench_s = bench_composite
+        else:
+            cutoff = port_composite.index[-1] - pd.Timedelta(days=period_days)
+            port_s = port_composite[port_composite.index >= cutoff]
+            bench_s = bench_composite[bench_composite.index >= cutoff]
+
+        if len(port_s) < 2:
             continue
 
-        port_s = pd.Series(sliced["total_aum"].values, index=pd.to_datetime(sliced["nav_date"]))
-        bench_s = pd.Series(sliced["total_benchmark"].values, index=pd.to_datetime(sliced["nav_date"]))
-        days_in_slice = (sliced["nav_date"].iloc[-1] - sliced["nav_date"].iloc[0]).days
-
-        p_ret = absolute_return(port_s)
-        b_ret = absolute_return(bench_s)
+        days_in_slice = (port_s.index[-1] - port_s.index[0]).days
         dp = compute_daily_returns(port_s)
         db_r = compute_daily_returns(bench_s)
 
         results.append({
             "period": label,
-            "port_abs_return": _r2(p_ret),
-            "bench_abs_return": _r2(b_ret),
+            "port_abs_return": _r2(absolute_return(port_s)),
+            "bench_abs_return": _r2(absolute_return(bench_s)),
             "port_cagr": _r2(cagr(float(port_s.iloc[0]), float(port_s.iloc[-1]), days_in_slice)),
             "bench_cagr": _r2(cagr(float(bench_s.iloc[0]), float(bench_s.iloc[-1]), days_in_slice)),
             "port_volatility": _r2(annualized_volatility(dp)),

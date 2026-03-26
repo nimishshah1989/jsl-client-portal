@@ -67,9 +67,20 @@ function StatCard({ label, value, subtitle, icon: Icon, color = 'teal' }) {
   );
 }
 
-function PerformerTable({ title, performers, icon: Icon, emptyText }) {
+function PerformerTable({ title, performers, icon: Icon, valueKey = 'cagr', valueFormat = 'pct', subtitleKey = 'aum' }) {
   if (!performers || performers.length === 0) {
     return null;
+  }
+
+  function formatValue(p) {
+    const val = p[valueKey];
+    if (valueFormat === 'pct') return formatPct(val);
+    return formatINRShort(val);
+  }
+
+  function valueColor(p) {
+    if (valueFormat === 'pct') return pnlColor(p[valueKey]);
+    return 'text-slate-800';
   }
 
   return (
@@ -96,12 +107,14 @@ function PerformerTable({ title, performers, icon: Icon, emptyText }) {
               </div>
             </div>
             <div className="text-right">
-              <p className={`text-sm font-bold font-mono ${pnlColor(p.cagr)}`}>
-                {formatPct(p.cagr)}
+              <p className={`text-sm font-bold font-mono ${valueColor(p)}`}>
+                {formatValue(p)}
               </p>
-              <p className="text-xs text-slate-400 font-mono">
-                {formatINRShort(p.aum)}
-              </p>
+              {subtitleKey && (
+                <p className="text-xs text-slate-400 font-mono">
+                  {formatINRShort(p[subtitleKey])}
+                </p>
+              )}
             </div>
           </div>
         ))}
@@ -259,12 +272,6 @@ export default function AdminDashboard() {
             />
           </div>
 
-          {/* Top Performers */}
-          <PerformerTable
-            title="Top 5 Performers (by CAGR)"
-            performers={analytics.top_performers}
-            icon={TrendingUp}
-          />
         </>
       ) : null}
 
@@ -290,6 +297,36 @@ export default function AdminDashboard() {
       </div>
 
       <AggregateMonthlyReturns />
+
+      {/* Top Performers / Investors */}
+      {analytics && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <PerformerTable
+            title="Top 5 by CAGR"
+            performers={analytics.top_performers}
+            icon={TrendingUp}
+            valueKey="cagr"
+            valueFormat="pct"
+            subtitleKey="aum"
+          />
+          <PerformerTable
+            title="Top 5 by Current NAV"
+            performers={analytics.top_by_nav}
+            icon={DollarSign}
+            valueKey="aum"
+            valueFormat="inr"
+            subtitleKey="invested"
+          />
+          <PerformerTable
+            title="Top 5 by Invested Capital"
+            performers={analytics.top_by_invested}
+            icon={PiggyBank}
+            valueKey="invested"
+            valueFormat="inr"
+            subtitleKey="aum"
+          />
+        </div>
+      )}
 
       {/* Client List */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">

@@ -466,10 +466,12 @@ async def dashboard_analytics(
     """))
     risk_data = risk_rows.fetchall()
 
-    # Build AUM lookup for weighting
+    # Build AUM + invested lookup for weighting and ranking
     aum_by_client: dict[int, float] = {}
+    invested_by_client: dict[int, float] = {}
     for row in nav_rows:
         aum_by_client[row.client_id] = float(row.nav_value or 0)
+        invested_by_client[row.client_id] = float(row.invested_amount or 0)
 
     # Blended (AUM-weighted) metrics
     weighted_cagr_sum = 0.0
@@ -498,16 +500,23 @@ async def dashboard_analytics(
             "sharpe_ratio": round(sharpe_val, 2),
             "xirr": round(float(row.xirr or 0), 2),
             "aum": round(weight, 2),
+            "invested": round(invested_by_client.get(row.client_id, 0.0), 2),
         })
 
     blended_cagr = (weighted_cagr_sum / total_weight) if total_weight > 0 else 0.0
     avg_max_dd = (weighted_dd_sum / total_weight) if total_weight > 0 else 0.0
     blended_sharpe = (weighted_sharpe_sum / total_weight) if total_weight > 0 else 0.0
 
-    # Sort for top/bottom performers
+    # Sort for top performers by different criteria
     by_cagr = sorted(client_metrics, key=lambda x: x["cagr"], reverse=True)
     top_performers = by_cagr[:5]
     bottom_performers = by_cagr[-5:] if len(by_cagr) > 5 else []
+
+    by_aum = sorted(client_metrics, key=lambda x: x["aum"], reverse=True)
+    top_by_nav = by_aum[:5]
+
+    by_invested = sorted(client_metrics, key=lambda x: x["invested"], reverse=True)
+    top_by_invested = by_invested[:5]
 
     # Upload history summary
     recent_uploads = await db.execute(text("""
@@ -539,6 +548,8 @@ async def dashboard_analytics(
         "total_cash_pct": round(total_cash_pct, 2),
         "avg_max_drawdown": round(avg_max_dd, 2),
         "top_performers": top_performers,
+        "top_by_nav": top_by_nav,
+        "top_by_invested": top_by_invested,
         "bottom_performers": bottom_performers,
         "data_as_of": data_as_of.isoformat() if data_as_of else None,
         "recent_uploads": upload_history,

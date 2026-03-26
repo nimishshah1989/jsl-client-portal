@@ -414,9 +414,14 @@ async def get_aggregate_performance_table(db: AsyncSession) -> list[dict[str, An
 
 
 async def get_aggregate_allocation(db: AsyncSession) -> dict[str, Any]:
-    """Sector allocation across all active non-admin client holdings."""
+    """Sector allocation across all active non-admin client holdings.
+
+    Groups by symbol for ETFs (shows actual ETF names like NIFTYBEES),
+    by sector for stocks, and lumps small sectors (<2%) into Others.
+    """
     result = await db.execute(text("""
         SELECT
+            h.symbol,
             COALESCE(h.sector, 'Other') AS sector,
             SUM(h.current_value)        AS total_value
         FROM cpp_holdings h
@@ -424,21 +429,56 @@ async def get_aggregate_allocation(db: AsyncSession) -> dict[str, Any]:
         WHERE c.is_active = true AND c.is_admin = false
           AND h.quantity > 0
           AND h.current_value > 0
-        GROUP BY COALESCE(h.sector, 'Other')
+        GROUP BY h.symbol, COALESCE(h.sector, 'Other')
         ORDER BY total_value DESC
     """))
     rows = result.fetchall()
     total = sum(float(r.total_value) for r in rows) if rows else 0.0
 
-    # Group sectors below 2% into "Others"
+    # ETF symbols get their own name; stocks group by sector
+    ETF_NAMES = {
+        "NIFTYBEES": "Nifty 50 ETF",
+        "JUNIORBEES": "Nifty Next 50 ETF",
+        "GOLDBEES": "Gold ETF",
+        "SILVERBEES": "Silver ETF",
+        "PHARMABEES": "Pharma ETF",
+        "FMCGIETF": "FMCG ETF",
+        "HNGSNGBEES": "Hang Seng ETF",
+        "CPSEETF": "CPSE ETF",
+        "PSUBNKBEES": "PSU Bank ETF",
+        "BANKBEES": "Bank ETF",
+        "LIQUIDBEES": "Cash (LIQUIDBEES)",
+        "LIQUIDETF": "Cash (LIQUIDETF)",
+        "LIQUIDCASE": "Cash (Ledger)",
+    }
+
+    sector_totals: dict[str, float] = {}
+    for r in rows:
+        sym = r.symbol.strip().upper() if r.symbol else ""
+        sector = r.sector
+        val = float(r.total_value)
+
+        # ETFs get their own category
+        if sym in ETF_NAMES:
+            label = ETF_NAMES[sym]
+        elif sector in ("Cash",):
+            label = "Cash"
+        elif sector in ("Other", "Unclassified"):
+            label = "Other Stocks"
+        else:
+            label = sector
+
+        sector_totals[label] = sector_totals.get(label, 0.0) + val
+
+    # Sort by value, group small ones into Others
+    sorted_sectors = sorted(sector_totals.items(), key=lambda x: x[1], reverse=True)
     main_sectors = []
     others_val = 0.0
-    for r in rows:
-        val = float(r.total_value)
+    for name, val in sorted_sectors:
         pct = val / total * 100 if total > 0 else 0
-        if pct >= 2.0:
+        if pct >= 1.5:
             main_sectors.append({
-                "name": r.sector,
+                "name": name,
                 "value": _r2(val),
                 "current_value": round(val, 0),
                 "weight_pct": _r2(pct),

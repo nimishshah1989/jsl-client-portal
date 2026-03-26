@@ -56,11 +56,15 @@ def beta(daily_port_ret: pd.Series, daily_bench_ret: pd.Series) -> float:
     aligned_port, aligned_bench = daily_port_ret.align(daily_bench_ret, join="inner")
     if len(aligned_port) < 2:
         return 0.0
+    # Zero-volatility portfolio produces NaN in covariance matrix
+    if float(aligned_port.std()) < 1e-10:
+        return 0.0
     cov_matrix = np.cov(aligned_port, aligned_bench)
     var_bench = cov_matrix[1, 1]
-    if var_bench == 0:
+    if var_bench < 1e-10:
         return 0.0
-    return float(cov_matrix[0, 1] / var_bench)
+    result = float(cov_matrix[0, 1] / var_bench)
+    return 0.0 if np.isnan(result) else result
 
 
 def alpha(
@@ -226,7 +230,11 @@ def market_correlation(
     aligned_port, aligned_bench = daily_port_ret.align(daily_bench_ret, join="inner")
     if len(aligned_port) < 2:
         return 0.0
-    return float(aligned_port.corr(aligned_bench))
+    # Zero-volatility portfolio produces NaN correlation
+    if float(aligned_port.std()) < 1e-10:
+        return 0.0
+    result = float(aligned_port.corr(aligned_bench))
+    return 0.0 if np.isnan(result) else result
 
 
 def cash_metrics(nav_df: pd.DataFrame) -> dict:

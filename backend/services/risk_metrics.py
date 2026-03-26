@@ -173,6 +173,9 @@ def sortino_ratio(
     """
     if len(daily_returns) < 2:
         return 0.0
+    # Zero-volatility portfolio (e.g. 100% cash) — ratio is undefined
+    if float(daily_returns.std()) < 1e-10:
+        return 0.0
     daily_rf = risk_free_rate / 100.0 / trading_days
     downside = daily_returns[daily_returns < daily_rf] - daily_rf
     if len(downside) == 0:

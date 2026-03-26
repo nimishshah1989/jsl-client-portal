@@ -430,15 +430,31 @@ async def get_aggregate_allocation(db: AsyncSession) -> dict[str, Any]:
     rows = result.fetchall()
     total = sum(float(r.total_value) for r in rows) if rows else 0.0
 
-    by_sector = [
-        {
-            "name": r.sector,
-            "value": _r2(float(r.total_value)),
-            "weight_pct": _r2(float(r.total_value) / total * 100 if total > 0 else 0),
-        }
-        for r in rows
-    ]
-    return {"by_sector": by_sector}
+    # Group sectors below 2% into "Others"
+    main_sectors = []
+    others_val = 0.0
+    for r in rows:
+        val = float(r.total_value)
+        pct = val / total * 100 if total > 0 else 0
+        if pct >= 2.0:
+            main_sectors.append({
+                "name": r.sector,
+                "value": _r2(val),
+                "current_value": round(val, 0),
+                "weight_pct": _r2(pct),
+            })
+        else:
+            others_val += val
+
+    if others_val > 0:
+        main_sectors.append({
+            "name": "Others",
+            "value": _r2(others_val),
+            "current_value": round(others_val, 0),
+            "weight_pct": _r2(others_val / total * 100 if total > 0 else 0),
+        })
+
+    return {"by_sector": main_sectors, "total_value": round(total, 0)}
 
 
 async def get_aggregate_monthly_returns(db: AsyncSession) -> dict[str, Any]:

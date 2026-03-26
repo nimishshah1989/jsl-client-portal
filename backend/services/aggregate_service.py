@@ -264,11 +264,33 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
     ui = ulcer_index(port_series)
     corr = market_correlation(daily_port, daily_bench)
 
-    # Fetch aggregate NAV for monthly profile and cash metrics
-    agg = await _fetch_aggregate_nav(db)
+    # Monthly return profile from composite index (not raw AUM)
+    monthly_composite = port_series.resample("ME").last().dropna()
+    monthly_ret_series = monthly_composite.pct_change().dropna() * 100
+    rets_arr = monthly_ret_series.values
+    pos_rets = rets_arr[rets_arr > 0]
+    neg_rets = rets_arr[rets_arr <= 0]
+    _max_consec = 0
+    _cur_streak = 0
+    for _loss in (rets_arr <= 0).astype(int):
+        if _loss:
+            _cur_streak += 1
+            _max_consec = max(_max_consec, _cur_streak)
+        else:
+            _cur_streak = 0
+    monthly_stats = {
+        "hit_rate": float(len(pos_rets) / len(rets_arr) * 100) if len(rets_arr) > 0 else 0.0,
+        "best_month": float(rets_arr.max()) if len(rets_arr) > 0 else 0.0,
+        "worst_month": float(rets_arr.min()) if len(rets_arr) > 0 else 0.0,
+        "avg_positive_month": float(pos_rets.mean()) if len(pos_rets) > 0 else 0.0,
+        "avg_negative_month": float(neg_rets.mean()) if len(neg_rets) > 0 else 0.0,
+        "max_consecutive_loss": _max_consec,
+        "win_count": int(len(pos_rets)),
+        "loss_count": int(len(neg_rets)),
+    }
 
-    # Monthly return profile
-    monthly_stats = _compute_monthly_profile(agg) if not agg.empty else _empty_monthly_stats()
+    # Fetch aggregate NAV for cash metrics
+    agg = await _fetch_aggregate_nav(db)
 
     # Cash metrics
     cash_pct = agg["weighted_cash_pct"] if not agg.empty else pd.Series([0.0])
@@ -394,49 +416,62 @@ async def get_aggregate_allocation(db: AsyncSession) -> dict[str, Any]:
 
 
 async def get_aggregate_monthly_returns(db: AsyncSession) -> dict[str, Any]:
-    """Monthly return heatmap data from the aggregate NAV series."""
-    agg = await _fetch_aggregate_nav(db)
-    if len(agg) < 30:
+    """Monthly return heatmap data using AUM-weighted composite index.
+
+    Uses the composite index (not raw AUM sums) to avoid distortion
+    from new clients joining — which would show as huge monthly "returns".
+    """
+    per_client = await _fetch_per_client_nav(db)
+    if per_client.empty:
         return {"heatmap": [], "stats": _empty_monthly_stats()}
 
-    monthly_stats = _compute_monthly_profile(agg)
+    port_composite, _ = _build_composite_index(per_client)
+    if len(port_composite) < 30:
+        return {"heatmap": [], "stats": _empty_monthly_stats()}
 
-    # Build heatmap data
-    monthly_last: dict[tuple[int, int], float] = {}
-    for _, row in agg.iterrows():
-        key = (row["nav_date"].year, row["nav_date"].month)
-        monthly_last[key] = row["total_aum"]
+    # Resample composite index to monthly (last value per month)
+    monthly = port_composite.resample("ME").last().dropna()
+    monthly_ret = monthly.pct_change().dropna() * 100
 
-    sorted_keys = sorted(monthly_last.keys())
-    heatmap: list[dict[str, Any]] = []
+    # Build heatmap
     months_abbr = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    for i in range(1, len(sorted_keys)):
-        prev_val = monthly_last[sorted_keys[i - 1]]
-        curr_val = monthly_last[sorted_keys[i]]
-        if prev_val > 0:
-            ret = ((curr_val - prev_val) / prev_val) * 100
-            year, month = sorted_keys[i]
-            heatmap.append({
-                "year": year,
-                "month": month - 1,
-                "return_pct": round(ret, 2),
-                "label": f"{months_abbr[month - 1]} {year}",
-            })
+    heatmap: list[dict[str, Any]] = []
+    for dt, ret in monthly_ret.items():
+        heatmap.append({
+            "year": dt.year,
+            "month": dt.month - 1,
+            "return_pct": round(float(ret), 2),
+            "label": f"{months_abbr[dt.month - 1]} {dt.year}",
+        })
 
-    return {
-        "heatmap": heatmap,
-        "stats": {
-            "hit_rate": _r2(monthly_stats["hit_rate"]),
-            "best_month": _r2(monthly_stats["best_month"]),
-            "worst_month": _r2(monthly_stats["worst_month"]),
-            "avg_positive_month": _r2(monthly_stats["avg_positive_month"]),
-            "avg_negative_month": _r2(monthly_stats["avg_negative_month"]),
-            "max_consecutive_loss": monthly_stats["max_consecutive_loss"],
-            "win_count": monthly_stats["win_count"],
-            "loss_count": monthly_stats["loss_count"],
-        },
+    # Compute stats from composite monthly returns
+    rets = monthly_ret.values
+    positive = rets[rets > 0]
+    negative = rets[rets <= 0]
+
+    is_loss = (rets <= 0).astype(int)
+    max_consec = 0
+    current_streak = 0
+    for loss in is_loss:
+        if loss:
+            current_streak += 1
+            max_consec = max(max_consec, current_streak)
+        else:
+            current_streak = 0
+
+    stats = {
+        "hit_rate": _r2(float(len(positive) / len(rets) * 100)) if len(rets) > 0 else "0.00",
+        "best_month": _r2(float(rets.max())) if len(rets) > 0 else "0.00",
+        "worst_month": _r2(float(rets.min())) if len(rets) > 0 else "0.00",
+        "avg_positive_month": _r2(float(positive.mean())) if len(positive) > 0 else "0.00",
+        "avg_negative_month": _r2(float(negative.mean())) if len(negative) > 0 else "0.00",
+        "max_consecutive_loss": max_consec,
+        "win_count": int(len(positive)),
+        "loss_count": int(len(negative)),
     }
+
+    return {"heatmap": heatmap, "stats": stats}
 
 
 # ── Private helpers ──────────────────────────────────────────────────────

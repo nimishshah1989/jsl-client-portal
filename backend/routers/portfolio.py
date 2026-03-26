@@ -24,6 +24,7 @@ from backend.routers.helpers import (
     dec2,
     dec4,
     get_default_portfolio,
+    opt2,
 )
 from backend.schemas.portfolio import (
     AllocationItem,
@@ -140,6 +141,8 @@ async def get_summary(
         cash_amount=dec2(cash_amount),
         cash_pct=dec2(cash_pct_clamped),
         ledger_cash=dec2(ledger_cash),
+        bench_cagr=opt2(risk.bench_cagr_inception) if risk else None,
+        bench_max_dd=opt2(risk.bench_dd_inception) if risk else None,
     )
 
 

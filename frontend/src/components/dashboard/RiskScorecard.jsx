@@ -28,13 +28,18 @@ function Skeleton() {
   );
 }
 
-function MetricCard({ label, value, subtitle, explanation, color = 'text-slate-800' }) {
+function MetricCard({ label, value, subtitle, explanation, color = 'text-slate-800', benchValue }) {
   return (
     <div className="bg-slate-50 rounded-xl p-4">
       <p className="text-xs text-slate-500 mb-1">{label}</p>
       <p className={`text-lg font-bold font-mono tabular-nums ${color}`}>
         {value}
       </p>
+      {benchValue != null && (
+        <p className="text-xs text-slate-500 mt-0.5 font-mono">
+          vs Nifty: <span className="font-semibold">{benchValue}</span>
+        </p>
+      )}
       {subtitle && (
         <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>
       )}
@@ -55,7 +60,7 @@ function RiskGauge({ value, maxValue = 30, label }) {
   };
 
   return (
-    <div className="flex-1">
+    <div>
       <div className="flex justify-between items-end mb-1">
         <span className="text-xs text-slate-500">{label}</span>
         <span className="text-sm font-mono font-bold text-slate-800">{v.toFixed(2)}</span>
@@ -99,9 +104,21 @@ export default function RiskScorecard() {
 
       {/* Risk gauges */}
       <div className="flex flex-col sm:flex-row gap-4 sm:gap-6 mb-6">
-        <RiskGauge value={m.volatility} maxValue={30} label="Volatility" />
-        <RiskGauge value={Math.abs(num(m.max_drawdown))} maxValue={40} label="Max DD" />
-        <RiskGauge value={m.ulcer_index} maxValue={20} label="Ulcer Index" />
+        <div className="flex-1">
+          <RiskGauge value={m.volatility} maxValue={30} label="Volatility" />
+          {m.bench_volatility != null && (
+            <p className="text-[11px] text-slate-400 mt-1 font-mono">Nifty: {safe(m.bench_volatility)}%</p>
+          )}
+        </div>
+        <div className="flex-1">
+          <RiskGauge value={Math.abs(num(m.max_drawdown))} maxValue={40} label="Max DD" />
+          {m.bench_max_dd != null && (
+            <p className="text-[11px] text-slate-400 mt-1 font-mono">Nifty: {safe(m.bench_max_dd)}%</p>
+          )}
+        </div>
+        <div className="flex-1">
+          <RiskGauge value={m.ulcer_index} maxValue={20} label="Ulcer Index" />
+        </div>
       </div>
 
       {/* Metric cards grid */}

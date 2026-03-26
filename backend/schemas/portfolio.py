@@ -19,6 +19,9 @@ class SummaryResponse(BaseModel):
     cash_amount: str | None = None   # Total cash in ₹ (ledger + ETF + bank)
     cash_pct: str | None = None      # Total cash as % of NAV
     ledger_cash: str | None = None   # Ledger cash only (cash + bank, no ETF)
+    # Benchmark comparison
+    bench_cagr: str | None = None
+    bench_max_dd: str | None = None
 
 
 class NavSeriesPoint(BaseModel):
@@ -136,6 +139,11 @@ class RiskScorecardResponse(BaseModel):
     volatility: str | None = None
     sharpe_ratio: str | None = None
     sortino_ratio: str | None = None
+    # Benchmark equivalents for comparison
+    bench_volatility: str | None = None
+    bench_sharpe: str | None = None
+    bench_sortino: str | None = None
+    bench_max_dd: str | None = None
 
 
 class TransactionItem(BaseModel):

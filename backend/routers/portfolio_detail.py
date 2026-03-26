@@ -115,6 +115,10 @@ async def get_risk_scorecard(
         volatility=opt2(risk.volatility),
         sharpe_ratio=opt2(risk.sharpe_ratio),
         sortino_ratio=opt2(risk.sortino_ratio),
+        bench_volatility=opt2(risk.bench_vol_inception),
+        bench_sharpe=opt2(risk.bench_sharpe_inception),
+        bench_sortino=opt2(risk.bench_sortino_inception),
+        bench_max_dd=opt2(risk.bench_dd_inception),
     )
 
 

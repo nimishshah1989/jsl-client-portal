@@ -209,25 +209,57 @@ async def get_aggregate_nav_series(
     if agg.empty:
         return []
 
+    # Build Nifty-equivalent AUM: track a hypothetical Nifty portfolio that
+    # receives the same cash inflows/outflows as the actual portfolio.
+    # Each day's new inflow grows by Nifty from that day forward.
     total_aum = agg["total_aum"].values
-    first_invested = agg["total_invested"].iloc[0]
+    total_invested = agg["total_invested"].values
+
+    # Detect daily changes in total invested (new inflows/outflows)
+    invested_changes = np.diff(total_invested, prepend=0)
+    invested_changes[0] = total_invested[0]  # first day = full initial investment
+
+    # Get daily benchmark returns from composite index
+    bench_daily_ret = np.zeros(len(agg))
+    if bench_composite is not None and len(bench_composite) > 1:
+        for i, (_, row) in enumerate(agg.iterrows()):
+            nav_date = row["nav_date"]
+            if nav_date in bench_composite.index:
+                bench_daily_ret[i] = bench_composite.loc[nav_date]
+
+        # Convert composite index levels to daily returns
+        bench_levels = np.array([
+            float(bench_composite.loc[row["nav_date"]])
+            if row["nav_date"] in bench_composite.index else np.nan
+            for _, row in agg.iterrows()
+        ])
+        # Fill any gaps
+        mask = ~np.isnan(bench_levels)
+        if mask.sum() > 1:
+            bench_rets = np.zeros(len(bench_levels))
+            bench_rets[1:] = np.where(
+                mask[1:] & mask[:-1] & (bench_levels[:-1] > 0),
+                bench_levels[1:] / bench_levels[:-1] - 1,
+                0,
+            )
+        else:
+            bench_rets = np.zeros(len(agg))
+    else:
+        bench_rets = np.zeros(len(agg))
+
+    # Simulate Nifty portfolio: each inflow compounds at Nifty daily returns
+    nifty_aum = np.zeros(len(agg))
+    nifty_aum[0] = invested_changes[0]
+    for i in range(1, len(agg)):
+        # Previous Nifty AUM grows by today's Nifty return + any new inflow
+        nifty_aum[i] = nifty_aum[i - 1] * (1 + bench_rets[i]) + invested_changes[i]
 
     results = []
     for i, (_, row) in enumerate(agg.iterrows()):
-        nav_date = row["nav_date"]
-        port_val = float(total_aum[i])
-
-        # Benchmark: invested amount scaled by Nifty composite growth from inception
-        if bench_composite is not None and nav_date in bench_composite.index:
-            bench_growth = float(bench_composite.loc[nav_date]) / 100.0  # composite is base-100
-            bench_val = float(first_invested) * bench_growth
-        else:
-            bench_val = float(row["total_benchmark"]) if row["total_benchmark"] > 0 else 0
-
         results.append({
-            "date": nav_date.isoformat(),
-            "nav": round(port_val, 0),
-            "benchmark": round(bench_val, 0),
+            "date": row["nav_date"].isoformat(),
+            "nav": round(float(total_aum[i]), 0),
+            "benchmark": round(float(nifty_aum[i]), 0),
             "cash_pct": round(row["weighted_cash_pct"], 2),
         })
 

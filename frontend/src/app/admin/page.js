@@ -260,13 +260,11 @@ export default function AdminDashboard() {
           </div>
 
           {/* Top Performers */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <PerformerTable
-              title="Top 5 Performers (by CAGR)"
-              performers={analytics.top_performers}
-              icon={TrendingUp}
-            />
-          </div>
+          <PerformerTable
+            title="Top 5 Performers (by CAGR)"
+            performers={analytics.top_performers}
+            icon={TrendingUp}
+          />
         </>
       ) : null}
 

@@ -125,16 +125,23 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
     if len(agg) < 2:
         return _empty_risk_response()
 
-    port_series = pd.Series(agg["total_aum"].values, index=pd.to_datetime(agg["nav_date"]))
-    bench_series = pd.Series(agg["total_benchmark"].values, index=pd.to_datetime(agg["nav_date"]))
+    # Use TWR index (base-100) for risk metrics to eliminate the effect
+    # of capital inflows/outflows on volatility and return calculations.
+    raw_port = pd.Series(agg["total_aum"].values, index=pd.to_datetime(agg["nav_date"]))
+    raw_bench = pd.Series(agg["total_benchmark"].values, index=pd.to_datetime(agg["nav_date"]))
+    port_series = compute_twr_index(raw_port)
+    port_series.index = raw_port.index
+    bench_series = compute_twr_index(raw_bench) if float(raw_bench.iloc[0]) > 0 else raw_bench
+    bench_series.index = raw_bench.index
 
     daily_port = compute_daily_returns(port_series)
     daily_bench = compute_daily_returns(bench_series)
     daily_excess = daily_port - daily_bench
 
     total_days = (agg["nav_date"].iloc[-1] - agg["nav_date"].iloc[0]).days
-    port_cagr = cagr(float(port_series.iloc[0]), float(port_series.iloc[-1]), total_days)
-    bench_cagr_val = cagr(float(bench_series.iloc[0]), float(bench_series.iloc[-1]), total_days)
+    # CAGR from TWR index: start=100, end=current index value
+    port_cagr = cagr(100.0, float(port_series.iloc[-1]), total_days)
+    bench_cagr_val = cagr(100.0, float(bench_series.iloc[-1]), total_days)
 
     vol = annualized_volatility(daily_port)
     sharpe = sharpe_ratio(daily_port, RISK_FREE_RATE)

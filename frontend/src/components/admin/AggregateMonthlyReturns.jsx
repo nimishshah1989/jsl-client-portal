@@ -118,18 +118,20 @@ export default function AggregateMonthlyReturns() {
     );
   }
 
+  // Backend returns { heatmap: [...], stats: {...} }
+  const stats = data.stats || {};
   const {
-    monthly_hit_rate,
+    hit_rate: monthly_hit_rate,
     best_month,
     worst_month,
     avg_positive_month,
     avg_negative_month,
     win_count,
     loss_count,
-    monthly_returns = [],
-  } = data;
+  } = stats;
 
-  const recentMonthly = (monthly_returns || []).slice(-24);
+  const heatmapData = data.heatmap || [];
+  const recentMonthly = heatmapData.slice(-24);
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-5 overflow-hidden">
@@ -211,7 +213,7 @@ export default function AggregateMonthlyReturns() {
       {/* Heatmap grid */}
       <div>
         <h3 className="text-sm font-semibold text-slate-600 mb-3">Monthly Returns Heatmap</h3>
-        <HeatmapGrid monthlyData={monthly_returns} />
+        <HeatmapGrid monthlyData={heatmapData} />
       </div>
     </div>
   );

@@ -87,7 +87,7 @@ export default function AggregateNavChart() {
 
   const chartData = data.map((d) => ({
     dateLabel: formatDateShort(d.date),
-    portfolio: d.portfolio != null ? Number(d.portfolio) : null,
+    portfolio: d.nav != null ? Number(d.nav) : (d.portfolio != null ? Number(d.portfolio) : null),
     benchmark: d.benchmark != null ? Number(d.benchmark) : null,
     cash_pct: d.cash_pct != null ? Math.min(100, Math.max(0, Number(d.cash_pct))) : null,
   }));

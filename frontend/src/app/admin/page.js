@@ -22,7 +22,6 @@ import {
   Clock,
   Eye,
   TrendingUp,
-  TrendingDown,
   Wallet,
   PiggyBank,
   BarChart3,
@@ -217,7 +216,7 @@ export default function AdminDashboard() {
         </div>
       ) : analytics ? (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             <StatCard
               label="Total AUM"
               value={formatINRShort(analytics.total_aum)}
@@ -252,26 +251,14 @@ export default function AdminDashboard() {
               icon={Wallet}
               color="amber"
             />
-            <StatCard
-              label="Blended Sharpe"
-              value={Number(analytics.blended_sharpe || 0).toFixed(2)}
-              subtitle={`Avg DD: ${Number(analytics.avg_max_drawdown || 0).toFixed(1)}%`}
-              icon={Shield}
-              color="blue"
-            />
           </div>
 
-          {/* Top / Bottom Performers */}
+          {/* Top Performers */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <PerformerTable
               title="Top 5 Performers (by CAGR)"
               performers={analytics.top_performers}
               icon={TrendingUp}
-            />
-            <PerformerTable
-              title="Bottom 5 Performers (by CAGR)"
-              performers={analytics.bottom_performers}
-              icon={TrendingDown}
             />
           </div>
         </>

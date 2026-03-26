@@ -264,11 +264,14 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
     ui = ulcer_index(port_series)
     corr = market_correlation(daily_port, daily_bench)
 
+    # Fetch aggregate NAV for monthly profile and cash metrics
+    agg = await _fetch_aggregate_nav(db)
+
     # Monthly return profile
-    monthly_stats = _compute_monthly_profile(agg)
+    monthly_stats = _compute_monthly_profile(agg) if not agg.empty else _empty_monthly_stats()
 
     # Cash metrics
-    cash_pct = agg["weighted_cash_pct"]
+    cash_pct = agg["weighted_cash_pct"] if not agg.empty else pd.Series([0.0])
     avg_cash = float(cash_pct.mean())
     max_cash = float(cash_pct.max())
     current_cash = float(cash_pct.iloc[-1])

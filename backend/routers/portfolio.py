@@ -4,6 +4,7 @@ NAV series and growth endpoints are in portfolio_nav.py.
 """
 
 import datetime as dt
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -31,6 +32,8 @@ from backend.schemas.portfolio import (
     HoldingResponse,
     SummaryResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 

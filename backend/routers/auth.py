@@ -1,5 +1,6 @@
 """Auth router — login, logout, me, change-password."""
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -24,6 +25,8 @@ from backend.schemas.auth import (
     LoginResponse,
     UserResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)

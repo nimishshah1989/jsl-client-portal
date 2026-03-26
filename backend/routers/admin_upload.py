@@ -7,7 +7,9 @@ import tempfile
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,7 @@ from backend.middleware.auth_middleware import get_admin_user
 from backend.schemas.admin import UploadPreviewResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin-upload"])
+limiter = Limiter(key_func=get_remote_address)
 
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -76,7 +79,7 @@ async def _run_ingestion_background(
         logger.error("Background %s ingestion failed: %s", file_type, exc, exc_info=True)
         _upload_jobs[job_id].update({
             "status": "failed",
-            "errors": [{"stage": "ingestion", "error": str(exc)}],
+            "errors": [{"stage": "ingestion", "error": "File processing failed. Please check the file format and try again."}],
         })
     finally:
         if os.path.exists(tmp_path):
@@ -130,7 +133,9 @@ async def _save_and_start_background(
 
 
 @router.post("/upload-nav")
+@limiter.limit("5/minute")
 async def upload_nav(
+    request: Request,
     file: UploadFile,
     admin: dict = Depends(get_admin_user),
 ) -> dict[str, Any]:
@@ -141,7 +146,9 @@ async def upload_nav(
 
 
 @router.post("/upload-transactions")
+@limiter.limit("5/minute")
 async def upload_transactions(
+    request: Request,
     file: UploadFile,
     admin: dict = Depends(get_admin_user),
 ) -> dict[str, Any]:
@@ -152,7 +159,9 @@ async def upload_transactions(
 
 
 @router.post("/upload-cashflows")
+@limiter.limit("5/minute")
 async def upload_cashflows(
+    request: Request,
     file: UploadFile,
     admin: dict = Depends(get_admin_user),
 ) -> dict[str, Any]:

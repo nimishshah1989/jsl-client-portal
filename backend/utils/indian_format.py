@@ -1,5 +1,7 @@
 """Indian number formatting utilities for INR currency and percentages."""
 
+from __future__ import annotations
+
 from decimal import Decimal, ROUND_HALF_UP
 
 # Thresholds for short-form formatting

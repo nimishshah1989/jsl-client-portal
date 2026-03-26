@@ -1,6 +1,7 @@
 """Portfolio router — XIRR and calculation methodology endpoints."""
 
 import datetime as dt
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +17,8 @@ from backend.schemas.portfolio import (
     MethodologyResponse,
     XIRRResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 

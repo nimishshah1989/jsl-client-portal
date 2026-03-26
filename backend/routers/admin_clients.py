@@ -2,6 +2,7 @@
 
 import csv
 import io
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
@@ -18,6 +19,8 @@ from backend.schemas.admin import (
     CreateClientRequest,
     UpdateClientRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 

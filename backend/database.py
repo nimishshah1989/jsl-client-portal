@@ -1,5 +1,7 @@
 """SQLAlchemy 2.0 async engine, session factory, and Base model."""
 
+from __future__ import annotations
+
 import ssl
 from collections.abc import AsyncGenerator
 

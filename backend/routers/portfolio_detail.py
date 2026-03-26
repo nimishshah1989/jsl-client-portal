@@ -1,6 +1,7 @@
 """Portfolio router part 2 — performance table, risk, transactions, XIRR, methodology."""
 
 import datetime as dt
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,6 +19,8 @@ from backend.schemas.portfolio import (
     RiskScorecardResponse,
     TransactionItem,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 

@@ -73,7 +73,11 @@ _PERIOD_COL_MAP = {
     "Since Inception": "inception",
 }
 
-_RF_RATE = 6.50  # India 10Y govt bond yield proxy — must match methodology page
+try:
+    from backend.config import get_settings as _get_settings
+    _RF_RATE = float(_get_settings().RISK_FREE_RATE)
+except Exception:
+    _RF_RATE = 6.50  # fallback — India 10Y govt bond yield proxy
 
 
 def _slice_nav_df(nav_df: pd.DataFrame, days: int | None) -> pd.DataFrame:
@@ -185,9 +189,21 @@ def compute_all_metrics(
     bench_series = nav_df["benchmark_value"].astype(float)
     bench_series.index = pd.DatetimeIndex(nav_df["nav_date"])
 
+    # Check if benchmark data is available (non-zero, non-NaN)
+    has_benchmark = bool(bench_series.sum() > 0 and not bench_series.isna().all())
+    if not has_benchmark:
+        logger.warning(
+            "Benchmark data unavailable — computing portfolio-only metrics, "
+            "benchmark-relative metrics will be set to 0/None"
+        )
+
     port_ret = compute_daily_returns(port_series)
-    bench_ret = compute_daily_returns(bench_series)
-    excess_ret = port_ret - bench_ret.reindex(port_ret.index, method="ffill").fillna(0)
+    bench_ret = compute_daily_returns(bench_series) if has_benchmark else pd.Series(dtype=float)
+    excess_ret = (
+        port_ret - bench_ret.reindex(port_ret.index, method="ffill").fillna(0)
+        if has_benchmark
+        else port_ret
+    )
 
     total_days = (port_series.index[-1] - port_series.index[0]).days
     if total_days <= 0:
@@ -195,11 +211,15 @@ def compute_all_metrics(
 
     # Core metrics (inception-to-date)
     port_cagr = cagr(float(port_series.iloc[0]), float(port_series.iloc[-1]), total_days)
-    bench_cagr = cagr(float(bench_series.iloc[0]), float(bench_series.iloc[-1]), total_days)
+    bench_cagr = (
+        cagr(float(bench_series.iloc[0]), float(bench_series.iloc[-1]), total_days)
+        if has_benchmark
+        else 0.0
+    )
     port_vol = annualized_volatility(port_ret)
     dd_result = max_drawdown(port_series)
-    beta_val = beta(port_ret, bench_ret)
-    te_val = tracking_error(excess_ret)
+    beta_val = beta(port_ret, bench_ret) if has_benchmark and len(bench_ret) > 1 else 0.0
+    te_val = tracking_error(excess_ret) if has_benchmark else 0.0
 
     # XIRR from corpus changes (fallback — may be overridden by real cash flows
     # in run_risk_engine if cpp_cash_flows data exists)
@@ -255,12 +275,12 @@ def compute_all_metrics(
         "max_dd_start": dd_result["dd_start"],
         "max_dd_end": dd_result["dd_end"],
         "max_dd_recovery": dd_result["dd_recovery"],
-        "alpha": alpha(port_cagr, bench_cagr, beta_val, risk_free_rate),
+        "alpha": alpha(port_cagr, bench_cagr, beta_val, risk_free_rate) if has_benchmark else 0.0,
         "beta": beta_val,
-        "information_ratio": information_ratio(port_cagr, bench_cagr, te_val),
+        "information_ratio": information_ratio(port_cagr, bench_cagr, te_val) if has_benchmark else 0.0,
         "tracking_error": te_val,
-        "up_capture": up_capture(port_ret, bench_ret),
-        "down_capture": down_capture(port_ret, bench_ret),
+        "up_capture": up_capture(port_ret, bench_ret) if has_benchmark and len(bench_ret) > 1 else 0.0,
+        "down_capture": down_capture(port_ret, bench_ret) if has_benchmark and len(bench_ret) > 1 else 0.0,
         "ulcer_index": ulcer_index(port_series),
         "max_consecutive_loss": monthly_profile["max_consecutive_loss"],
         "win_months": monthly_profile["win_count"],
@@ -268,7 +288,7 @@ def compute_all_metrics(
         "avg_cash_held": cash_stats["avg_cash_held"],
         "max_cash_held": cash_stats["max_cash_held"],
         "current_cash": cash_stats["current_cash"],
-        "market_correlation": market_correlation(port_ret, bench_ret),
+        "market_correlation": market_correlation(port_ret, bench_ret) if has_benchmark and len(bench_ret) > 1 else 0.0,
         "monthly_hit_rate": monthly_profile["hit_rate"],
         "best_month": monthly_profile["best_month"],
         "worst_month": monthly_profile["worst_month"],

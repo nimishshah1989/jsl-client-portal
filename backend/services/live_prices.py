@@ -10,6 +10,12 @@ from decimal import Decimal, ROUND_HALF_UP
 import yfinance as yf
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from backend.services.stock_reference import SECTOR_MAP
 
@@ -23,11 +29,29 @@ def _nse_ticker(symbol: str) -> str:
     return f"{symbol}.NS"
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=8),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+    reraise=True,
+)
+def _download_prices(ticker_str: str) -> "pd.DataFrame":
+    """Internal helper: yfinance download with retry (3 attempts, exponential backoff)."""
+    import pandas as pd  # noqa: F811 — local import to avoid circular at module level
+
+    data = yf.download(
+        ticker_str, period="5d", progress=False, auto_adjust=True,
+        threads=True, timeout=30,
+    )
+    return data
+
+
 def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
     """
     Fetch latest close prices for a list of NSE symbols.
 
     Returns dict of {symbol: price_decimal}. Symbols that fail are omitted.
+    On complete failure after retries, returns empty dict (does not crash).
     """
     if not symbols:
         return {}
@@ -38,9 +62,7 @@ def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
     # Batch download — yfinance supports multiple tickers at once
     ticker_str = " ".join(tickers.values())
     try:
-        data = yf.download(
-            ticker_str, period="5d", progress=False, auto_adjust=True, threads=True,
-        )
+        data = _download_prices(ticker_str)
         if data.empty:
             return prices
 
@@ -58,7 +80,11 @@ def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
             except (KeyError, IndexError):
                 continue
     except Exception as exc:
-        logger.warning("yfinance batch download failed: %s", exc)
+        logger.warning(
+            "yfinance batch download failed after retries for %d symbols: %s",
+            len(symbols),
+            exc,
+        )
 
     return prices
 

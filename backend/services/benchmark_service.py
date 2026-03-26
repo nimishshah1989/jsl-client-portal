@@ -11,6 +11,12 @@ from typing import ClassVar
 
 import pandas as pd
 import yfinance as yf
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +68,34 @@ class BenchmarkCache:
         cls._cache.clear()
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=8),
+    retry=retry_if_exception_type((RuntimeError, ConnectionError, TimeoutError, Exception)),
+    reraise=True,
+)
+def _fetch_yfinance_history(fetch_start: date, fetch_end: date) -> pd.DataFrame:
+    """
+    Internal helper that performs the actual yfinance API call with retry.
+
+    Retries up to 3 times with exponential backoff (2s, 4s, 8s).
+    Raises RuntimeError if yfinance returns empty data.
+    """
+    ticker = yf.Ticker(_NIFTY_TICKER)
+    hist = ticker.history(
+        start=fetch_start.isoformat(),
+        end=fetch_end.isoformat(),
+        auto_adjust=True,
+        timeout=30,
+    )
+    if hist.empty:
+        raise RuntimeError(
+            f"yfinance returned no data for {_NIFTY_TICKER} "
+            f"from {fetch_start} to {fetch_end}"
+        )
+    return hist
+
+
 def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
     """
     Fetch Nifty 50 daily close prices from Yahoo Finance.
@@ -73,9 +107,7 @@ def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
     Returns:
         DataFrame with DatetimeIndex and a single column 'close'.
         Index name is 'date'. Sorted ascending by date.
-
-    Raises:
-        RuntimeError: If yfinance returns no data.
+        Returns empty DataFrame if all retries fail (does not crash pipeline).
     """
     # Check cache first
     cached = BenchmarkCache.get(_NIFTY_TICKER, start_date, end_date)
@@ -99,18 +131,16 @@ def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
         fetch_end,
     )
 
-    ticker = yf.Ticker(_NIFTY_TICKER)
-    hist = ticker.history(
-        start=fetch_start.isoformat(),
-        end=fetch_end.isoformat(),
-        auto_adjust=True,
-    )
-
-    if hist.empty:
-        raise RuntimeError(
-            f"yfinance returned no data for {_NIFTY_TICKER} "
-            f"from {fetch_start} to {fetch_end}"
+    try:
+        hist = _fetch_yfinance_history(fetch_start, fetch_end)
+    except Exception as exc:
+        logger.warning(
+            "Nifty 50 fetch failed after 3 retries (%s to %s): %s",
+            fetch_start,
+            fetch_end,
+            exc,
         )
+        return pd.DataFrame(columns=["close"])
 
     # Keep only the Close column, rename to 'close'
     df = hist[["Close"]].copy()
@@ -187,4 +217,11 @@ def fetch_and_align(
     end = dates_idx.max().date()
 
     nifty_df = fetch_nifty_data(start, end)
+    if nifty_df.empty:
+        logger.warning(
+            "Benchmark data unavailable for %s to %s — returning empty series",
+            start,
+            end,
+        )
+        return pd.Series(dtype=float, index=dates_idx, name="close")
     return align_benchmark(dates_idx, nifty_df)

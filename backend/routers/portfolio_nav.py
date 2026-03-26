@@ -5,6 +5,7 @@ that compute benchmark-equivalent values using the virtual units method.
 """
 
 import datetime as dt
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,6 +25,8 @@ from backend.schemas.portfolio import (
     GrowthResponse,
     NavSeriesPoint,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 

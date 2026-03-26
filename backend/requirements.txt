@@ -30,6 +30,9 @@ openpyxl==3.1.5
 # Market data
 yfinance>=1.2.0,<2.0
 
+# Retry / resilience
+tenacity>=8.2.0,<10.0
+
 # Scheduler
 apscheduler==3.10.4
 

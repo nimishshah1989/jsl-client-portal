@@ -24,7 +24,7 @@ class CashFlow(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     description: Mapped[str | None] = mapped_column(String(300))
     source_ucc: Mapped[str | None] = mapped_column(String(50))  # Original UCC from file
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     __table_args__ = (
         UniqueConstraint("client_id", "portfolio_id", "flow_date", "flow_type", "amount", name="uq_cpp_cash_flow"),

@@ -70,7 +70,7 @@ async def login(
         max_age=COOKIE_MAX_AGE,
     )
 
-    client.last_login = datetime.now(timezone.utc)
+    client.last_login = datetime.now(timezone.utc).replace(tzinfo=None)
     await db.flush()
 
     return LoginResponse(

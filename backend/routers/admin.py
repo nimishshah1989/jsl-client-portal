@@ -1,8 +1,12 @@
-"""Admin router — file upload, preview, risk recompute, upload log, impersonate."""
+"""Admin router — file upload (background), preview, risk recompute, upload log,
+impersonate, and aggregate analytics dashboard."""
 
+import asyncio
 import logging
 import os
 import tempfile
+import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
 from sqlalchemy import select, desc, func, text
@@ -10,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-from backend.database import get_db
+from backend.database import AsyncSessionLocal, get_db
 from backend.middleware.auth_middleware import create_access_token, get_admin_user
 from backend.models.client import Client
 from backend.models.nav_series import NavSeries
@@ -21,6 +25,9 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+
+# In-memory upload job tracker for background processing status
+_upload_jobs: dict[str, dict[str, Any]] = {}
 
 
 def _validate_upload(file: UploadFile) -> str:
@@ -36,14 +43,55 @@ def _validate_upload(file: UploadFile) -> str:
     return ext
 
 
-async def _save_and_ingest(
+async def _run_ingestion_background(
+    tmp_path: str,
+    ingest_func_name: str,
+    file_type: str,
+    filename: str,
+    admin_id: int,
+    job_id: str,
+) -> None:
+    """Run ingestion in background with its own DB session. Updates job status."""
+    try:
+        import backend.services.ingestion_service as svc
+        ingest_fn = getattr(svc, ingest_func_name)
+
+        async with AsyncSessionLocal() as db:
+            result = await ingest_fn(tmp_path, admin_id, db)
+            if hasattr(result, "__dataclass_fields__"):
+                from dataclasses import asdict
+                result = asdict(result)
+            await db.commit()
+
+        _upload_jobs[job_id].update({
+            "status": "complete",
+            "rows_processed": result.get("rows_processed", 0),
+            "rows_failed": result.get("rows_failed", 0),
+            "clients_affected": result.get("clients_affected", 0),
+            "errors": result.get("errors", []),
+        })
+
+    except Exception as exc:
+        logger.error("Background %s ingestion failed: %s", file_type, exc, exc_info=True)
+        _upload_jobs[job_id].update({
+            "status": "failed",
+            "errors": [{"stage": "ingestion", "error": str(exc)}],
+        })
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+async def _save_and_start_background(
     file: UploadFile,
     ingest_func_name: str,
     file_type: str,
     admin_id: int,
-    db: AsyncSession,
-) -> UploadResponse:
-    """Save upload to temp file, run ingestion, log result."""
+) -> dict[str, Any]:
+    """Save upload to temp file and kick off background ingestion.
+
+    Returns immediately with a job_id so the frontend can poll for status.
+    """
     _validate_upload(file)
     content = await file.read()
     if len(content) > MAX_UPLOAD_SIZE:
@@ -55,78 +103,82 @@ async def _save_and_ingest(
         tmp.write(content)
         tmp_path = tmp.name
 
-    try:
-        import backend.services.ingestion_service as svc
-        ingest_fn = getattr(svc, ingest_func_name)
-        result = await ingest_fn(tmp_path, admin_id, db)
-        if hasattr(result, '__dataclass_fields__'):
-            from dataclasses import asdict
-            result = asdict(result)
-    except (ImportError, AttributeError):
-        result = {
-            "rows_processed": 0, "rows_failed": 0, "clients_affected": 0,
-            "errors": [{"message": f"{ingest_func_name} not implemented"}],
-        }
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{file_type} ingestion failed: {exc!s}",
-        ) from exc
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    job_id = f"{file_type}_{int(time.time() * 1000)}"
+    _upload_jobs[job_id] = {
+        "status": "processing",
+        "file_type": file_type,
+        "filename": file.filename,
+        "rows_processed": 0,
+        "rows_failed": 0,
+        "clients_affected": 0,
+        "errors": [],
+        "started_at": time.time(),
+    }
 
-    log = UploadLog(
-        uploaded_by=admin_id, file_type=file_type, filename=file.filename,
-        rows_processed=result.get("rows_processed", 0),
-        rows_failed=result.get("rows_failed", 0),
-        clients_affected=result.get("clients_affected", 0),
-        errors=result.get("errors", []),
-    )
-    db.add(log)
-    await db.flush()
-
-    return UploadResponse(
-        file_type=file_type, filename=file.filename or "unknown",
-        rows_processed=result.get("rows_processed", 0),
-        rows_failed=result.get("rows_failed", 0),
-        clients_affected=result.get("clients_affected", 0),
-        errors=result.get("errors", []),
+    asyncio.create_task(
+        _run_ingestion_background(
+            tmp_path, ingest_func_name, file_type,
+            file.filename or "unknown", admin_id, job_id,
+        )
     )
 
+    return {"job_id": job_id, "status": "processing", "file_type": file_type}
 
-@router.post("/upload-nav", response_model=UploadResponse)
+
+@router.post("/upload-nav")
 async def upload_nav(
     file: UploadFile,
     admin: dict = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db),
-) -> UploadResponse:
-    """Upload NAV file, parse, ingest, compute risk metrics."""
-    return await _save_and_ingest(file, "ingest_nav_file", "NAV", admin["client_id"], db)
+) -> dict[str, Any]:
+    """Upload NAV file — returns immediately, processes in background."""
+    return await _save_and_start_background(
+        file, "ingest_nav_file", "NAV", admin["client_id"],
+    )
 
 
-@router.post("/upload-transactions", response_model=UploadResponse)
+@router.post("/upload-transactions")
 async def upload_transactions(
     file: UploadFile,
     admin: dict = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db),
-) -> UploadResponse:
-    """Upload transaction file, parse, ingest, recompute holdings."""
-    return await _save_and_ingest(
-        file, "ingest_transaction_file", "TRANSACTIONS", admin["client_id"], db,
+) -> dict[str, Any]:
+    """Upload transaction file — returns immediately, processes in background."""
+    return await _save_and_start_background(
+        file, "ingest_transaction_file", "TRANSACTIONS", admin["client_id"],
     )
 
 
-@router.post("/upload-cashflows", response_model=UploadResponse)
+@router.post("/upload-cashflows")
 async def upload_cashflows(
     file: UploadFile,
     admin: dict = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db),
-) -> UploadResponse:
-    """Upload cash flow file, parse, ingest to cpp_cash_flows."""
-    return await _save_and_ingest(
-        file, "ingest_cashflow_file", "CASHFLOWS", admin["client_id"], db,
+) -> dict[str, Any]:
+    """Upload cash flow file — returns immediately, processes in background."""
+    return await _save_and_start_background(
+        file, "ingest_cashflow_file", "CASHFLOWS", admin["client_id"],
     )
+
+
+@router.get("/upload-status/{job_id}")
+async def get_upload_status(
+    job_id: str,
+    admin: dict = Depends(get_admin_user),
+) -> dict[str, Any]:
+    """Poll upload job status. Returns processing/complete/failed."""
+    job = _upload_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    elapsed = time.time() - job.get("started_at", time.time())
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "file_type": job["file_type"],
+        "filename": job["filename"],
+        "rows_processed": job["rows_processed"],
+        "rows_failed": job["rows_failed"],
+        "clients_affected": job["clients_affected"],
+        "errors": job["errors"][:20],
+        "elapsed_seconds": round(elapsed, 1),
+    }
 
 
 @router.post("/upload-preview", response_model=UploadPreviewResponse)
@@ -135,7 +187,6 @@ async def upload_preview(
     admin: dict = Depends(get_admin_user),
 ) -> UploadPreviewResponse:
     """Preview first 10 rows of an uploaded file with auto-column mapping."""
-    from typing import Any
     import csv
     import io
 
@@ -149,8 +200,8 @@ async def upload_preview(
     row_count = 0
 
     if ext == ".csv":
-        text = content.decode("utf-8", errors="replace")
-        reader = csv.DictReader(io.StringIO(text))
+        text_content = content.decode("utf-8", errors="replace")
+        reader = csv.DictReader(io.StringIO(text_content))
         columns = reader.fieldnames or []
         for i, row in enumerate(reader):
             row_count += 1
@@ -170,7 +221,6 @@ def _parse_xlsx_preview(
     content: bytes, ext: str
 ) -> tuple[list[str], list[dict], int]:
     """Read first 10 data rows from xlsx file."""
-    from typing import Any
     import openpyxl
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
@@ -228,8 +278,6 @@ async def recompute_risk(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Trigger risk recomputation for all or a specific client."""
-    from backend.database import AsyncSessionLocal
-
     try:
         from backend.services.risk_engine import run_risk_engine
     except ImportError as exc:
@@ -251,8 +299,6 @@ async def recompute_risk(
     count = 0
     errors: list[str] = []
     for cid in client_ids:
-        # Use a separate session per client so one failure doesn't poison the
-        # transaction for subsequent clients (PostgreSQL aborted-txn behavior).
         try:
             async with AsyncSessionLocal() as client_db:
                 pid = (await client_db.execute(
@@ -270,7 +316,7 @@ async def recompute_risk(
             continue
     result: dict = {"message": f"Recomputed risk for {count} clients"}
     if errors:
-        result["errors"] = errors[:20]  # Cap at 20 to avoid huge response
+        result["errors"] = errors[:20]
     return result
 
 
@@ -311,7 +357,6 @@ async def data_status(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Return last upload timestamp and latest NAV date across all clients."""
-    # Last upload timestamp
     last_upload_stmt = (
         select(UploadLog.uploaded_at)
         .order_by(desc(UploadLog.uploaded_at))
@@ -319,13 +364,171 @@ async def data_status(
     )
     last_upload = (await db.execute(last_upload_stmt)).scalar_one_or_none()
 
-    # Latest NAV date in the data (across all clients)
     last_nav_stmt = select(func.max(NavSeries.nav_date))
     last_nav_date = (await db.execute(last_nav_stmt)).scalar_one_or_none()
 
     return {
         "last_uploaded_at": last_upload.isoformat() if last_upload else None,
         "last_data_date": last_nav_date.isoformat() if last_nav_date else None,
+    }
+
+
+@router.get("/dashboard-analytics")
+async def dashboard_analytics(
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Aggregate analytics for the admin dashboard.
+
+    Returns:
+        total_aum: Total assets under management (sum of all latest NAV values)
+        total_clients: Number of active clients
+        blended_cagr: AUM-weighted average CAGR across all clients
+        total_cash: Total cash position across all clients (₹)
+        total_cash_pct: Cash as percentage of total AUM
+        top_performers: Top 5 clients by CAGR
+        bottom_performers: Bottom 5 clients by CAGR
+        avg_max_drawdown: Average max drawdown across clients
+        data_as_of: Latest NAV date in the system
+    """
+    # Total active clients
+    client_count = (await db.execute(
+        text("SELECT COUNT(*) FROM cpp_clients WHERE is_active = true AND is_admin = false")
+    )).scalar() or 0
+
+    # Latest NAV per client (for AUM, cash calculations)
+    latest_navs = await db.execute(text("""
+        SELECT DISTINCT ON (n.client_id)
+            n.client_id, c.name, c.client_code,
+            n.nav_value, n.invested_amount, n.nav_date,
+            COALESCE(n.etf_value, 0) AS etf_value,
+            COALESCE(n.cash_value, 0) AS cash_value,
+            COALESCE(n.bank_balance, 0) AS bank_balance,
+            n.cash_pct
+        FROM cpp_nav_series n
+        JOIN cpp_clients c ON c.id = n.client_id
+        WHERE c.is_active = true AND c.is_admin = false
+        ORDER BY n.client_id, n.nav_date DESC
+    """))
+    nav_rows = latest_navs.fetchall()
+
+    total_aum = 0.0
+    total_invested = 0.0
+    total_cash = 0.0
+    data_as_of = None
+
+    for row in nav_rows:
+        nav_val = float(row.nav_value or 0)
+        total_aum += nav_val
+        total_invested += float(row.invested_amount or 0)
+
+        # True cash = ETF + ledger cash + bank
+        etf = float(row.etf_value or 0)
+        cash = float(row.cash_value or 0)
+        bank = float(row.bank_balance or 0)
+        client_cash = etf + cash + bank
+        if client_cash > 0:
+            total_cash += client_cash
+        elif row.cash_pct and nav_val > 0:
+            # Fallback to Liquidity%
+            total_cash += nav_val * float(row.cash_pct) / 100
+
+        if data_as_of is None or (row.nav_date and row.nav_date > data_as_of):
+            data_as_of = row.nav_date
+
+    total_cash_pct = (total_cash / total_aum * 100) if total_aum > 0 else 0.0
+    total_profit = total_aum - total_invested
+    total_profit_pct = ((total_aum / total_invested - 1) * 100) if total_invested > 0 else 0.0
+
+    # Latest risk metrics per client for blended CAGR and performer ranking
+    risk_rows = await db.execute(text("""
+        SELECT DISTINCT ON (r.client_id)
+            r.client_id, c.name, c.client_code,
+            r.cagr, r.max_drawdown, r.sharpe_ratio, r.xirr,
+            r.volatility, r.up_capture, r.down_capture
+        FROM cpp_risk_metrics r
+        JOIN cpp_clients c ON c.id = r.client_id
+        WHERE c.is_active = true AND c.is_admin = false
+        ORDER BY r.client_id, r.computed_date DESC
+    """))
+    risk_data = risk_rows.fetchall()
+
+    # Build AUM lookup for weighting
+    aum_by_client: dict[int, float] = {}
+    for row in nav_rows:
+        aum_by_client[row.client_id] = float(row.nav_value or 0)
+
+    # Blended (AUM-weighted) metrics
+    weighted_cagr_sum = 0.0
+    weighted_dd_sum = 0.0
+    weighted_sharpe_sum = 0.0
+    total_weight = 0.0
+    client_metrics: list[dict[str, Any]] = []
+
+    for row in risk_data:
+        weight = aum_by_client.get(row.client_id, 0.0)
+        cagr_val = float(row.cagr or 0)
+        dd_val = float(row.max_drawdown or 0)
+        sharpe_val = float(row.sharpe_ratio or 0)
+
+        weighted_cagr_sum += cagr_val * weight
+        weighted_dd_sum += dd_val * weight
+        weighted_sharpe_sum += sharpe_val * weight
+        total_weight += weight
+
+        client_metrics.append({
+            "client_id": row.client_id,
+            "name": row.name,
+            "client_code": row.client_code,
+            "cagr": round(cagr_val, 2),
+            "max_drawdown": round(dd_val, 2),
+            "sharpe_ratio": round(sharpe_val, 2),
+            "xirr": round(float(row.xirr or 0), 2),
+            "aum": round(weight, 2),
+        })
+
+    blended_cagr = (weighted_cagr_sum / total_weight) if total_weight > 0 else 0.0
+    avg_max_dd = (weighted_dd_sum / total_weight) if total_weight > 0 else 0.0
+    blended_sharpe = (weighted_sharpe_sum / total_weight) if total_weight > 0 else 0.0
+
+    # Sort for top/bottom performers
+    by_cagr = sorted(client_metrics, key=lambda x: x["cagr"], reverse=True)
+    top_performers = by_cagr[:5]
+    bottom_performers = by_cagr[-5:] if len(by_cagr) > 5 else []
+
+    # Upload history summary
+    recent_uploads = await db.execute(text("""
+        SELECT file_type, filename, rows_processed, clients_affected, uploaded_at
+        FROM cpp_upload_log
+        ORDER BY uploaded_at DESC
+        LIMIT 5
+    """))
+    upload_history = [
+        {
+            "file_type": r.file_type,
+            "filename": r.filename,
+            "rows_processed": r.rows_processed,
+            "clients_affected": r.clients_affected,
+            "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
+        }
+        for r in recent_uploads.fetchall()
+    ]
+
+    return {
+        "total_aum": round(total_aum, 2),
+        "total_invested": round(total_invested, 2),
+        "total_profit": round(total_profit, 2),
+        "total_profit_pct": round(total_profit_pct, 2),
+        "total_clients": client_count,
+        "blended_cagr": round(blended_cagr, 2),
+        "blended_sharpe": round(blended_sharpe, 2),
+        "total_cash": round(total_cash, 2),
+        "total_cash_pct": round(total_cash_pct, 2),
+        "avg_max_drawdown": round(avg_max_dd, 2),
+        "top_performers": top_performers,
+        "bottom_performers": bottom_performers,
+        "data_as_of": data_as_of.isoformat() if data_as_of else None,
+        "recent_uploads": upload_history,
     }
 
 
@@ -342,7 +545,6 @@ async def impersonate_client(
     if client is None:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    # Create a token scoped to the target client (not admin)
     token = create_access_token(client.id, is_admin=False)
 
     from backend.config import get_settings

@@ -1,64 +1,105 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { apiFetch, apiGet, apiPost } from '@/lib/api';
 
+const POLL_INTERVAL_MS = 2000;
+
 /**
- * Hook for NAV file upload.
+ * Generic background upload hook with polling.
+ * Sends file, gets job_id, polls /upload-status/{job_id} until complete/failed.
  */
-export function useUploadNav() {
+function useBackgroundUpload(endpoint) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [status, setStatus] = useState(null); // 'uploading' | 'processing' | 'complete' | 'failed'
+  const [elapsed, setElapsed] = useState(0);
+  const pollRef = useRef(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => stopPolling, [stopPolling]);
 
   const upload = useCallback(async (file) => {
     setLoading(true);
     setError(null);
     setResult(null);
+    setStatus('uploading');
+    setElapsed(0);
+    stopPolling();
+
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const data = await apiPost('/admin/upload-nav', formData);
-      setResult(data);
+      const data = await apiPost(endpoint, formData);
+
+      if (!data.job_id) {
+        // Legacy response (no background processing)
+        setResult(data);
+        setStatus('complete');
+        setLoading(false);
+        return data;
+      }
+
+      // Start polling
+      setStatus('processing');
+      const jobId = data.job_id;
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const statusData = await apiGet(`/admin/upload-status/${jobId}`);
+          setElapsed(statusData.elapsed_seconds || 0);
+
+          if (statusData.status === 'complete') {
+            setResult(statusData);
+            setStatus('complete');
+            setLoading(false);
+            stopPolling();
+          } else if (statusData.status === 'failed') {
+            const errMsg = statusData.errors?.[0]?.error || 'Processing failed';
+            setError(errMsg);
+            setStatus('failed');
+            setLoading(false);
+            stopPolling();
+          }
+          // else still processing, keep polling
+        } catch {
+          // Poll error — keep trying
+        }
+      }, POLL_INTERVAL_MS);
+
       return data;
     } catch (err) {
       setError(err.message || 'Upload failed');
-      throw err;
-    } finally {
+      setStatus('failed');
       setLoading(false);
+      stopPolling();
+      throw err;
     }
-  }, []);
+  }, [endpoint, stopPolling]);
 
-  return { upload, loading, error, result };
+  return { upload, loading, error, result, status, elapsed };
 }
 
 /**
- * Hook for transaction file upload.
+ * Hook for NAV file upload with background processing.
+ */
+export function useUploadNav() {
+  return useBackgroundUpload('/admin/upload-nav');
+}
+
+/**
+ * Hook for transaction file upload with background processing.
  */
 export function useUploadTransactions() {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);
-
-  const upload = useCallback(async (file) => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const data = await apiPost('/admin/upload-transactions', formData);
-      setResult(data);
-      return data;
-    } catch (err) {
-      setError(err.message || 'Upload failed');
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  return { upload, loading, error, result };
+  return useBackgroundUpload('/admin/upload-transactions');
 }
 
 /**
@@ -257,4 +298,28 @@ export function useUploadPreview() {
   }, []);
 
   return { getPreview, loading, error, preview };
+}
+
+/**
+ * Hook for admin dashboard analytics.
+ */
+export function useDashboardAnalytics() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetch = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await apiGet('/admin/dashboard-analytics');
+      setData(result);
+    } catch (err) {
+      setError(err.message || 'Failed to load analytics');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { data, loading, error, refetch: fetch };
 }

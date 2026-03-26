@@ -1,11 +1,15 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { useUploadNav, useUploadTransactions, useUploadPreview } from '@/hooks/useAdmin';
-import Button from '@/components/ui/Button';
-import Badge from '@/components/ui/Badge';
+import { useState } from 'react';
+import { useUploadNav, useUploadTransactions } from '@/hooks/useAdmin';
 import Spinner from '@/components/ui/Spinner';
-import { Upload, FileSpreadsheet, CheckCircle, AlertTriangle, X } from 'lucide-react';
+import {
+  Upload,
+  FileSpreadsheet,
+  CheckCircle,
+  AlertTriangle,
+  Loader2,
+} from 'lucide-react';
 
 function FileDropZone({ label, accept, onFile, disabled }) {
   const [dragOver, setDragOver] = useState(false);
@@ -32,9 +36,14 @@ function FileDropZone({ label, accept, onFile, disabled }) {
   return (
     <div
       className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors ${
-        dragOver ? 'border-teal-400 bg-teal-50' : 'border-slate-300 bg-white hover:border-slate-400'
+        dragOver
+          ? 'border-teal-400 bg-teal-50'
+          : 'border-slate-300 bg-white hover:border-slate-400'
       } ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
@@ -65,6 +74,28 @@ function FileDropZone({ label, accept, onFile, disabled }) {
   );
 }
 
+function ProcessingStatus({ status, elapsed }) {
+  if (!status || status === 'uploading') return null;
+
+  if (status === 'processing') {
+    return (
+      <div className="flex items-center gap-3 mt-4 bg-teal-50 border border-teal-200 rounded-xl p-4">
+        <Loader2 className="w-5 h-5 text-teal-600 animate-spin" />
+        <div>
+          <p className="text-sm font-medium text-teal-800">
+            Processing in background...
+          </p>
+          <p className="text-xs text-teal-600">
+            {elapsed > 0 ? `${Math.round(elapsed)}s elapsed` : 'Starting...'} — You can close this page. Processing will continue on the server.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function UploadResult({ result, type }) {
   if (!result) return null;
 
@@ -78,25 +109,31 @@ function UploadResult({ result, type }) {
         <div className="bg-slate-50 rounded-lg p-3">
           <p className="text-xs text-slate-500">Rows Processed</p>
           <p className="text-lg font-bold font-mono text-emerald-600">
-            {result.rows_processed?.toLocaleString()}
+            {(result.rows_processed || 0).toLocaleString()}
           </p>
         </div>
         <div className="bg-slate-50 rounded-lg p-3">
-          <p className="text-xs text-slate-500">Clients Found</p>
+          <p className="text-xs text-slate-500">Clients Affected</p>
           <p className="text-lg font-bold font-mono text-slate-800">
-            {result.clients_found || result.clients_processed || '--'}
+            {result.clients_affected || '--'}
           </p>
         </div>
         <div className="bg-slate-50 rounded-lg p-3">
           <p className="text-xs text-slate-500">Rows Failed</p>
-          <p className={`text-lg font-bold font-mono ${result.rows_failed > 0 ? 'text-red-600' : 'text-slate-800'}`}>
+          <p
+            className={`text-lg font-bold font-mono ${
+              result.rows_failed > 0 ? 'text-red-600' : 'text-slate-800'
+            }`}
+          >
             {result.rows_failed || 0}
           </p>
         </div>
         <div className="bg-slate-50 rounded-lg p-3">
           <p className="text-xs text-slate-500">Duration</p>
           <p className="text-lg font-bold font-mono text-slate-800">
-            {result.duration ? `${result.duration}s` : '--'}
+            {result.elapsed_seconds
+              ? `${Math.round(result.elapsed_seconds)}s`
+              : '--'}
           </p>
         </div>
       </div>
@@ -105,7 +142,9 @@ function UploadResult({ result, type }) {
           <p className="text-xs font-semibold text-red-600 mb-1">Errors:</p>
           <div className="max-h-40 overflow-y-auto bg-red-50 rounded-lg p-3 text-xs text-red-700">
             {result.errors.map((err, i) => (
-              <p key={i}>{typeof err === 'string' ? err : JSON.stringify(err)}</p>
+              <p key={i}>
+                {typeof err === 'string' ? err : JSON.stringify(err)}
+              </p>
             ))}
           </div>
         </div>
@@ -115,8 +154,22 @@ function UploadResult({ result, type }) {
 }
 
 export default function UploadPage() {
-  const { upload: uploadNav, loading: navLoading, error: navError, result: navResult } = useUploadNav();
-  const { upload: uploadTxn, loading: txnLoading, error: txnError, result: txnResult } = useUploadTransactions();
+  const {
+    upload: uploadNav,
+    loading: navLoading,
+    error: navError,
+    result: navResult,
+    status: navStatus,
+    elapsed: navElapsed,
+  } = useUploadNav();
+  const {
+    upload: uploadTxn,
+    loading: txnLoading,
+    error: txnError,
+    result: txnResult,
+    status: txnStatus,
+    elapsed: txnElapsed,
+  } = useUploadTransactions();
 
   async function handleNavUpload(file) {
     try {
@@ -138,24 +191,28 @@ export default function UploadPage() {
     <div className="space-y-6">
       <h2 className="text-xl font-bold text-slate-800">Upload Data Files</h2>
       <p className="text-sm text-slate-500">
-        Upload the PMS backoffice .xlsx exports. The system will parse, validate, and ingest
-        data for all clients found in the file.
+        Upload the PMS backoffice .xlsx exports. The system will parse, validate,
+        and ingest data for all clients found in the file. Processing happens in
+        the background — you can safely navigate away.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* NAV Upload */}
         <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-2">NAV Report</h3>
+          <h3 className="text-sm font-semibold text-slate-700 mb-2">
+            NAV Report
+          </h3>
           <FileDropZone
             label="Upload NAV Report (.xlsx)"
             onFile={handleNavUpload}
             disabled={navLoading}
           />
-          {navLoading && (
+          {navStatus === 'uploading' && (
             <div className="flex items-center gap-2 mt-3 text-sm text-teal-600">
-              <Spinner size="sm" /> Processing NAV file...
+              <Spinner size="sm" /> Uploading file...
             </div>
           )}
+          <ProcessingStatus status={navStatus} elapsed={navElapsed} />
           {navError && (
             <div className="flex items-center gap-2 mt-3 text-sm text-red-600">
               <AlertTriangle className="w-4 h-4" /> {navError}
@@ -166,17 +223,20 @@ export default function UploadPage() {
 
         {/* Transaction Upload */}
         <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-2">Transaction Report</h3>
+          <h3 className="text-sm font-semibold text-slate-700 mb-2">
+            Transaction Report
+          </h3>
           <FileDropZone
             label="Upload Transaction Report (.xlsx)"
             onFile={handleTxnUpload}
             disabled={txnLoading}
           />
-          {txnLoading && (
+          {txnStatus === 'uploading' && (
             <div className="flex items-center gap-2 mt-3 text-sm text-teal-600">
-              <Spinner size="sm" /> Processing transaction file...
+              <Spinner size="sm" /> Uploading file...
             </div>
           )}
+          <ProcessingStatus status={txnStatus} elapsed={txnElapsed} />
           {txnError && (
             <div className="flex items-center gap-2 mt-3 text-sm text-red-600">
               <AlertTriangle className="w-4 h-4" /> {txnError}

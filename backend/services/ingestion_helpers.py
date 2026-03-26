@@ -353,7 +353,7 @@ async def log_upload(
                 INSERT INTO cpp_upload_log
                     (uploaded_by, file_type, filename, rows_processed,
                      rows_failed, clients_affected, errors)
-                VALUES (:ub, :ft, :fn, :rp, :rf, :ca, :err::jsonb)
+                VALUES (:ub, :ft, :fn, :rp, :rf, :ca, CAST(:err AS jsonb))
             """),
             {
                 "ub": uploaded_by,

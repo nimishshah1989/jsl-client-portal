@@ -12,9 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
 from backend.middleware.auth_middleware import get_admin_user
-from backend.services.aggregate_service import (
+from backend.services.aggregate_holdings import (
     get_aggregate_allocation,
     get_aggregate_monthly_returns,
+)
+from backend.services.aggregate_service import (
     get_aggregate_nav_series,
     get_aggregate_performance_table,
     get_aggregate_risk_metrics,

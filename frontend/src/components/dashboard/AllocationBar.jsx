@@ -58,7 +58,14 @@ export default function AllocationBar() {
       </div>
     );
   }
-  if (error || !data) return null;
+  if (error) {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <p className="text-red-600 text-sm">Failed to load allocation data.</p>
+      </div>
+    );
+  }
+  if (!data) return null;
 
   const { by_sector: rawSectors = [] } = data;
   const sectors = rawSectors

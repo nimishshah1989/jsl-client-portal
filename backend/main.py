@@ -115,6 +115,7 @@ from backend.routers.portfolio import router as portfolio_router  # noqa: E402
 from backend.routers.portfolio_nav import router as portfolio_nav_router  # noqa: E402
 from backend.routers.portfolio_detail import router as portfolio_detail_router  # noqa: E402
 from backend.routers.admin import router as admin_router  # noqa: E402
+from backend.routers.admin_upload import router as admin_upload_router  # noqa: E402
 from backend.routers.admin_clients import router as admin_clients_router  # noqa: E402
 from backend.routers.admin_aggregate import router as admin_aggregate_router  # noqa: E402
 from backend.routers.portfolio_methodology import router as portfolio_methodology_router  # noqa: E402
@@ -125,6 +126,7 @@ app.include_router(portfolio_nav_router)
 app.include_router(portfolio_detail_router)
 app.include_router(portfolio_methodology_router)
 app.include_router(admin_router)
+app.include_router(admin_upload_router)
 app.include_router(admin_clients_router)
 app.include_router(admin_aggregate_router)
 

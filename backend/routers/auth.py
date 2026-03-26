@@ -1,6 +1,6 @@
 """Auth router — login, logout, me, change-password."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from slowapi import Limiter
@@ -70,7 +70,7 @@ async def login(
         max_age=COOKIE_MAX_AGE,
     )
 
-    client.last_login = datetime.utcnow()
+    client.last_login = datetime.now(timezone.utc)
     await db.flush()
 
     return LoginResponse(

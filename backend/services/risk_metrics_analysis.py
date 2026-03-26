@@ -194,10 +194,10 @@ def monthly_return_profile(nav_df: pd.DataFrame) -> dict:
         }
 
     positive = monthly_ret[monthly_ret > 0]
-    negative = monthly_ret[monthly_ret <= 0]
+    negative = monthly_ret[monthly_ret < 0]
 
     # Max consecutive loss streak
-    is_loss = (monthly_ret <= 0).astype(int)
+    is_loss = (monthly_ret < 0).astype(int)
     streaks = is_loss.groupby((is_loss != is_loss.shift()).cumsum()).sum()
     max_consec = int(streaks.max()) if len(streaks) > 0 else 0
 

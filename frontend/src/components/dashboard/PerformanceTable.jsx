@@ -41,7 +41,7 @@ const METRIC_LABELS = [
   {
     key: 'sharpe',
     label: 'Sharpe',
-    description: 'Risk-adjusted return: (Return - Risk Free Rate) / Volatility. Higher is better. >1 = good, >2 = excellent. Uses 7% risk-free rate (India 10Y bond).',
+    description: 'Risk-adjusted return: (Return - Risk Free Rate) / Volatility. Higher is better. >1 = good, >2 = excellent. Uses 6.50% risk-free rate (India 10Y bond).',
   },
   {
     key: 'sortino',

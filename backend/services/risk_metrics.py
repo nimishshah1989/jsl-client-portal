@@ -154,7 +154,7 @@ def sharpe_ratio(
     daily_rf = risk_free_rate / 100.0 / trading_days
     excess = daily_returns - daily_rf
     std = float(excess.std())
-    if std == 0:
+    if std < 1e-10:
         return 0.0
     return float(excess.mean() / std * np.sqrt(trading_days))
 
@@ -178,7 +178,7 @@ def sortino_ratio(
     if len(downside) == 0:
         return 0.0
     downside_dev = float(np.sqrt((downside**2).mean()))
-    if downside_dev == 0:
+    if downside_dev < 1e-10:
         return 0.0
     return float((daily_returns.mean() - daily_rf) / downside_dev * np.sqrt(trading_days))
 

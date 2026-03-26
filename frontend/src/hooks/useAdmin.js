@@ -15,6 +15,7 @@ function useBackgroundUpload(endpoint) {
   const [result, setResult] = useState(null);
   const [status, setStatus] = useState(null); // 'uploading' | 'processing' | 'complete' | 'failed'
   const [elapsed, setElapsed] = useState(0);
+  const [progress, setProgress] = useState({ clients_processed: 0, clients_total: 0, current_client: '' });
   const pollRef = useRef(null);
 
   const stopPolling = useCallback(() => {
@@ -33,6 +34,7 @@ function useBackgroundUpload(endpoint) {
     setResult(null);
     setStatus('uploading');
     setElapsed(0);
+    setProgress({ clients_processed: 0, clients_total: 0, current_client: '' });
     stopPolling();
 
     try {
@@ -56,6 +58,11 @@ function useBackgroundUpload(endpoint) {
         try {
           const statusData = await apiGet(`/admin/upload-status/${jobId}`);
           setElapsed(statusData.elapsed_seconds || 0);
+          setProgress({
+            clients_processed: statusData.clients_processed || 0,
+            clients_total: statusData.clients_total || 0,
+            current_client: statusData.current_client || '',
+          });
 
           if (statusData.status === 'complete') {
             setResult(statusData);
@@ -85,7 +92,7 @@ function useBackgroundUpload(endpoint) {
     }
   }, [endpoint, stopPolling]);
 
-  return { upload, loading, error, result, status, elapsed };
+  return { upload, loading, error, result, status, elapsed, progress };
 }
 
 /**

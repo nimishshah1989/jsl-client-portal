@@ -9,6 +9,7 @@ DB helper functions live in ingestion_helpers.py.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -73,6 +74,8 @@ async def ingest_nav_file(
     filepath: str | Path,
     uploaded_by: int,
     db: AsyncSession,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> UploadResult:
     """
     Full NAV ingestion pipeline:
@@ -106,9 +109,13 @@ async def ingest_nav_file(
     upload.client_codes = list(clients.keys())
 
     # 2-5. Process each client
+    total_clients = len(clients)
     for idx, (client_code, client_records) in enumerate(clients.items()):
         client_name = client_records[0]["client_name"]
-        logger.info("Processing NAV for %s (%d of %d)", client_code, idx + 1, len(clients))
+        logger.info("Processing NAV for %s (%d of %d)", client_code, idx + 1, total_clients)
+
+        if progress_callback is not None:
+            progress_callback(idx, total_clients, client_code)
 
         try:
             client_id = await find_or_create_client(db, client_code, client_name)
@@ -152,6 +159,8 @@ async def ingest_transaction_file(
     filepath: str | Path,
     uploaded_by: int,
     db: AsyncSession,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> UploadResult:
     """
     Full transaction ingestion pipeline:
@@ -184,9 +193,13 @@ async def ingest_transaction_file(
     upload.client_codes = list(clients.keys())
 
     # 2-4. Process each client
+    total_clients = len(clients)
     for idx, (client_code, client_records) in enumerate(clients.items()):
         client_name = client_records[0]["client_name"]
-        logger.info("Processing txns for %s (%d of %d)", client_code, idx + 1, len(clients))
+        logger.info("Processing txns for %s (%d of %d)", client_code, idx + 1, total_clients)
+
+        if progress_callback is not None:
+            progress_callback(idx, total_clients, client_code)
 
         try:
             client_id = await find_or_create_client(db, client_code, client_name)
@@ -226,6 +239,8 @@ async def ingest_cashflow_file(
     filepath: str | Path,
     uploaded_by: int,
     db: AsyncSession,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> UploadResult:
     """
     Cash flow ingestion pipeline:
@@ -256,9 +271,13 @@ async def ingest_cashflow_file(
     upload.clients_affected = len(clients)
     upload.client_codes = list(clients.keys())
 
+    total_clients = len(clients)
     for idx, (client_code, client_records) in enumerate(clients.items()):
         client_name = client_records[0]["client_name"]
-        logger.info("Processing cash flows for %s (%d of %d)", client_code, idx + 1, len(clients))
+        logger.info("Processing cash flows for %s (%d of %d)", client_code, idx + 1, total_clients)
+
+        if progress_callback is not None:
+            progress_callback(idx, total_clients, client_code)
 
         try:
             client_id = await find_or_create_client(db, client_code, client_name)

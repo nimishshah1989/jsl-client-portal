@@ -56,8 +56,15 @@ async def _run_ingestion_background(
         import backend.services.ingestion_service as svc
         ingest_fn = getattr(svc, ingest_func_name)
 
+        def progress_callback(client_index: int, total_clients: int, client_code: str) -> None:
+            _upload_jobs[job_id].update({
+                "clients_processed": client_index,
+                "clients_total": total_clients,
+                "current_client": client_code,
+            })
+
         async with AsyncSessionLocal() as db:
-            result = await ingest_fn(tmp_path, admin_id, db)
+            result = await ingest_fn(tmp_path, admin_id, db, progress_callback=progress_callback)
             if hasattr(result, "__dataclass_fields__"):
                 from dataclasses import asdict
                 result = asdict(result)
@@ -113,6 +120,9 @@ async def _save_and_start_background(
         "clients_affected": 0,
         "errors": [],
         "started_at": time.time(),
+        "clients_processed": 0,
+        "clients_total": 0,
+        "current_client": "",
     }
 
     asyncio.create_task(
@@ -178,6 +188,9 @@ async def get_upload_status(
         "clients_affected": job["clients_affected"],
         "errors": job["errors"][:20],
         "elapsed_seconds": round(elapsed, 1),
+        "clients_processed": job.get("clients_processed", 0),
+        "clients_total": job.get("clients_total", 0),
+        "current_client": job.get("current_client", ""),
     }
 
 

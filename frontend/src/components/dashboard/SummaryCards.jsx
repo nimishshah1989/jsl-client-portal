@@ -1,7 +1,7 @@
 'use client';
 
 import { useSummary } from '@/hooks/usePortfolio';
-import { formatINRShort, formatPct, pnlColor } from '@/lib/format';
+import { formatINRShort, formatPct, formatDate, pnlColor } from '@/lib/format';
 import {
   Wallet,
   TrendingUp,
@@ -83,7 +83,7 @@ export default function SummaryCards() {
       icon: TrendingUp,
       label: 'Current Value',
       value: formatINRShort(data.current_value),
-      subtitle: `As of ${data.as_of_date || '--'}`,
+      subtitle: `As of ${formatDate(data.as_of_date)}`,
       iconColor: 'bg-teal-50',
       valueColor: 'text-jip-teal',
     },

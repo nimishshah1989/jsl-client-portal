@@ -1,5 +1,4 @@
-"""
-Parser for PMS cash flow Excel files.
+"""Parser for PMS cash flow Excel files.
 
 Files are simple flat ledgers (no embedded client headers like NAV/transaction files).
 Each data row is one cash flow event: either a Receipt (inflow) or Payment (outflow).
@@ -15,9 +14,12 @@ Columns:
   H: (empty/"Dr." — ignore)
 """
 
+from __future__ import annotations
+
 import logging
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -89,9 +91,9 @@ def parse_cashflow_file(filepath: str | Path) -> list[dict]:
         name_match = re.match(r"^(.+?)\s*\[", account_head)
         client_name = name_match.group(1).strip() if name_match else account_head
 
-        # Extract amounts
-        receipts = _safe_float(vals[_COL_RECEIPTS] if len(vals) > _COL_RECEIPTS else None)
-        payments = _safe_float(vals[_COL_PAYMENTS] if len(vals) > _COL_PAYMENTS else None)
+        # Extract amounts as Decimal (financial data — never float)
+        receipts = _safe_decimal(vals[_COL_RECEIPTS] if len(vals) > _COL_RECEIPTS else None)
+        payments = _safe_decimal(vals[_COL_PAYMENTS] if len(vals) > _COL_PAYMENTS else None)
 
         if receipts > 0:
             records.append({
@@ -135,11 +137,14 @@ def parse_all_cashflow_files(directory: str | Path) -> list[dict]:
     return all_records
 
 
-def _safe_float(val) -> float:
-    """Safely convert a cell value to float, defaulting to 0."""
+def _safe_decimal(val) -> Decimal:
+    """Safely convert a cell value to Decimal, defaulting to 0."""
     if val is None:
-        return 0.0
+        return Decimal("0")
     try:
-        return float(val)
-    except (ValueError, TypeError):
-        return 0.0
+        d = Decimal(str(val))
+        if d.is_nan():
+            return Decimal("0")
+        return d
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")

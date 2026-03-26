@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 
 from backend.config import get_settings
@@ -79,6 +81,10 @@ app.add_middleware(
 )
 
 
+# ── Rate Limiting ──
+app.state.limiter = __import__("slowapi").Limiter(key_func=__import__("slowapi.util", fromlist=["get_remote_address"]).get_remote_address)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ── Exception Handlers ──
 
 
@@ -106,15 +112,21 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
 
 from backend.routers.auth import router as auth_router  # noqa: E402
 from backend.routers.portfolio import router as portfolio_router  # noqa: E402
+from backend.routers.portfolio_nav import router as portfolio_nav_router  # noqa: E402
 from backend.routers.portfolio_detail import router as portfolio_detail_router  # noqa: E402
 from backend.routers.admin import router as admin_router  # noqa: E402
 from backend.routers.admin_clients import router as admin_clients_router  # noqa: E402
+from backend.routers.admin_aggregate import router as admin_aggregate_router  # noqa: E402
+from backend.routers.portfolio_methodology import router as portfolio_methodology_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(portfolio_router)
+app.include_router(portfolio_nav_router)
 app.include_router(portfolio_detail_router)
+app.include_router(portfolio_methodology_router)
 app.include_router(admin_router)
 app.include_router(admin_clients_router)
+app.include_router(admin_aggregate_router)
 
 
 # ── Health Check ──

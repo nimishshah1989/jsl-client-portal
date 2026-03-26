@@ -2,27 +2,27 @@
 
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
+import jwt
 from fastapi import HTTPException, Request, status
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from backend.config import get_settings
 
 settings = get_settings()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
-
 ALGORITHM = "HS256"
+_BCRYPT_ROUNDS = 12
 
 
 def hash_password(password: str) -> str:
     """Hash a plaintext password with bcrypt cost factor 12."""
-    return pwd_context.hash(password)
+    salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     """Verify a plaintext password against its bcrypt hash."""
-    return pwd_context.verify(plain, hashed)
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
 
 
 def create_access_token(client_id: int, is_admin: bool) -> str:
@@ -40,7 +40,7 @@ def _decode_token(token: str) -> dict:
     """Decode and validate a JWT token. Raises HTTPException on failure."""
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[ALGORITHM])
-    except JWTError as exc:
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",

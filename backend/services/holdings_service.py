@@ -1,5 +1,4 @@
-"""
-Holdings computation service — Weighted Average Cost Method.
+"""Holdings computation service — Weighted Average Cost Method.
 
 Aggregates all BUY/SELL/BONUS/CORPUS_IN transactions per symbol to compute
 current holdings with average cost, unrealized P&L, and portfolio weights.
@@ -11,8 +10,10 @@ Cost method:
   CORPUS_IN: treated as initial position — same as BUY logic
 """
 
+from __future__ import annotations
+
 import logging
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import pandas as pd
 
@@ -32,7 +33,7 @@ def _dec(value: object) -> Decimal:
         if d.is_nan() or d.is_infinite():
             return _ZERO
         return d
-    except Exception:
+    except (InvalidOperation, ValueError, TypeError, ArithmeticError):
         return _ZERO
 
 

@@ -74,21 +74,50 @@ function FileDropZone({ label, accept, onFile, disabled }) {
   );
 }
 
-function ProcessingStatus({ status, elapsed }) {
+function ProcessingStatus({ status, elapsed, progress }) {
   if (!status || status === 'uploading') return null;
 
   if (status === 'processing') {
+    const { clients_processed = 0, clients_total = 0, current_client = '' } = progress || {};
+    const pct = clients_total > 0 ? Math.round((clients_processed / clients_total) * 100) : 0;
+    const hasProgress = clients_total > 0;
+
     return (
-      <div className="flex items-center gap-3 mt-4 bg-teal-50 border border-teal-200 rounded-xl p-4">
-        <Loader2 className="w-5 h-5 text-teal-600 animate-spin" />
-        <div>
-          <p className="text-sm font-medium text-teal-800">
-            Processing in background...
-          </p>
-          <p className="text-xs text-teal-600">
-            {elapsed > 0 ? `${Math.round(elapsed)}s elapsed` : 'Starting...'} — You can close this page. Processing will continue on the server.
-          </p>
+      <div className="mt-4 bg-teal-50 border border-teal-200 rounded-xl p-4">
+        <div className="flex items-center gap-3">
+          <Loader2 className="w-5 h-5 text-teal-600 animate-spin flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-teal-800">
+              {hasProgress
+                ? `Processing client ${clients_processed + 1} of ${clients_total}`
+                : 'Processing in background...'}
+            </p>
+            {current_client && (
+              <p className="text-xs font-mono text-teal-700 truncate">
+                {current_client}
+              </p>
+            )}
+          </div>
+          <span className="text-xs font-mono text-teal-600 flex-shrink-0">
+            {elapsed > 0 ? `${Math.round(elapsed)}s` : '...'}
+          </span>
         </div>
+
+        {hasProgress && (
+          <div className="mt-3">
+            <div className="w-full bg-teal-100 rounded-full h-2 overflow-hidden">
+              <div
+                className="bg-teal-600 h-2 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <p className="text-xs text-teal-500 mt-1 text-right font-mono">{pct}%</p>
+          </div>
+        )}
+
+        <p className="text-xs text-teal-600 mt-2">
+          You can close this page. Processing will continue on the server.
+        </p>
       </div>
     );
   }
@@ -161,6 +190,7 @@ export default function UploadPage() {
     result: navResult,
     status: navStatus,
     elapsed: navElapsed,
+    progress: navProgress,
   } = useUploadNav();
   const {
     upload: uploadTxn,
@@ -169,6 +199,7 @@ export default function UploadPage() {
     result: txnResult,
     status: txnStatus,
     elapsed: txnElapsed,
+    progress: txnProgress,
   } = useUploadTransactions();
 
   async function handleNavUpload(file) {
@@ -212,7 +243,7 @@ export default function UploadPage() {
               <Spinner size="sm" /> Uploading file...
             </div>
           )}
-          <ProcessingStatus status={navStatus} elapsed={navElapsed} />
+          <ProcessingStatus status={navStatus} elapsed={navElapsed} progress={navProgress} />
           {navError && (
             <div className="flex items-center gap-2 mt-3 text-sm text-red-600">
               <AlertTriangle className="w-4 h-4" /> {navError}
@@ -236,7 +267,7 @@ export default function UploadPage() {
               <Spinner size="sm" /> Uploading file...
             </div>
           )}
-          <ProcessingStatus status={txnStatus} elapsed={txnElapsed} />
+          <ProcessingStatus status={txnStatus} elapsed={txnElapsed} progress={txnProgress} />
           {txnError && (
             <div className="flex items-center gap-2 mt-3 text-sm text-red-600">
               <AlertTriangle className="w-4 h-4" /> {txnError}

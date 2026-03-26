@@ -28,7 +28,13 @@ import {
   Shield,
   DollarSign,
   Percent,
+  LineChart,
 } from 'lucide-react';
+import AggregateNavChart from '@/components/admin/AggregateNavChart';
+import AggregatePerformance from '@/components/admin/AggregatePerformance';
+import AggregateAllocation from '@/components/admin/AggregateAllocation';
+import AggregateRiskScorecard from '@/components/admin/AggregateRiskScorecard';
+import AggregateMonthlyReturns from '@/components/admin/AggregateMonthlyReturns';
 
 function StatCard({ label, value, subtitle, icon: Icon, color = 'teal' }) {
   const colorMap = {
@@ -263,6 +269,29 @@ export default function AdminDashboard() {
           </div>
         </>
       ) : null}
+
+      {/* Aggregate Portfolio Dashboard */}
+      <div className="border-t border-slate-200 pt-6">
+        <div className="flex items-center gap-2 mb-4">
+          <LineChart className="w-5 h-5 text-teal-600" />
+          <h3 className="text-lg font-bold text-slate-800">
+            Aggregate Portfolio Dashboard
+          </h3>
+          <span className="text-xs text-slate-400 ml-1">
+            Composite view across all clients
+          </span>
+        </div>
+      </div>
+
+      <AggregateNavChart />
+      <AggregatePerformance />
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <AggregateAllocation />
+        <AggregateRiskScorecard />
+      </div>
+
+      <AggregateMonthlyReturns />
 
       {/* Client List */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">

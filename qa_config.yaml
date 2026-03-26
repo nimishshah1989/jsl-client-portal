@@ -1,0 +1,83 @@
+# JIP QA Agent Configuration
+# Copy this file to each project root and customise
+
+# ── QUALITY GATE ──────────────────────────────────────────────────────────────
+# The loop continues until these thresholds are met, or max_iterations is hit.
+pass_conditions:
+  max_critical: 0        # Zero critical issues allowed
+  max_major: 0           # Zero major issues allowed
+  max_minor: 10          # Up to 10 minor issues tolerated
+  max_iterations: 6      # Stop loop after this many attempts regardless
+  coverage_threshold: 80 # % of discovered elements that must be tested
+
+# ── CRAWL SETTINGS ────────────────────────────────────────────────────────────
+crawl:
+  max_depth: 3           # How many clicks deep to follow links
+  max_pages: 40          # Maximum pages to discover (increase for large apps)
+  wait_for_idle: true    # Wait for network idle on each page
+
+# ── VIEWPORTS ─────────────────────────────────────────────────────────────────
+# Visual inspection runs at each of these breakpoints
+viewports:
+  - name: desktop
+    width: 1440
+    height: 900
+  - name: tablet
+    width: 768
+    height: 1024
+  - name: mobile
+    width: 375
+    height: 812
+
+# ── TEST CREDENTIALS ──────────────────────────────────────────────────────────
+# Optional: if set, the auth flow walker will test a real login
+# Leave empty to skip authenticated flow testing
+test_credentials:
+  email: ""              # e.g. qa_test@jslwealth.in
+  password: ""           # e.g. TestPassword123!
+
+# ── PAGES TO SKIP ─────────────────────────────────────────────────────────────
+# Pages that should not be crawled or tested (e.g. payment processors, OAuth)
+skip_urls:
+  - "/logout"
+  - "/oauth"
+  - "/payment"
+  - "/webhook"
+
+# ── FORM FUZZING ──────────────────────────────────────────────────────────────
+form_fuzzing:
+  enabled: true
+  test_xss: true         # Include XSS probe payloads
+  test_sql: true         # Include SQL injection probe payloads
+  max_forms_per_page: 5  # Cap to control run time
+
+# ── PERFORMANCE THRESHOLDS ────────────────────────────────────────────────────
+performance:
+  max_page_load_seconds: 5      # Flag pages slower than this
+  max_api_response_seconds: 3   # Flag API calls slower than this
+
+# ── DEPLOYED URL ─────────────────────────────────────────────────────────
+# Used by qa_auto_trigger.sh when localhost is not available
+# Set this to your project's deployed URL for remote QA testing
+deployed_url: ""  # e.g. https://horizon.jslwealth.in
+
+# ── REPORTING ─────────────────────────────────────────────────────────────────
+reporting:
+  include_passing_tests: false  # Set to true to include passed tests in report
+  screenshot_on_every_page: true
+  attach_console_logs: true
+
+# ── PLATFORM-SPECIFIC NOTES ───────────────────────────────────────────────────
+# Uncomment and fill in for specific JIP platforms:
+
+# For India Horizon:
+# test_credentials:
+#   email: "qa@jslwealth.in"
+#   password: ""
+# skip_urls:
+#   - "/api/"
+#   - "/admin"
+
+# For Champion Trader:
+# performance:
+#   max_page_load_seconds: 3    # Trading UI should be faster

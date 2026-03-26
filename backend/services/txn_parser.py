@@ -95,17 +95,6 @@ def _safe_decimal(value: object) -> Decimal:
         return Decimal("0")
 
 
-def _safe_float(value: object) -> float:
-    """Convert to float for quantity comparison, returning 0.0 for non-numeric."""
-    if value is None:
-        return 0.0
-    try:
-        f = float(value)
-        return f if f == f else 0.0  # NaN check
-    except (ValueError, TypeError):
-        return 0.0
-
-
 def parse_script(script_raw: str) -> tuple[str, str]:
     """
     Parse script field like "RELIANCE     EQ" into (symbol, instrument_type).
@@ -229,8 +218,8 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
         asset_class = "CASH" if "LIQUID" in symbol.upper() else "EQUITY"
         sector = classify_sector(symbol)
 
-        buy_qty = _safe_float(cells[_COL_BUY_QTY])
-        sale_qty = _safe_float(cells[_COL_SALE_QTY])
+        buy_qty = _safe_decimal(cells[_COL_BUY_QTY])
+        sale_qty = _safe_decimal(cells[_COL_SALE_QTY])
 
         # A single row can have BOTH buy and sell — check independently
         if buy_qty > 0:

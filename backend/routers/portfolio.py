@@ -1,10 +1,13 @@
-"""Portfolio router — summary, NAV series, growth, allocation, holdings, drawdown."""
+"""Portfolio router — summary, allocation, holdings, drawdown.
+
+NAV series and growth endpoints are in portfolio_nav.py.
+"""
 
 import datetime as dt
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, select, text as sa_text
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import numpy as np
@@ -16,7 +19,6 @@ from backend.models.holding import Holding
 from backend.models.nav_series import NavSeries
 from backend.models.risk_metric import RiskMetric
 from backend.routers.helpers import (
-    FD_RATE,
     date_cutoff,
     dec2,
     dec4,
@@ -26,9 +28,7 @@ from backend.schemas.portfolio import (
     AllocationItem,
     AllocationResponse,
     DrawdownPoint,
-    GrowthResponse,
     HoldingResponse,
-    NavSeriesPoint,
     SummaryResponse,
 )
 
@@ -140,277 +140,6 @@ async def get_summary(
     )
 
 
-@router.get("/nav-series", response_model=list[NavSeriesPoint])
-async def get_nav_series(
-    time_range: str = Query("ALL", alias="range"),
-    user: dict = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> list[NavSeriesPoint]:
-    """NAV time series with actual ₹ portfolio value and Nifty equivalent.
-
-    Left-axis values are in absolute rupees so the client sees real portfolio
-    growth rather than a normalised index.
-
-    - nav:           actual current_value from the NAV row (₹)
-    - benchmark:     invested_amount × (benchmark_today / benchmark_first) —
-                     what the same corpus would be worth had it been in Nifty
-    - invested:      corpus (invested_amount) at each date — step-line overlay
-    - benchmark_raw: base-100 Nifty index (kept for reference)
-    - cash_pct:      liquidity % clamped to [0, 100]
-    """
-    client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
-
-    stmt = (
-        select(NavSeries)
-        .where(NavSeries.client_id == client_id)
-        .where(NavSeries.portfolio_id == portfolio.id)
-        .order_by(NavSeries.nav_date)
-    )
-    rows = list((await db.execute(stmt)).scalars().all())
-    if not rows:
-        return []
-
-    cutoff = date_cutoff(time_range, rows[-1].nav_date)
-    if cutoff is not None:
-        rows = [r for r in rows if r.nav_date >= cutoff]
-    if not rows:
-        return []
-
-    first_bench = rows[0].benchmark_value
-
-    # --- Build cash flow map for benchmark adjustment ---
-    # Try actual cash flows first (cpp_cash_flows table)
-    cf_result = await db.execute(
-        sa_text("""
-            SELECT flow_date, flow_type, amount
-            FROM cpp_cash_flows
-            WHERE client_id = :cid AND portfolio_id = :pid
-            ORDER BY flow_date ASC
-        """),
-        {"cid": client_id, "pid": portfolio.id},
-    )
-    cf_rows = cf_result.fetchall()
-
-    flow_map: dict[dt.date, float] = {}  # date -> net inflow (positive = money in)
-    if cf_rows:
-        for flow_date, flow_type, amount in cf_rows:
-            amt = float(amount)
-            if flow_type == "OUTFLOW":
-                amt = -amt
-            flow_map[flow_date] = flow_map.get(flow_date, 0.0) + amt
-    else:
-        # Fallback: infer from corpus changes in the full NAV data
-        all_nav_stmt = (
-            select(NavSeries.nav_date, NavSeries.invested_amount)
-            .where(NavSeries.client_id == client_id)
-            .where(NavSeries.portfolio_id == portfolio.id)
-            .order_by(NavSeries.nav_date)
-        )
-        all_navs = (await db.execute(all_nav_stmt)).all()
-        prev_corpus = Decimal("0")
-        for nav_date, invested in all_navs:
-            if invested is not None and invested != prev_corpus:
-                delta = float(invested - prev_corpus)
-                flow_map[nav_date] = flow_map.get(nav_date, 0.0) + delta
-                prev_corpus = invested
-
-    # --- Compute benchmark using virtual Nifty units ---
-    nifty_units = 0.0
-    points: list[NavSeriesPoint] = []
-    for idx, row in enumerate(rows):
-        bench_price = (
-            float(row.benchmark_value)
-            if row.benchmark_value and row.benchmark_value != Decimal("0")
-            else None
-        )
-
-        # Accumulate Nifty units on cash flow dates
-        if bench_price and row.nav_date in flow_map:
-            flow_amt = flow_map[row.nav_date]
-            nifty_units += flow_amt / bench_price
-
-        # Safety: if first row and no cash flow matched, seed from invested_amount
-        if bench_price and nifty_units == 0.0 and idx == 0:
-            initial = float(row.invested_amount) if row.invested_amount else 0.0
-            if initial > 0 and row.nav_date not in flow_map:
-                nifty_units = initial / bench_price
-
-        # Compute benchmark equivalent value and base-100 index
-        bench_equiv: str | None = None
-        bench_raw: str | None = None
-        if bench_price and first_bench and float(first_bench) != 0:
-            if nifty_units > 0:
-                bench_equiv = dec2(Decimal(str(nifty_units * bench_price)))
-            bench_raw = dec2(row.benchmark_value / first_bench * Decimal("100"))
-
-        # True cash % = (ETF + Cash + Bank) / NAV × 100
-        # Falls back to Liquidity% if breakdown columns are not populated
-        cash: str | None = None
-        etf_v = row.etf_value or Decimal("0")
-        cash_v = row.cash_value or Decimal("0")
-        bank_v = row.bank_balance or Decimal("0")
-        total_cash = etf_v + cash_v + bank_v
-        if total_cash > 0 and row.nav_value and row.nav_value != Decimal("0"):
-            true_pct = total_cash / row.nav_value * Decimal("100")
-            cash = dec2(max(Decimal("0"), min(Decimal("100"), true_pct)))
-        elif row.cash_pct is not None:
-            clamped = max(Decimal("0"), min(Decimal("100"), row.cash_pct))
-            cash = dec2(clamped)
-
-        # Include cash flow amount if this date has an inflow/outflow
-        cf_str: str | None = None
-        if row.nav_date in flow_map:
-            cf_str = dec2(Decimal(str(flow_map[row.nav_date])))
-
-        points.append(NavSeriesPoint(
-            date=row.nav_date,
-            nav=dec2(row.current_value),
-            benchmark=bench_equiv,
-            invested=dec2(row.invested_amount) if row.invested_amount is not None else None,
-            benchmark_raw=bench_raw,
-            cash_pct=cash,
-            cash_flow=cf_str,
-        ))
-    return points
-
-
-@router.get("/growth", response_model=GrowthResponse)
-async def get_growth(
-    user: dict = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> GrowthResponse:
-    """Growth comparison: portfolio vs Nifty vs FD.
-
-    Nifty and FD values are computed using cash-flow-adjusted logic:
-    each inflow "buys" Nifty units / starts an FD at that date's price,
-    each outflow "sells" units, so the comparison is fair when clients
-    add or withdraw capital over time.
-    """
-    client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
-
-    first_stmt = (
-        select(NavSeries)
-        .where(NavSeries.client_id == client_id)
-        .where(NavSeries.portfolio_id == portfolio.id)
-        .order_by(NavSeries.nav_date).limit(1)
-    )
-    last_stmt = (
-        select(NavSeries)
-        .where(NavSeries.client_id == client_id)
-        .where(NavSeries.portfolio_id == portfolio.id)
-        .order_by(desc(NavSeries.nav_date)).limit(1)
-    )
-    first_nav = (await db.execute(first_stmt)).scalar_one_or_none()
-    last_nav = (await db.execute(last_stmt)).scalar_one_or_none()
-    if first_nav is None or last_nav is None:
-        raise HTTPException(status_code=404, detail="No NAV data available")
-
-    invested = last_nav.invested_amount
-    current = last_nav.current_value
-    days = (last_nav.nav_date - first_nav.nav_date).days
-    years = Decimal(str(days)) / Decimal("365.25") if days > 0 else Decimal("1")
-
-    # --- Build cash flow map for Nifty/FD adjustment ---
-    cf_result = await db.execute(
-        sa_text("""
-            SELECT flow_date, flow_type, amount
-            FROM cpp_cash_flows
-            WHERE client_id = :cid AND portfolio_id = :pid
-            ORDER BY flow_date ASC
-        """),
-        {"cid": client_id, "pid": portfolio.id},
-    )
-    cf_rows = cf_result.fetchall()
-
-    flow_map: dict[dt.date, float] = {}
-    if cf_rows:
-        for flow_date, flow_type, amount in cf_rows:
-            amt = float(amount)
-            if flow_type == "OUTFLOW":
-                amt = -amt
-            flow_map[flow_date] = flow_map.get(flow_date, 0.0) + amt
-    else:
-        # Fallback: infer from corpus changes
-        all_nav_stmt = (
-            select(NavSeries.nav_date, NavSeries.invested_amount)
-            .where(NavSeries.client_id == client_id)
-            .where(NavSeries.portfolio_id == portfolio.id)
-            .order_by(NavSeries.nav_date)
-        )
-        all_navs = (await db.execute(all_nav_stmt)).all()
-        prev_corpus = Decimal("0")
-        for nav_date, inv_amt in all_navs:
-            if inv_amt is not None and inv_amt != prev_corpus:
-                delta = float(inv_amt - prev_corpus)
-                flow_map[nav_date] = flow_map.get(nav_date, 0.0) + delta
-                prev_corpus = inv_amt
-
-    # --- Fetch benchmark prices on cash flow dates + latest ---
-    # We need benchmark prices to convert flows into Nifty units.
-    # Query all NAV rows with benchmark values for this client.
-    bench_stmt = (
-        select(NavSeries.nav_date, NavSeries.benchmark_value)
-        .where(NavSeries.client_id == client_id)
-        .where(NavSeries.portfolio_id == portfolio.id)
-        .where(NavSeries.benchmark_value.isnot(None))
-        .order_by(NavSeries.nav_date)
-    )
-    bench_rows = (await db.execute(bench_stmt)).all()
-    bench_by_date: dict[dt.date, float] = {
-        r[0]: float(r[1]) for r in bench_rows if r[1] and r[1] != Decimal("0")
-    }
-
-    def _find_bench_price(target_date: dt.date) -> float | None:
-        """Find benchmark price on or nearest before target_date."""
-        if target_date in bench_by_date:
-            return bench_by_date[target_date]
-        # Find closest prior date
-        prior = [d for d in bench_by_date if d <= target_date]
-        if prior:
-            return bench_by_date[max(prior)]
-        return None
-
-    latest_date = last_nav.nav_date
-    latest_bench = _find_bench_price(latest_date)
-
-    # Compute Nifty value using virtual units
-    nifty_units = 0.0
-    fd_value_total = Decimal("0")
-    fd_rate_dec = FD_RATE / Decimal("100")
-
-    if flow_map:
-        for flow_date in sorted(flow_map.keys()):
-            flow_amt = flow_map[flow_date]
-            bench_price = _find_bench_price(flow_date)
-            if bench_price and bench_price > 0:
-                nifty_units += flow_amt / bench_price
-
-            # FD: each inflow/outflow compounds from its date to latest
-            flow_days = (latest_date - flow_date).days
-            flow_years = Decimal(str(flow_days)) / Decimal("365.25") if flow_days > 0 else Decimal("0")
-            fd_value_total += Decimal(str(flow_amt)) * (
-                (Decimal("1") + fd_rate_dec) ** flow_years
-            )
-
-        nifty_value = Decimal(str(nifty_units * latest_bench)) if latest_bench and nifty_units > 0 else invested
-    else:
-        # No flow data at all — simple ratio fallback
-        nifty_value = invested
-        if (first_nav.benchmark_value and last_nav.benchmark_value
-                and first_nav.benchmark_value != Decimal("0")):
-            nifty_value = invested * last_nav.benchmark_value / first_nav.benchmark_value
-        fd_value_total = invested * ((Decimal("1") + fd_rate_dec) ** years)
-
-    return GrowthResponse(
-        invested=dec2(invested), portfolio=dec2(current),
-        nifty=dec2(nifty_value), fd=dec2(fd_value_total),
-        inception_date=first_nav.nav_date, latest_date=last_nav.nav_date,
-        years=dec2(years),
-    )
-
-
 @router.get("/allocation", response_model=AllocationResponse)
 async def get_allocation(
     user: dict = Depends(get_current_user),
@@ -418,7 +147,7 @@ async def get_allocation(
 ) -> AllocationResponse:
     """Holdings grouped by sector. Every holding maps to a sector.
 
-    LIQUID* instruments → 'Cash', GOLDBEES/SILVERBEES → 'Metals', etc.
+    LIQUID* instruments -> 'Cash', GOLDBEES/SILVERBEES -> 'Metals', etc.
     """
     client_id: int = user["client_id"]
     portfolio = await get_default_portfolio(db, client_id)

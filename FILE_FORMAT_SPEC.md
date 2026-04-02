@@ -14,18 +14,23 @@ date separator rows, and merged column structures that need stateful parsing.
 
 ### FILE 1: NAV Report (.xlsx)
 
-#### Raw Column Headers (contain literal newlines)
+#### Raw Column Headers (contain literal newlines and `_x000D_` carriage returns)
 ```
 Col 0: "UCC"
 Col 1: "Date"
 Col 2: "Corpus"
 Col 3: "Equity\nHolding\nAt Mkt"
-Col 4: "Cash And\nCash\nEquivalent"
-Col 5: "Bank\nBalance"
-Col 6: "NAV"
-Col 7: "Liquidity\n%"
-Col 8: "High\nWater\nMark"
+Col 4: "Investments\nin\nETF"
+Col 5: "Cash And\nCash\nEquivalent"
+Col 6: "Bank\nBalance"
+Col 7: "NAV"
+Col 8: "Liquidity\n%"
+Col 9: "High\nWater\nMark"
 ```
+
+#### Date Formats (both observed in backoffice exports)
+- `DD-MMM-YYYY` — e.g., `28-Sep-2020` (older exports)
+- `DD/MM/YYYY` — e.g., `26/03/2026` (newer exports)
 
 #### Row Types (parse in order)
 ```
@@ -36,9 +41,10 @@ TYPE 1 — Client Name Header:
 
 TYPE 2 — Data Row:
   UCC = "BJ53      "                            ← Client code (with trailing spaces)
-  Date = "28-Sep-2020"                          ← DD-MMM-YYYY format
+  Date = "28-Sep-2020" or "26/03/2026"          ← DD-MMM-YYYY or DD/MM/YYYY format
   Corpus = 333000.0                             ← Total invested (cumulative)
   Equity Holding At Mkt = 427667.70             ← Market value of stocks
+  Investments in ETF = 0.00                     ← ETF holdings value
   Cash And Cash Equivalent = 0.00               ← Cash + liquid funds
   Bank Balance = 0.0                            ← Bank balance
   NAV = 427667.70                               ← Total portfolio value

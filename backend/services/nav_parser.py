@@ -39,8 +39,11 @@ _COL_HWM = 9
 # Regex for client name header: "FULL NAME [CODE]"
 _NAME_PATTERN = re.compile(r"^(.+?)\s*\[(\w+)\]$")
 
-# Date format in NAV file: DD-MMM-YYYY e.g. "28-Sep-2020"
-_DATE_FORMAT = "%d-%b-%Y"
+# Date formats in NAV file — backoffice exports use either format
+_DATE_FORMATS = [
+    "%d-%b-%Y",    # DD-MMM-YYYY e.g. "28-Sep-2020"
+    "%d/%m/%Y",    # DD/MM/YYYY  e.g. "26/03/2026"
+]
 
 
 def _safe_decimal(value: object) -> Decimal:
@@ -54,7 +57,7 @@ def _safe_decimal(value: object) -> Decimal:
 
 
 def _parse_nav_date(value: object) -> datetime | None:
-    """Parse a NAV date cell (DD-MMM-YYYY string or datetime object)."""
+    """Parse a NAV date cell — handles DD-MMM-YYYY, DD/MM/YYYY, and datetime objects."""
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -62,11 +65,13 @@ def _parse_nav_date(value: object) -> datetime | None:
     raw = str(value).strip()
     if not raw or raw.lower() == "nan":
         return None
-    try:
-        return datetime.strptime(raw, _DATE_FORMAT)
-    except ValueError:
-        logger.debug("Unparseable NAV date: %r", raw)
-        return None
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    logger.debug("Unparseable NAV date: %r", raw)
+    return None
 
 
 def parse_nav_file(filepath: str | Path) -> list[dict]:

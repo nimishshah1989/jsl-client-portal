@@ -26,7 +26,13 @@ _ZERO = Decimal("0")
 # Tolerance bands for "match" classification
 _QTY_TOLERANCE = Decimal("0")       # Quantity must match exactly
 _COST_TOLERANCE = Decimal("0.02")   # ±₹0.02 per-share (rounding)
-_VALUE_TOLERANCE = Decimal("1.00")  # ±₹1 on market value (rounding)
+
+# Symbols to exclude from "extra in ours" — these are tracked in separate
+# backoffice systems (MF/ETF platforms) and are not in the Holding Report.
+_EXCLUDE_FROM_EXTRA = {
+    "Mirae", "MIRAESMALLCAP", "Amara", "Mankind", "Samvardhana",
+    "Jupiter", "Data", "Computer",  # Multi-word symbols from old parser
+}
 
 
 @dataclass
@@ -356,6 +362,9 @@ async def reconcile(
         # Check for symbols we have that backoffice doesn't
         for symbol, our in our_client_holdings.items():
             if symbol not in our_symbols_seen:
+                # Skip symbols known to be tracked in separate systems
+                if symbol in _EXCLUDE_FROM_EXTRA:
+                    continue
                 match = HoldingMatch(
                     client_code=ucc,
                     symbol=symbol,

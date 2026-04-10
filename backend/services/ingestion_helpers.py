@@ -230,7 +230,7 @@ async def update_benchmark_values(
         values_parts: list[str] = []
         batch_params: dict = {"cid": client_id, "pid": portfolio_id}
         for i, (nav_date, bv) in enumerate(batch):
-            values_parts.append(f"(:d_{i}::date, :v_{i}::numeric)")
+            values_parts.append(f"(CAST(:d_{i} AS date), CAST(:v_{i} AS numeric))")
             batch_params[f"d_{i}"] = nav_date
             batch_params[f"v_{i}"] = bv
 

@@ -53,6 +53,7 @@ jobs:
               --name client-portal \
               --env-file .env \
               -p 8007:3000 \
+              -p 8008:8000 \
               --restart unless-stopped \
               client-portal
 

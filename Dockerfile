@@ -48,7 +48,8 @@ RUN mkdir -p /app/data
 COPY start.sh ./
 RUN chmod +x start.sh
 
-# Next.js listens on 3000 inside container, mapped to 8007 externally
-EXPOSE 3000
+# Next.js on 3000 (frontend), FastAPI on 8000 (API)
+# Nginx routes /api/* to 8000 directly, bypassing Next.js body size limit
+EXPOSE 3000 8000
 
 CMD ["./start.sh"]

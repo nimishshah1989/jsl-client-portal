@@ -17,53 +17,70 @@ jobs:
           timeout: 60s
           script: |
             set -e
-            echo "=== Fixing Nginx upload limits ==="
+            echo "=== Fixing Nginx: route /api/ directly to FastAPI ==="
 
-            # Find the site config
-            CONF=""
-            for f in /etc/nginx/sites-available/clients.jslwealth.in \
-                     /etc/nginx/sites-enabled/clients.jslwealth.in \
-                     /etc/nginx/conf.d/clients.jslwealth.in.conf; do
-              if [ -f "$f" ]; then
-                CONF="$f"
-                break
-              fi
-            done
-
-            if [ -z "$CONF" ]; then
-              echo "Site config not found, checking all configs..."
-              grep -rl "clients.jslwealth.in" /etc/nginx/ 2>/dev/null || true
-              # Fall back to adding in main nginx.conf http block
-              CONF="/etc/nginx/nginx.conf"
+            CONF="/etc/nginx/sites-available/clients.jslwealth.in"
+            if [ ! -f "$CONF" ]; then
+              echo "ERROR: $CONF not found"
+              exit 1
             fi
 
-            echo "Using config: $CONF"
-            cat "$CONF"
-            echo ""
+            # Backup
+            sudo cp "$CONF" "$CONF.bak.$(date +%s)"
 
-            # Check if client_max_body_size already set
-            if grep -q "client_max_body_size" "$CONF"; then
-              echo "client_max_body_size already set — updating..."
-              sudo sed -i 's/client_max_body_size.*/client_max_body_size 60m;/' "$CONF"
-            else
-              # Add after the first 'location' or 'server_name' line
-              sudo sed -i '/server_name.*clients.jslwealth.in/a\    client_max_body_size 60m;' "$CONF"
-            fi
+            # Write new config: /api/ → FastAPI:8008, / → Next.js:8007
+            sudo tee "$CONF" > /dev/null << 'NGINX'
+server {
+    server_name clients.jslwealth.in;
 
-            # Add proxy timeouts if not present
-            if ! grep -q "proxy_read_timeout" "$CONF"; then
-              sudo sed -i '/client_max_body_size/a\    proxy_read_timeout 600s;\n    proxy_send_timeout 600s;' "$CONF"
-            fi
+    client_max_body_size 60m;
 
-            echo ""
+    # API calls go directly to FastAPI (port 8008) — bypasses Next.js proxy
+    location /api/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_request_buffering off;
+    }
+
+    # Frontend goes to Next.js (port 8007)
+    location / {
+        proxy_pass http://127.0.0.1:8007;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/clients.jslwealth.in/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/clients.jslwealth.in/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+server {
+    if ($host = clients.jslwealth.in) {
+        return 301 https://$host$request_uri;
+    }
+    listen 80;
+    server_name clients.jslwealth.in;
+    return 404;
+}
+NGINX
+
             echo "=== Updated config ==="
             cat "$CONF"
 
-            echo ""
-            echo "=== Testing Nginx config ==="
+            echo "=== Testing ==="
             sudo nginx -t
 
-            echo "=== Reloading Nginx ==="
+            echo "=== Reloading ==="
             sudo systemctl reload nginx
 
             echo "=== Done ==="

@@ -289,22 +289,23 @@ export default function ReconciliationPage() {
       {/* Summary Cards */}
       {data && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
             <SummaryCard
-              label="Clients (Backoffice)"
-              value={data.total_clients_bo}
-              subtext={`${data.total_clients_matched} found in our system`}
+              label="Client Accuracy"
+              value={`${data.client_match_pct || 0}%`}
+              subtext={`${data.clients_fully_matched || 0} of ${data.total_clients_bo} clients fully clean`}
+              color={data.client_match_pct >= 90 ? 'text-emerald-600' : data.client_match_pct >= 70 ? 'text-amber-600' : 'text-red-600'}
             />
             <SummaryCard
-              label="Holdings (Backoffice)"
-              value={data.total_holdings_bo}
-              subtext={`${data.total_holdings_matched} matched`}
-              color={data.total_holdings_matched === data.total_holdings_bo ? 'text-emerald-600' : 'text-slate-800'}
-            />
-            <SummaryCard
-              label="Match Rate"
+              label="Datapoint Accuracy"
               value={`${data.match_pct}%`}
+              subtext={`${data.total_holdings_matched} of ${data.total_holdings_bo + (data.total_extra_in_ours || 0)} holdings match`}
               color={data.match_pct >= 95 ? 'text-emerald-600' : data.match_pct >= 80 ? 'text-amber-600' : 'text-red-600'}
+            />
+            <SummaryCard
+              label="Clients"
+              value={data.total_clients_bo}
+              subtext={`${data.total_clients_matched} in our system`}
             />
             <SummaryCard
               label="Qty Mismatches"
@@ -320,6 +321,11 @@ export default function ReconciliationPage() {
               label="Missing in Ours"
               value={data.total_missing_in_ours}
               color={data.total_missing_in_ours > 0 ? 'text-red-600' : 'text-emerald-600'}
+            />
+            <SummaryCard
+              label="Extra in Ours"
+              value={data.total_extra_in_ours || 0}
+              color={(data.total_extra_in_ours || 0) > 0 ? 'text-blue-600' : 'text-emerald-600'}
             />
           </div>
 

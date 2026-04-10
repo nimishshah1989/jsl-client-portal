@@ -99,6 +99,11 @@ class ClientReconciliation:
             or self.extra_in_ours_count > 0
         )
 
+    @property
+    def is_fully_matched(self) -> bool:
+        """True if every holding in this client is a perfect match."""
+        return not self.has_issues
+
 
 @dataclass
 class ReconciliationSummary:
@@ -119,10 +124,24 @@ class ReconciliationSummary:
 
     @property
     def match_pct(self) -> float:
+        """Datapoint accuracy: % of individual holdings that match perfectly."""
         total = self.total_holdings_bo + self.total_extra_in_ours
         if total == 0:
             return 100.0
         return round(self.total_holdings_matched / total * 100, 1)
+
+    @property
+    def client_match_pct(self) -> float:
+        """Client accuracy: % of clients where ALL holdings match perfectly."""
+        if not self.clients:
+            return 100.0
+        fully_clean = sum(1 for c in self.clients if c.is_fully_matched)
+        return round(fully_clean / len(self.clients) * 100, 1)
+
+    @property
+    def clients_fully_matched(self) -> int:
+        """Count of clients with zero mismatches."""
+        return sum(1 for c in self.clients if c.is_fully_matched)
 
 
 def _safe_dec(val: object) -> Decimal:
@@ -143,20 +162,22 @@ def _classify(
     our_market_value: Decimal,
     our_pnl: Decimal,
 ) -> str:
-    """Classify a matched holding pair."""
+    """Classify a matched holding pair.
+
+    Only qty and cost are compared — these are what we control.
+    Market value/price differences are expected (different price feed dates)
+    and are NOT flagged as mismatches.
+    """
     bo_qty = _safe_dec(bo["quantity"])
     bo_cost = _safe_dec(bo["avg_cost"])
 
     qty_diff = abs(bo_qty - our_qty)
     cost_diff = abs(bo_cost - our_avg_cost)
-    value_diff = abs(_safe_dec(bo["market_value"]) - our_market_value)
 
     if qty_diff > _QTY_TOLERANCE:
         return "QTY_MISMATCH"
     if cost_diff > _COST_TOLERANCE:
         return "COST_MISMATCH"
-    if value_diff > _VALUE_TOLERANCE:
-        return "VALUE_MISMATCH"
     return "MATCH"
 
 

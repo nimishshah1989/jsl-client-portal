@@ -66,6 +66,8 @@ async def save_reconciliation(
         "total_missing_in_ours": result.total_missing_in_ours,
         "total_extra_in_ours": result.total_extra_in_ours,
         "match_pct": result.match_pct,
+        "client_match_pct": result.client_match_pct,
+        "clients_fully_matched": result.clients_fully_matched,
     }
 
     # Build per-client summary (without individual match rows)

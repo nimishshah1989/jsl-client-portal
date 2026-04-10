@@ -73,4 +73,58 @@ jobs:
               exit 1
             fi
 
+            echo "[6/6] Configuring Nginx for direct API routing..."
+            CONF="/etc/nginx/sites-available/clients.jslwealth.in"
+            if [ -f "$CONF" ]; then
+              # Only update if /api/ location block is missing
+              if ! grep -q "location /api/" "$CONF"; then
+                sudo cp "$CONF" "$CONF.bak"
+                sudo tee "$CONF" > /dev/null << 'NGINX'
+server {
+    server_name clients.jslwealth.in;
+    client_max_body_size 60m;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_request_buffering off;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8007;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/clients.jslwealth.in/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/clients.jslwealth.in/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+server {
+    if ($host = clients.jslwealth.in) {
+        return 301 https://$host$request_uri;
+    }
+    listen 80;
+    server_name clients.jslwealth.in;
+    return 404;
+}
+NGINX
+                sudo nginx -t && sudo systemctl reload nginx
+                echo "Nginx updated: /api/ → FastAPI:8008"
+              else
+                echo "Nginx already configured for /api/ routing"
+              fi
+            fi
+
             echo "=== Deploy complete ==="

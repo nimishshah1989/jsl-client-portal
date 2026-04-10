@@ -18,7 +18,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -30,7 +30,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          timeout: 600s
+          command_timeout: 15m
           script: |
             set -e
             echo "=== Deploying Client Portal ==="
@@ -42,11 +42,11 @@ jobs:
             git reset --hard origin/main
 
             echo "[2/6] Building Docker image..."
-            docker build --build-arg CACHEBUST=$(date +%s) -t client-portal .
+            docker build -t client-portal .
 
             echo "[3/6] Stopping old container..."
             docker rm -f client-portal 2>/dev/null || true
-            sleep 3
+            sleep 2
 
             echo "[4/6] Starting new container..."
             docker run -d \
@@ -58,15 +58,15 @@ jobs:
               client-portal
 
             echo "[5/6] Health check..."
-            for i in 1 2 3 4 5; do
+            for i in 1 2 3 4 5 6 7 8; do
               sleep 5
-              if curl -sf http://localhost:8007/api/health > /dev/null; then
+              if curl -sf http://localhost:8007/api/health > /dev/null 2>&1; then
+                echo "Health check PASSED on attempt $i"
                 break
               fi
               echo "Attempt $i: waiting for container..."
             done
-            curl -sf http://localhost:8007/api/health > /dev/null || { echo "Health check FAILED"; docker logs client-portal --tail 50; exit 1; }
-            echo "Health check PASSED"
+            curl -sf http://localhost:8007/api/health > /dev/null 2>&1 || { echo "Health check FAILED"; docker logs client-portal --tail 50; exit 1; }
 
             echo "[6/6] Configuring Nginx..."
             CONF="/etc/nginx/sites-available/clients.jslwealth.in"

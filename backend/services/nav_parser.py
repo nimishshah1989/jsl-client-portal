@@ -74,6 +74,58 @@ def _parse_nav_date(value: object) -> datetime | None:
     return None
 
 
+# Mapping from normalized header keywords to our internal field names
+_HEADER_KEYWORDS: dict[str, list[str]] = {
+    "ucc": ["ucc"],
+    "date": ["date"],
+    "client": ["client"],
+    "codes": ["codes", "code"],
+    "corpus": ["corpus"],
+    "equity": ["equity holding", "equity_holding", "equity"],
+    "etf": ["investments in etf", "investments_in_etf", "etf"],
+    "cash": ["cash and cash equivalent", "cash_and_cash", "cash and_cash"],
+    "bank": ["bank balance", "bank_balance", "bank"],
+    "nav": ["nav"],
+    "liquidity": ["liquidity %", "liquidity_pct", "liquidity"],
+    "hwm": ["high water mark", "high_water_mark", "water mark"],
+}
+
+
+def _build_column_map(header_row: tuple) -> dict[str, int] | None:
+    """Build a column index map from the header row.
+
+    Matches header cells to internal field names using keyword matching.
+    Returns None if the row does not look like a header (no 'ucc' or 'nav' found).
+    """
+    if header_row is None:
+        return None
+
+    col_map: dict[str, int] = {}
+    for idx, cell in enumerate(header_row):
+        if cell is None:
+            continue
+        # Normalize: lowercase, strip whitespace/newlines
+        norm = str(cell).lower().replace("\r\n", " ").replace("\n", " ").replace("_x000d_", " ").strip()
+        norm = " ".join(norm.split())  # collapse multiple spaces
+
+        for field_name, keywords in _HEADER_KEYWORDS.items():
+            if field_name in col_map:
+                continue  # already matched
+            for kw in keywords:
+                if kw in norm:
+                    col_map[field_name] = idx
+                    break
+
+    # Must have at least UCC and NAV to be a valid header
+    if "ucc" not in col_map or "nav" not in col_map:
+        return None
+    # Must have date
+    if "date" not in col_map:
+        return None
+
+    return col_map
+
+
 def parse_nav_file(filepath: str | Path) -> list[dict]:
     """
     Parse a PMS NAV Report .xlsx file.
@@ -91,7 +143,10 @@ def parse_nav_file(filepath: str | Path) -> list[dict]:
         raise FileNotFoundError(f"NAV file not found: {filepath}")
 
     wb = load_workbook(str(filepath), read_only=True, data_only=True)
-    ws = wb.active
+
+    # Prefer Sheet1 (the actual NAV data) over the active sheet, which may
+    # be a pivot/summary sheet in newer backoffice exports.
+    ws = wb["Sheet1"] if "Sheet1" in wb.sheetnames else wb.active
     if ws is None:
         wb.close()
         raise ValueError("NAV workbook has no active sheet")
@@ -100,22 +155,23 @@ def parse_nav_file(filepath: str | Path) -> list[dict]:
     current_client_code: str | None = None
     current_client_name: str | None = None
     row_count = 0
-    header_skipped = False
+    col_map: dict[str, int] | None = None
     clients_seen: set[str] = set()
 
     for row in ws.iter_rows(values_only=True):
         row_count += 1
 
-        # Skip the very first row (column headers)
-        if not header_skipped:
-            header_skipped = True
+        # --- Detect header row and build column map dynamically ---
+        if col_map is None:
+            col_map = _build_column_map(row)
+            if col_map is not None:
+                logger.info("NAV parser: column map built — %s", col_map)
             continue
 
-        # Ensure row has enough columns (10 in actual file)
-        if len(row) < 8:
+        if len(row) < 6:
             continue
 
-        ucc_raw = row[_COL_UCC]
+        ucc_raw = row[col_map["ucc"]]
 
         # Subtotal / grand total rows have None UCC — skip
         if ucc_raw is None:
@@ -140,17 +196,38 @@ def parse_nav_file(filepath: str | Path) -> list[dict]:
                 )
             continue
 
-        # Data row: UCC matches current client code (with possible trailing spaces)
-        if current_client_code is None:
-            continue
-        if ucc.rstrip() != current_client_code:
-            continue
+        # Flat format: no client headers — UCC + optional Codes column
+        if current_client_code is None and "codes" in col_map:
+            codes_val = row[col_map["codes"]]
+            if codes_val is not None:
+                current_client_code = str(codes_val).strip()
+                # Use Client column or UCC for name
+                if "client" in col_map and row[col_map["client"]]:
+                    current_client_name = str(row[col_map["client"]]).strip()
+                else:
+                    current_client_name = ucc.rstrip()
 
-        nav_date = _parse_nav_date(row[_COL_DATE])
+        # Flat format: each row has UCC directly, no name-header grouping
+        if current_client_code is None or ucc.rstrip() != current_client_code:
+            # Try treating this row as a self-contained data row
+            if "codes" in col_map:
+                codes_val = row[col_map["codes"]]
+                if codes_val is not None:
+                    current_client_code = str(codes_val).strip()
+                    if "client" in col_map and row[col_map["client"]]:
+                        current_client_name = str(row[col_map["client"]]).strip()
+                    else:
+                        current_client_name = ucc.rstrip()
+                else:
+                    continue
+            else:
+                continue
+
+        nav_date = _parse_nav_date(row[col_map["date"]])
         if nav_date is None:
             continue
 
-        nav_val = _safe_decimal(row[_COL_NAV])
+        nav_val = _safe_decimal(row[col_map["nav"]])
         if nav_val == 0:
             logger.debug(
                 "Skipping zero-NAV row for %s on %s",
@@ -164,16 +241,21 @@ def parse_nav_file(filepath: str | Path) -> list[dict]:
                 "client_code": current_client_code,
                 "client_name": current_client_name,
                 "date": nav_date,
-                "corpus": _safe_decimal(row[_COL_CORPUS]),
-                "equity_value": _safe_decimal(row[_COL_EQUITY]),
-                "etf_value": _safe_decimal(row[_COL_ETF]),
-                "cash_value": _safe_decimal(row[_COL_CASH]),
-                "bank_balance": _safe_decimal(row[_COL_BANK]),
+                "corpus": _safe_decimal(row[col_map["corpus"]]) if "corpus" in col_map else Decimal("0"),
+                "equity_value": _safe_decimal(row[col_map["equity"]]) if "equity" in col_map else Decimal("0"),
+                "etf_value": _safe_decimal(row[col_map["etf"]]) if "etf" in col_map else Decimal("0"),
+                "cash_value": _safe_decimal(row[col_map["cash"]]) if "cash" in col_map else Decimal("0"),
+                "bank_balance": _safe_decimal(row[col_map["bank"]]) if "bank" in col_map else Decimal("0"),
                 "nav": nav_val,
-                "liquidity_pct": _safe_decimal(row[_COL_LIQUIDITY]),
-                "high_water_mark": _safe_decimal(row[_COL_HWM] if len(row) > _COL_HWM else None),
+                "liquidity_pct": _safe_decimal(row[col_map["liquidity"]]) if "liquidity" in col_map else Decimal("0"),
+                "high_water_mark": _safe_decimal(row[col_map["hwm"]]) if "hwm" in col_map else Decimal("0"),
             }
         )
+
+        # Reset for next row in flat format (each row is independent)
+        if "codes" in col_map:
+            current_client_code = None
+            current_client_name = None
 
     wb.close()
     logger.info(

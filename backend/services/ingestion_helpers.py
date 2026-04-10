@@ -254,37 +254,49 @@ async def upsert_transactions(
     portfolio_id: int,
     records: list[dict],
 ) -> int:
-    """Insert transaction records. Returns count."""
+    """Bulk insert transaction records. Returns count."""
+    if not records:
+        return 0
+
     count = 0
-    for rec in records:
-        txn_date = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
-        await db.execute(
-            text("""
-                INSERT INTO cpp_transactions
-                    (client_id, portfolio_id, txn_date, txn_type, symbol,
-                     asset_name, asset_class, instrument_type, exchange,
-                     settlement_no, quantity, price, cost_rate, amount)
-                VALUES (:cid, :pid, :td, :tt, :sym, :an, :ac, :it, :ex,
-                        :sn, :qty, :pr, :cr, :amt)
-            """),
-            {
-                "cid": client_id,
-                "pid": portfolio_id,
-                "td": txn_date,
-                "tt": rec["txn_type"],
-                "sym": rec["symbol"],
-                "an": rec["symbol"],
-                "ac": rec["asset_class"],
-                "it": rec.get("instrument_type", "EQ"),
-                "ex": rec.get("exchange", ""),
-                "sn": rec.get("settlement_no", ""),
-                "qty": rec["quantity"],
-                "pr": rec["price"],
-                "cr": rec.get("cost_rate", _ZERO),
-                "amt": rec["amount"],
-            },
-        )
-        count += 1
+    for start in range(0, len(records), _BULK_BATCH_SIZE):
+        batch = records[start : start + _BULK_BATCH_SIZE]
+        values_parts: list[str] = []
+        params: dict = {}
+
+        for i, rec in enumerate(batch):
+            idx = f"{start + i}"
+            txn_date = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
+            values_parts.append(
+                f"(:cid_{idx}, :pid_{idx}, :td_{idx}, :tt_{idx}, :sym_{idx},"
+                f" :an_{idx}, :ac_{idx}, :it_{idx}, :ex_{idx},"
+                f" :sn_{idx}, :qty_{idx}, :pr_{idx}, :cr_{idx}, :amt_{idx})"
+            )
+            params[f"cid_{idx}"] = client_id
+            params[f"pid_{idx}"] = portfolio_id
+            params[f"td_{idx}"] = txn_date
+            params[f"tt_{idx}"] = rec["txn_type"]
+            params[f"sym_{idx}"] = rec["symbol"]
+            params[f"an_{idx}"] = rec["symbol"]
+            params[f"ac_{idx}"] = rec["asset_class"]
+            params[f"it_{idx}"] = rec.get("instrument_type", "EQ")
+            params[f"ex_{idx}"] = rec.get("exchange", "")
+            params[f"sn_{idx}"] = rec.get("settlement_no", "")
+            params[f"qty_{idx}"] = rec["quantity"]
+            params[f"pr_{idx}"] = rec["price"]
+            params[f"cr_{idx}"] = rec.get("cost_rate", _ZERO)
+            params[f"amt_{idx}"] = rec["amount"]
+
+        sql = text(f"""
+            INSERT INTO cpp_transactions
+                (client_id, portfolio_id, txn_date, txn_type, symbol,
+                 asset_name, asset_class, instrument_type, exchange,
+                 settlement_no, quantity, price, cost_rate, amount)
+            VALUES {', '.join(values_parts)}
+        """)
+        await db.execute(sql, params)
+        count += len(batch)
+
     return count
 
 

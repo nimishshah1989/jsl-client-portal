@@ -68,9 +68,9 @@ async def get_summary(
     )
     risk = (await db.execute(risk_stmt)).scalar_one_or_none()
 
-    invested = latest_nav.invested_amount
-    current = latest_nav.current_value
-    profit_amount = current - invested
+    invested = latest_nav.invested_amount or Decimal("0")
+    current = latest_nav.current_value or latest_nav.nav_value or Decimal("0")
+    profit_amount = current - invested if invested else Decimal("0")
     profit_pct = (
         ((current - invested) / invested * Decimal("100"))
         if invested and invested != Decimal("0")

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -129,7 +129,7 @@ def _safe_dec(val: object) -> Decimal:
         return _ZERO
     try:
         return Decimal(str(val))
-    except Exception:
+    except (InvalidOperation, ValueError, TypeError, ArithmeticError):
         return _ZERO
 
 

@@ -1,0 +1,69 @@
+name: Fix Nginx Upload Limits
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fix Nginx config via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 60s
+          script: |
+            set -e
+            echo "=== Fixing Nginx upload limits ==="
+
+            # Find the site config
+            CONF=""
+            for f in /etc/nginx/sites-available/clients.jslwealth.in \
+                     /etc/nginx/sites-enabled/clients.jslwealth.in \
+                     /etc/nginx/conf.d/clients.jslwealth.in.conf; do
+              if [ -f "$f" ]; then
+                CONF="$f"
+                break
+              fi
+            done
+
+            if [ -z "$CONF" ]; then
+              echo "Site config not found, checking all configs..."
+              grep -rl "clients.jslwealth.in" /etc/nginx/ 2>/dev/null || true
+              # Fall back to adding in main nginx.conf http block
+              CONF="/etc/nginx/nginx.conf"
+            fi
+
+            echo "Using config: $CONF"
+            cat "$CONF"
+            echo ""
+
+            # Check if client_max_body_size already set
+            if grep -q "client_max_body_size" "$CONF"; then
+              echo "client_max_body_size already set — updating..."
+              sudo sed -i 's/client_max_body_size.*/client_max_body_size 60m;/' "$CONF"
+            else
+              # Add after the first 'location' or 'server_name' line
+              sudo sed -i '/server_name.*clients.jslwealth.in/a\    client_max_body_size 60m;' "$CONF"
+            fi
+
+            # Add proxy timeouts if not present
+            if ! grep -q "proxy_read_timeout" "$CONF"; then
+              sudo sed -i '/client_max_body_size/a\    proxy_read_timeout 600s;\n    proxy_send_timeout 600s;' "$CONF"
+            fi
+
+            echo ""
+            echo "=== Updated config ==="
+            cat "$CONF"
+
+            echo ""
+            echo "=== Testing Nginx config ==="
+            sudo nginx -t
+
+            echo "=== Reloading Nginx ==="
+            sudo systemctl reload nginx
+
+            echo "=== Done ==="

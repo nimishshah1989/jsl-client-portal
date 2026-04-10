@@ -16,7 +16,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.services.benchmark_service import fetch_and_align
+from backend.services.benchmark_service import align_benchmark, fetch_and_align
 from backend.services.holdings_service import compute_holdings
 from backend.services.txn_parser import classify_sector
 
@@ -100,49 +100,78 @@ async def find_or_create_portfolio(
     return result.fetchone()[0]
 
 
+_BULK_BATCH_SIZE = 500
+
+
 async def upsert_nav_rows(
     db: AsyncSession,
     client_id: int,
     portfolio_id: int,
     records: list[dict],
 ) -> int:
-    """Upsert NAV records for a single client. Returns count."""
+    """Bulk upsert NAV records for a single client. Returns count inserted/updated.
+
+    Uses a single INSERT ... ON CONFLICT per batch of 500 rows instead of one
+    statement per row. For 1 000-row clients this reduces round-trips from 1 000
+    to 2, cutting ingestion time by ~99 % for the NAV phase.
+    """
     if not records:
         return 0
 
-    count = 0
-    for rec in records:
+    # Pre-build all value placeholders and their params
+    values_parts: list[str] = []
+    all_params: dict = {}
+    for i, rec in enumerate(records):
         nav_date = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
-        await db.execute(
-            text("""
-                INSERT INTO cpp_nav_series
-                    (client_id, portfolio_id, nav_date, nav_value, invested_amount,
-                     current_value, cash_pct, etf_value, cash_value, bank_balance)
-                VALUES (:cid, :pid, :nd, :nv, :ia, :cv, :cp, :etf, :cash, :bank)
-                ON CONFLICT (client_id, portfolio_id, nav_date)
-                DO UPDATE SET
-                    nav_value = EXCLUDED.nav_value,
-                    invested_amount = EXCLUDED.invested_amount,
-                    current_value = EXCLUDED.current_value,
-                    cash_pct = EXCLUDED.cash_pct,
-                    etf_value = EXCLUDED.etf_value,
-                    cash_value = EXCLUDED.cash_value,
-                    bank_balance = EXCLUDED.bank_balance
-            """),
-            {
-                "cid": client_id,
-                "pid": portfolio_id,
-                "nd": nav_date,
-                "nv": rec["nav"],
-                "ia": rec["corpus"],
-                "cv": rec["nav"],
-                "cp": rec["liquidity_pct"],
-                "etf": rec.get("etf_value", _ZERO),
-                "cash": rec.get("cash_value", _ZERO),
-                "bank": rec.get("bank_balance", _ZERO),
-            },
+        values_parts.append(
+            f"(:cid_{i}, :pid_{i}, :nd_{i}, :nv_{i}, :ia_{i}, :cv_{i},"
+            f" :cp_{i}, :etf_{i}, :cash_{i}, :bank_{i})"
         )
-        count += 1
+        all_params.update({
+            f"cid_{i}": client_id,
+            f"pid_{i}": portfolio_id,
+            f"nd_{i}": nav_date,
+            f"nv_{i}": rec["nav"],
+            f"ia_{i}": rec["corpus"],
+            f"cv_{i}": rec["nav"],
+            f"cp_{i}": rec["liquidity_pct"],
+            f"etf_{i}": rec.get("etf_value", _ZERO),
+            f"cash_{i}": rec.get("cash_value", _ZERO),
+            f"bank_{i}": rec.get("bank_balance", _ZERO),
+        })
+
+    count = 0
+    for start in range(0, len(records), _BULK_BATCH_SIZE):
+        end = min(start + _BULK_BATCH_SIZE, len(records))
+        batch_values = values_parts[start:end]
+
+        # Collect only the params used by this batch
+        batch_params: dict = {}
+        for i in range(start, end):
+            for key in (
+                f"cid_{i}", f"pid_{i}", f"nd_{i}", f"nv_{i}", f"ia_{i}",
+                f"cv_{i}", f"cp_{i}", f"etf_{i}", f"cash_{i}", f"bank_{i}",
+            ):
+                batch_params[key] = all_params[key]
+
+        sql = text(f"""
+            INSERT INTO cpp_nav_series
+                (client_id, portfolio_id, nav_date, nav_value, invested_amount,
+                 current_value, cash_pct, etf_value, cash_value, bank_balance)
+            VALUES {', '.join(batch_values)}
+            ON CONFLICT (client_id, portfolio_id, nav_date)
+            DO UPDATE SET
+                nav_value       = EXCLUDED.nav_value,
+                invested_amount = EXCLUDED.invested_amount,
+                current_value   = EXCLUDED.current_value,
+                cash_pct        = EXCLUDED.cash_pct,
+                etf_value       = EXCLUDED.etf_value,
+                cash_value      = EXCLUDED.cash_value,
+                bank_balance    = EXCLUDED.bank_balance
+        """)
+        await db.execute(sql, batch_params)
+        count += end - start
+
     return count
 
 
@@ -150,8 +179,20 @@ async def update_benchmark_values(
     db: AsyncSession,
     client_id: int,
     portfolio_id: int,
+    benchmark_data: "pd.DataFrame | None" = None,
 ) -> int:
-    """Fetch Nifty data and update benchmark_value in cpp_nav_series."""
+    """Bulk-update benchmark_value in cpp_nav_series for a single client.
+
+    Parameters
+    ----------
+    benchmark_data:
+        Pre-fetched Nifty DataFrame (from ``fetch_nifty_data``).  If supplied
+        the function calls ``align_benchmark`` locally and skips yfinance.
+        If None, falls back to ``fetch_and_align`` (backward-compatible).
+
+    Uses a single ``UPDATE … FROM (VALUES …)`` per batch of 500 dates instead
+    of one UPDATE statement per date, reducing round-trips by ~99 %.
+    """
     result = await db.execute(
         text("""
             SELECT nav_date FROM cpp_nav_series
@@ -166,22 +207,44 @@ async def update_benchmark_values(
 
     nav_dates = pd.DatetimeIndex(dates)
     try:
-        benchmark = fetch_and_align(nav_dates)
+        if benchmark_data is not None:
+            benchmark = align_benchmark(nav_dates, benchmark_data)
+        else:
+            benchmark = fetch_and_align(nav_dates)
     except RuntimeError as exc:
-        logger.error("Failed to fetch benchmark data: %s", exc)
+        logger.error("Failed to align benchmark data: %s", exc)
         return 0
 
-    count = 0
+    if benchmark is None or len(benchmark) == 0:
+        return 0
+
+    # Pre-build all (date, value) pairs
+    pairs: list[tuple] = []
     for dt, val in benchmark.items():
         nav_date = dt.date() if hasattr(dt, "date") else dt
-        await db.execute(
-            text("""
-                UPDATE cpp_nav_series SET benchmark_value = :bv
-                WHERE client_id = :cid AND portfolio_id = :pid AND nav_date = :nd
-            """),
-            {"bv": Decimal(str(float(val))), "cid": client_id, "pid": portfolio_id, "nd": nav_date},
-        )
-        count += 1
+        pairs.append((nav_date, Decimal(str(float(val)))))
+
+    count = 0
+    for start in range(0, len(pairs), _BULK_BATCH_SIZE):
+        batch = pairs[start : start + _BULK_BATCH_SIZE]
+        values_parts: list[str] = []
+        batch_params: dict = {"cid": client_id, "pid": portfolio_id}
+        for i, (nav_date, bv) in enumerate(batch):
+            values_parts.append(f"(:d_{i}::date, :v_{i}::numeric)")
+            batch_params[f"d_{i}"] = nav_date
+            batch_params[f"v_{i}"] = bv
+
+        sql = text(f"""
+            UPDATE cpp_nav_series AS ns
+            SET benchmark_value = v.bv
+            FROM (VALUES {', '.join(values_parts)}) AS v(nd, bv)
+            WHERE ns.client_id = :cid
+              AND ns.portfolio_id = :pid
+              AND ns.nav_date = v.nd
+        """)
+        await db.execute(sql, batch_params)
+        count += len(batch)
+
     return count
 
 

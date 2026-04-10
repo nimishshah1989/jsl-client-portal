@@ -11,10 +11,13 @@ DB helper functions live in ingestion_helpers.py.
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.services.benchmark_service import fetch_nifty_data
 from backend.services.ingestion_helpers import (
     find_or_create_client,
     find_or_create_portfolio,
@@ -78,13 +81,16 @@ async def ingest_nav_file(
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> UploadResult:
     """
-    Full NAV ingestion pipeline:
+    Full NAV ingestion pipeline (optimised):
       1. Parse .xlsx with nav_parser
-      2. For each client: find-or-create client + portfolio
-      3. Upsert NAV rows
-      4. Fetch + align benchmark data
-      5. Run risk engine per client
-      6. Log upload in cpp_upload_log
+      2. Pre-fetch benchmark data ONCE for the entire date range of the file
+      3. Phase A — For each client: find-or-create, bulk upsert NAV + benchmark, commit
+      4. Phase B — Run risk engine for every successfully ingested client
+      5. Log upload in cpp_upload_log
+
+    Pre-fetching benchmark once (step 2) eliminates N×yfinance calls (one per
+    client) and replaces them with a single network request.  Bulk upserts in
+    steps 3 reduce SQL round-trips from O(rows) to O(rows/500).
     """
     filepath = Path(filepath)
     upload = UploadResult(file_type="NAV", filename=filepath.name)
@@ -108,11 +114,33 @@ async def ingest_nav_file(
     upload.clients_affected = len(clients)
     upload.client_codes = list(clients.keys())
 
-    # 2-5. Process each client
+    # 2. Determine global date range and pre-fetch benchmark once
+    all_dates: set = set()
+    for client_records in clients.values():
+        for rec in client_records:
+            d = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
+            all_dates.add(d)
+
+    nifty_df: pd.DataFrame = pd.DataFrame(columns=["close"])
+    if all_dates:
+        min_date = min(all_dates)
+        max_date = max(all_dates)
+        logger.info("Pre-fetching benchmark data: %s to %s", min_date, max_date)
+        try:
+            nifty_df = fetch_nifty_data(min_date, max_date)
+            logger.info("Benchmark pre-fetch: %d rows", len(nifty_df))
+        except Exception as exc:
+            logger.warning("Benchmark pre-fetch failed (%s); will retry per-client", exc)
+
+    # Phase A: bulk upsert NAV + benchmark for every client
     total_clients = len(clients)
+    processed_clients: list[tuple[int, int, str]] = []  # (client_id, portfolio_id, client_code)
+
     for idx, (client_code, client_records) in enumerate(clients.items()):
         client_name = client_records[0]["client_name"]
-        logger.info("Processing NAV for %s (%d of %d)", client_code, idx + 1, total_clients)
+        logger.info(
+            "Phase A — upserting NAV for %s (%d of %d)", client_code, idx + 1, total_clients
+        )
 
         if progress_callback is not None:
             progress_callback(idx, total_clients, client_code)
@@ -125,26 +153,45 @@ async def ingest_nav_file(
             nav_count = await upsert_nav_rows(db, client_id, portfolio_id, client_records)
             upload.rows_processed += nav_count
 
-            bench_count = await update_benchmark_values(db, client_id, portfolio_id)
+            # Pass the pre-fetched nifty_df; falls back to per-client fetch if empty
+            bench_data = nifty_df if not nifty_df.empty else None
+            bench_count = await update_benchmark_values(
+                db, client_id, portfolio_id, benchmark_data=bench_data
+            )
             logger.debug("Updated %d benchmark values for %s", bench_count, client_code)
 
-            # Commit before risk engine so it can read the data
             await db.commit()
-
-            await run_risk_engine(client_id, portfolio_id, db)
-            await db.commit()
+            processed_clients.append((client_id, portfolio_id, client_code))
 
         except Exception as exc:
             upload.rows_failed += len(client_records)
             upload.errors.append({
-                "stage": "client_processing",
+                "stage": "upsert",
                 "client_code": client_code,
                 "error": str(exc),
             })
-            logger.error("Failed processing client %s: %s", client_code, exc, exc_info=True)
+            logger.error("Phase A failed for %s: %s", client_code, exc, exc_info=True)
             await db.rollback()
 
-    # 6. Log upload
+    # Phase B: run risk engine for all successfully upserted clients
+    for risk_idx, (client_id, portfolio_id, client_code) in enumerate(processed_clients):
+        logger.info(
+            "Phase B — risk engine for %s (%d of %d)",
+            client_code, risk_idx + 1, len(processed_clients),
+        )
+        try:
+            await run_risk_engine(client_id, portfolio_id, db)
+            await db.commit()
+        except Exception as exc:
+            upload.errors.append({
+                "stage": "risk_engine",
+                "client_code": client_code,
+                "error": str(exc),
+            })
+            logger.error("Phase B (risk engine) failed for %s: %s", client_code, exc, exc_info=True)
+            await db.rollback()
+
+    # 5. Log upload
     await _log(db, upload, uploaded_by)
     await db.commit()
 

@@ -129,10 +129,25 @@ function ClientRow({ client, expanded, onToggle }) {
 export default function ReconciliationPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError] = useState(null);
   const [expandedClients, setExpandedClients] = useState(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL'); // ALL | ISSUES_ONLY | MATCH_ONLY
+
+  // Load last reconciliation from DB on mount
+  useState(() => {
+    (async () => {
+      try {
+        const result = await apiFetch('/admin/reconciliation/summary');
+        setData(result);
+      } catch {
+        // No saved data — that's fine
+      } finally {
+        setInitialLoading(false);
+      }
+    })();
+  });
 
   const handleUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
@@ -290,10 +305,51 @@ export default function ReconciliationPage() {
             />
           </div>
 
-          {data.market_date && (
-            <p className="text-xs text-slate-400">
-              Holding Report as of: <span className="font-medium text-slate-600">{data.market_date}</span>
-            </p>
+          <div className="flex items-center gap-4 text-xs text-slate-400">
+            {data.market_date && (
+              <span>Holding Report as of: <span className="font-medium text-slate-600">{data.market_date}</span></span>
+            )}
+            {data.run_at && (
+              <span>Reconciled: <span className="font-medium text-slate-600">{new Date(data.run_at).toLocaleString('en-IN')}</span></span>
+            )}
+            {data.filename && (
+              <span>File: <span className="font-medium text-slate-600">{data.filename}</span></span>
+            )}
+            <span>Match % = matched instruments / total instruments per client</span>
+          </div>
+
+          {/* Commentary / Insights */}
+          {data.commentary && data.commentary.length > 0 && (
+            <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider">Reconciliation Insights</h3>
+              {data.commentary.map((c, i) => {
+                const severityStyles = {
+                  critical: 'border-l-red-500 bg-red-50',
+                  high: 'border-l-amber-500 bg-amber-50',
+                  medium: 'border-l-yellow-400 bg-yellow-50',
+                  good: 'border-l-emerald-500 bg-emerald-50',
+                };
+                const severityText = {
+                  critical: 'text-red-800',
+                  high: 'text-amber-800',
+                  medium: 'text-yellow-800',
+                  good: 'text-emerald-800',
+                };
+                return (
+                  <div key={i} className={`border-l-4 rounded-r-lg p-3 ${severityStyles[c.severity] || 'bg-slate-50 border-l-slate-300'}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className={`text-sm font-medium ${severityText[c.severity] || 'text-slate-800'}`}>
+                        {c.title}
+                      </p>
+                      {c.affected_clients > 0 && (
+                        <span className="text-xs text-slate-500 whitespace-nowrap">{c.affected_clients} clients</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-600 mt-1">{c.detail}</p>
+                  </div>
+                );
+              })}
+            </div>
           )}
 
           {/* Filters */}

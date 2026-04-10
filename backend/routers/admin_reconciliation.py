@@ -1,9 +1,14 @@
-"""Admin reconciliation router — upload holding report and compare against our data."""
+"""Admin reconciliation router — upload holding report and compare against our data.
+
+Results are persisted in cpp_reconciliation_runs so they survive restarts
+and are visible to any admin who logs in.
+"""
 
 import csv
 import io
 import logging
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
@@ -22,16 +27,21 @@ from backend.services.holding_report_parser import (
     parse_holding_report,
 )
 from backend.services.reconciliation_service import reconcile
+from backend.services.reconciliation_store import (
+    load_latest_reconciliation,
+    save_reconciliation,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/reconciliation", tags=["admin-reconciliation"])
 
-# In-memory store for latest reconciliation result (single-tenant admin tool)
-_latest_result: dict = {}
+# In-memory cache (populated from DB on first GET, refreshed on upload)
+_cache: dict = {}
 
 
 def _match_to_response(m) -> HoldingMatchResponse:
+    """Convert a HoldingMatch dataclass to response schema."""
     return HoldingMatchResponse(
         client_code=m.client_code,
         symbol=m.symbol,
@@ -60,6 +70,7 @@ def _match_to_response(m) -> HoldingMatchResponse:
 
 
 def _client_to_response(c) -> ClientReconciliationResponse:
+    """Convert a ClientReconciliation dataclass to response schema."""
     return ClientReconciliationResponse(
         client_code=c.client_code,
         client_name=c.client_name,
@@ -79,13 +90,51 @@ def _client_to_response(c) -> ClientReconciliationResponse:
     )
 
 
+def _db_row_to_client_response(c: dict) -> ClientReconciliationResponse:
+    """Convert a DB-stored client dict to response schema."""
+    matches = []
+    for m in c.get("matches", []):
+        matches.append(HoldingMatchResponse(
+            client_code=c["client_code"],
+            symbol=m["symbol"],
+            status=m["status"],
+            bo_quantity=Decimal(m["bo_quantity"]) if m.get("bo_quantity") else None,
+            bo_avg_cost=Decimal(m["bo_avg_cost"]) if m.get("bo_avg_cost") else None,
+            bo_market_value=Decimal(m["bo_market_value"]) if m.get("bo_market_value") else None,
+            our_quantity=Decimal(m["our_quantity"]) if m.get("our_quantity") else None,
+            our_avg_cost=Decimal(m["our_avg_cost"]) if m.get("our_avg_cost") else None,
+            our_market_value=Decimal(m["our_market_value"]) if m.get("our_market_value") else None,
+            qty_diff=Decimal(m["qty_diff"]) if m.get("qty_diff") else None,
+            cost_diff=Decimal(m["cost_diff"]) if m.get("cost_diff") else None,
+            bo_isin=m.get("bo_isin"),
+        ))
+
+    return ClientReconciliationResponse(
+        client_code=c["client_code"],
+        client_name=c.get("client_name", ""),
+        family_group=c.get("family_group", ""),
+        client_found=c.get("client_found", True),
+        total_holdings_bo=c.get("total_holdings_bo", 0),
+        total_holdings_ours=c.get("total_holdings_ours", 0),
+        matched_count=c.get("matched_count", 0),
+        qty_mismatch_count=c.get("qty_mismatch_count", 0),
+        cost_mismatch_count=c.get("cost_mismatch_count", 0),
+        value_mismatch_count=c.get("value_mismatch_count", 0),
+        missing_in_ours_count=c.get("missing_in_ours_count", 0),
+        extra_in_ours_count=c.get("extra_in_ours_count", 0),
+        match_pct=c.get("match_pct", 100.0),
+        has_issues=c.get("has_issues", False),
+        matches=matches,
+    )
+
+
 @router.post("/upload", response_model=ReconciliationSummaryResponse)
 async def upload_holding_report(
     file: UploadFile = File(...),
     admin: dict = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
-    """Upload a PMS Holding Report .xlsx and run reconciliation against our holdings."""
+    """Upload a PMS Holding Report .xlsx, reconcile, and persist results."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
@@ -93,7 +142,6 @@ async def upload_holding_report(
     if ext not in (".xlsx", ".xls"):
         raise HTTPException(status_code=400, detail="Only .xlsx/.xls files accepted")
 
-    # Save to temp file for openpyxl
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 50MB)")
@@ -103,19 +151,20 @@ async def upload_holding_report(
         tmp_path = tmp.name
 
     try:
-        # Parse
         records = parse_holding_report(tmp_path)
         if not records:
             raise HTTPException(status_code=400, detail="No holdings found in file")
 
         summary_info = holding_report_summary(records)
-
-        # Reconcile
         result = await reconcile(records, db)
 
-        # Store for subsequent queries
-        _latest_result["summary"] = result
-        _latest_result["market_date"] = summary_info.get("market_date")
+        # Persist to DB
+        market_date = summary_info.get("market_date")
+        await save_reconciliation(db, result, market_date, file.filename)
+
+        # Update in-memory cache
+        _cache["result"] = result
+        _cache["market_date"] = market_date
 
         return ReconciliationSummaryResponse(
             total_clients_bo=result.total_clients_bo,
@@ -129,7 +178,8 @@ async def upload_holding_report(
             total_missing_in_ours=result.total_missing_in_ours,
             total_extra_in_ours=result.total_extra_in_ours,
             match_pct=result.match_pct,
-            market_date=summary_info.get("market_date"),
+            market_date=market_date,
+            commentary=result.commentary,
             clients=[_client_to_response(c) for c in result.clients],
         )
     except HTTPException:
@@ -144,29 +194,52 @@ async def upload_holding_report(
 @router.get("/summary", response_model=ReconciliationSummaryResponse)
 async def get_summary(
     admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
-    """Get the latest reconciliation summary (without re-uploading)."""
-    result = _latest_result.get("summary")
-    if result is None:
+    """Get the latest reconciliation summary. Loads from DB if not in memory."""
+    # Try in-memory cache first
+    if _cache.get("result"):
+        result = _cache["result"]
+        return ReconciliationSummaryResponse(
+            total_clients_bo=result.total_clients_bo,
+            total_clients_matched=result.total_clients_matched,
+            total_clients_missing=result.total_clients_missing,
+            total_holdings_bo=result.total_holdings_bo,
+            total_holdings_matched=result.total_holdings_matched,
+            total_qty_mismatches=result.total_qty_mismatches,
+            total_cost_mismatches=result.total_cost_mismatches,
+            total_value_mismatches=result.total_value_mismatches,
+            total_missing_in_ours=result.total_missing_in_ours,
+            total_extra_in_ours=result.total_extra_in_ours,
+            match_pct=result.match_pct,
+            market_date=_cache.get("market_date"),
+            commentary=result.commentary,
+            clients=[_client_to_response(c) for c in result.clients],
+        )
+
+    # Fall back to DB
+    stored = await load_latest_reconciliation(db)
+    if stored is None:
         raise HTTPException(status_code=404, detail="No reconciliation data. Upload a holding report first.")
 
+    stats = stored["stats"]
+    clients_data = stored["summary"].get("clients", [])
+
     return ReconciliationSummaryResponse(
-        total_clients_bo=result.total_clients_bo,
-        total_clients_matched=result.total_clients_matched,
-        total_clients_missing=result.total_clients_missing,
-        total_holdings_bo=result.total_holdings_bo,
-        total_holdings_matched=result.total_holdings_matched,
-        total_qty_mismatches=result.total_qty_mismatches,
-        total_cost_mismatches=result.total_cost_mismatches,
-        total_value_mismatches=result.total_value_mismatches,
-        total_missing_in_ours=result.total_missing_in_ours,
-        total_extra_in_ours=result.total_extra_in_ours,
-        match_pct=result.match_pct,
-        market_date=_latest_result.get("market_date"),
-        clients=[
-            _client_to_response(c)
-            for c in result.clients
-        ],
+        total_clients_bo=stats.get("total_clients_bo", 0),
+        total_clients_matched=stats.get("total_clients_matched", 0),
+        total_clients_missing=stats.get("total_clients_missing", 0),
+        total_holdings_bo=stats.get("total_holdings_bo", 0),
+        total_holdings_matched=stats.get("total_holdings_matched", 0),
+        total_qty_mismatches=stats.get("total_qty_mismatches", 0),
+        total_cost_mismatches=stats.get("total_cost_mismatches", 0),
+        total_value_mismatches=stats.get("total_value_mismatches", 0),
+        total_missing_in_ours=stats.get("total_missing_in_ours", 0),
+        total_extra_in_ours=stats.get("total_extra_in_ours", 0),
+        match_pct=stats.get("match_pct", 0),
+        market_date=stored.get("market_date"),
+        commentary=stored.get("commentary", []),
+        clients=[_db_row_to_client_response(c) for c in clients_data],
     )
 
 
@@ -174,28 +247,59 @@ async def get_summary(
 async def get_client_detail(
     client_code: str = Query(..., description="UCC / client_code to look up"),
     admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ) -> ClientReconciliationResponse:
     """Get reconciliation detail for a specific client."""
-    result = _latest_result.get("summary")
-    if result is None:
-        raise HTTPException(status_code=404, detail="No reconciliation data. Upload a holding report first.")
+    # Try in-memory first
+    if _cache.get("result"):
+        for c in _cache["result"].clients:
+            if c.client_code == client_code:
+                return _client_to_response(c)
 
-    for c in result.clients:
-        if c.client_code == client_code:
-            return _client_to_response(c)
+    # Fall back to DB
+    stored = await load_latest_reconciliation(db)
+    if stored:
+        for c in stored["summary"].get("clients", []):
+            if c["client_code"] == client_code:
+                return _db_row_to_client_response(c)
 
     raise HTTPException(status_code=404, detail=f"Client {client_code} not found in reconciliation")
 
 
 @router.get("/export")
 async def export_mismatches(
-    status_filter: str | None = Query(None, description="Filter by status: QTY_MISMATCH, COST_MISMATCH, MISSING_IN_OURS, EXTRA_IN_OURS"),
+    status_filter: str | None = Query(None, description="Filter by status"),
     admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Export reconciliation mismatches as CSV."""
-    result = _latest_result.get("summary")
-    if result is None:
-        raise HTTPException(status_code=404, detail="No reconciliation data. Upload a holding report first.")
+    # Get data from cache or DB
+    clients_data = None
+    if _cache.get("result"):
+        clients_data = [
+            {
+                "client_code": c.client_code,
+                "family_group": c.family_group,
+                "matches": [
+                    {
+                        "symbol": m.symbol, "status": m.status, "bo_isin": m.bo_isin,
+                        "bo_quantity": m.bo_quantity, "our_quantity": m.our_quantity, "qty_diff": m.qty_diff,
+                        "bo_avg_cost": m.bo_avg_cost, "our_avg_cost": m.our_avg_cost, "cost_diff": m.cost_diff,
+                        "bo_market_value": m.bo_market_value, "our_market_value": m.our_market_value,
+                        "value_diff": m.value_diff, "bo_pnl": m.bo_pnl, "our_pnl": m.our_pnl, "pnl_diff": m.pnl_diff,
+                    }
+                    for m in c.matches
+                ],
+            }
+            for c in _cache["result"].clients
+        ]
+    else:
+        stored = await load_latest_reconciliation(db)
+        if stored:
+            clients_data = stored["summary"].get("clients", [])
+
+    if not clients_data:
+        raise HTTPException(status_code=404, detail="No reconciliation data.")
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -204,22 +308,21 @@ async def export_mismatches(
         "BO Qty", "Our Qty", "Qty Diff",
         "BO Avg Cost", "Our Avg Cost", "Cost Diff",
         "BO Market Value", "Our Market Value", "Value Diff",
-        "BO P&L", "Our P&L", "P&L Diff",
     ])
 
-    for client in result.clients:
-        for m in client.matches:
-            if status_filter and m.status != status_filter:
+    for client in clients_data:
+        for m in client.get("matches", []):
+            status = m.get("status", "")
+            if status_filter and status != status_filter:
                 continue
-            if not status_filter and m.status == "MATCH":
-                continue  # Skip matches in export by default
-
+            if not status_filter and status == "MATCH":
+                continue
             writer.writerow([
-                m.client_code, m.family_group, m.symbol, m.status, m.bo_isin or "",
-                m.bo_quantity, m.our_quantity, m.qty_diff,
-                m.bo_avg_cost, m.our_avg_cost, m.cost_diff,
-                m.bo_market_value, m.our_market_value, m.value_diff,
-                m.bo_pnl, m.our_pnl, m.pnl_diff,
+                client.get("client_code", ""), client.get("family_group", ""),
+                m.get("symbol", ""), status, m.get("bo_isin", ""),
+                m.get("bo_quantity"), m.get("our_quantity"), m.get("qty_diff"),
+                m.get("bo_avg_cost"), m.get("our_avg_cost"), m.get("cost_diff"),
+                m.get("bo_market_value"), m.get("our_market_value"), m.get("value_diff"),
             ])
 
     output.seek(0)

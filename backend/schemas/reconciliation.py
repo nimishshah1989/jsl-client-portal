@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -79,4 +81,7 @@ class ReconciliationSummaryResponse(BaseModel):
     total_extra_in_ours: int = 0
     match_pct: float = 100.0
     market_date: dt.date | None = None
+    run_at: str | None = None
+    filename: str | None = None
+    commentary: list[dict[str, Any]] = Field(default_factory=list)
     clients: list[ClientReconciliationResponse] = Field(default_factory=list)

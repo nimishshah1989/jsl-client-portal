@@ -29,7 +29,7 @@ from backend.services.ingestion_helpers import (
     upsert_transactions,
 )
 from backend.services.nav_parser import parse_nav_file
-from backend.services.risk_engine import run_risk_engine
+from backend.services.risk_engine import run_risk_engine, run_risk_engine_batch
 from backend.services.txn_parser import parse_transaction_file
 
 logger = logging.getLogger(__name__)
@@ -173,23 +173,16 @@ async def ingest_nav_file(
             logger.error("Phase A failed for %s: %s", client_code, exc, exc_info=True)
             await db.rollback()
 
-    # Phase B: run risk engine for all successfully upserted clients
-    for risk_idx, (client_id, portfolio_id, client_code) in enumerate(processed_clients):
-        logger.info(
-            "Phase B — risk engine for %s (%d of %d)",
-            client_code, risk_idx + 1, len(processed_clients),
+    # Phase B: run risk engine in parallel (5 concurrent, skip up-to-date)
+    if processed_clients:
+        from backend.database import AsyncSessionLocal
+        logger.info("Phase B — running risk engine for %d clients (parallel)", len(processed_clients))
+        batch_result = await run_risk_engine_batch(
+            processed_clients, AsyncSessionLocal, concurrency=5, force=True,
         )
-        try:
-            await run_risk_engine(client_id, portfolio_id, db)
-            await db.commit()
-        except Exception as exc:
-            upload.errors.append({
-                "stage": "risk_engine",
-                "client_code": client_code,
-                "error": str(exc),
-            })
-            logger.error("Phase B (risk engine) failed for %s: %s", client_code, exc, exc_info=True)
-            await db.rollback()
+        if batch_result["failed"] > 0:
+            for err_msg in batch_result["errors"]:
+                upload.errors.append({"stage": "risk_engine", "error": err_msg})
 
     # 5. Log upload
     await _log(db, upload, uploaded_by)

@@ -70,7 +70,8 @@ class ClientReconciliation:
     """Reconciliation result for a single client."""
 
     client_code: str
-    family_group: str
+    family_group: str = ""
+    client_name: str = ""
     matches: list[HoldingMatch] = field(default_factory=list)
     total_holdings_bo: int = 0
     total_holdings_ours: int = 0
@@ -158,16 +159,17 @@ def _classify(
     return "MATCH"
 
 
-async def _load_our_holdings(db: AsyncSession) -> dict[str, dict[str, dict]]:
+async def _load_our_holdings(db: AsyncSession) -> tuple[dict[str, dict[str, dict]], dict[str, str]]:
     """
     Load all holdings from cpp_holdings, keyed by (client_code, symbol).
 
     Returns:
-        {client_code: {symbol: {quantity, avg_cost, current_price, current_value, ...}}}
+        ({client_code: {symbol: {...}}}, {client_code: client_name})
     """
     result = await db.execute(text("""
         SELECT
             c.client_code,
+            c.name,
             h.symbol,
             h.quantity,
             h.avg_cost,
@@ -182,23 +184,26 @@ async def _load_our_holdings(db: AsyncSession) -> dict[str, dict[str, dict]]:
     """))
 
     holdings: dict[str, dict[str, dict]] = {}
+    client_names: dict[str, str] = {}
     for row in result.fetchall():
         code = row[0]
-        symbol = row[1]
+        name = row[1] or ""
+        symbol = row[2]
         if code not in holdings:
             holdings[code] = {}
+            client_names[code] = name
         holdings[code][symbol] = {
-            "quantity": _safe_dec(row[2]),
-            "avg_cost": _safe_dec(row[3]),
-            "current_price": _safe_dec(row[4]),
-            "current_value": _safe_dec(row[5]),
-            "unrealized_pnl": _safe_dec(row[6]),
-            "weight_pct": _safe_dec(row[7]),
+            "quantity": _safe_dec(row[3]),
+            "avg_cost": _safe_dec(row[4]),
+            "current_price": _safe_dec(row[5]),
+            "current_value": _safe_dec(row[6]),
+            "unrealized_pnl": _safe_dec(row[7]),
+            "weight_pct": _safe_dec(row[8]),
         }
 
     logger.info("Loaded our holdings: %d clients, %d total positions",
                 len(holdings), sum(len(v) for v in holdings.values()))
-    return holdings
+    return holdings, client_names
 
 
 async def reconcile(
@@ -216,7 +221,7 @@ async def reconcile(
         ReconciliationSummary with per-client details.
     """
     # Load our holdings from DB
-    our_holdings = await _load_our_holdings(db)
+    our_holdings, client_names = await _load_our_holdings(db)
 
     # Group backoffice by client
     bo_by_client: dict[str, list[dict]] = {}
@@ -239,6 +244,7 @@ async def reconcile(
         client_recon = ClientReconciliation(
             client_code=ucc,
             family_group=family_group,
+            client_name=client_names.get(ucc, ""),
             total_holdings_bo=len(bo_holdings),
         )
 

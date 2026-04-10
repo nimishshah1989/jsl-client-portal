@@ -23,14 +23,16 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 @router.post("/recompute-risk")
 async def recompute_risk(
     client_id: int | None = None,
+    force: bool = False,
     admin: dict = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Trigger risk recomputation for all or a specific client."""
-    try:
-        from backend.services.risk_engine import run_risk_engine
-    except ImportError as exc:
-        raise HTTPException(status_code=501, detail="Risk engine not yet implemented") from exc
+    """Trigger risk recomputation for all or a specific client.
+
+    Optimised: runs up to 5 clients in parallel, skips clients whose
+    risk metrics are already current (unless force=True).
+    """
+    from backend.services.risk_engine import run_risk_engine, run_risk_engine_batch
 
     if client_id is not None:
         pid = (await db.execute(
@@ -39,34 +41,35 @@ async def recompute_risk(
         )).scalar()
         if pid is None:
             raise HTTPException(status_code=404, detail=f"No portfolio found for client_id={client_id}")
-        await run_risk_engine(client_id, pid, db)
+        await run_risk_engine(client_id, pid, db, force=True)
+        await db.commit()
         return {"message": f"Recomputed risk for client_id={client_id}"}
 
-    # Fetch all active client IDs upfront
-    stmt = select(Client.id).where(Client.is_active.is_(True))
-    client_ids = [row[0] for row in (await db.execute(stmt)).all()]
-    count = 0
-    errors: list[str] = []
-    for cid in client_ids:
-        try:
-            async with AsyncSessionLocal() as client_db:
-                pid = (await client_db.execute(
-                    text("SELECT id FROM cpp_portfolios WHERE client_id = :cid LIMIT 1"),
-                    {"cid": cid},
-                )).scalar()
-                if pid is None:
-                    continue
-                await run_risk_engine(cid, pid, client_db)
-                await client_db.commit()
-                count += 1
-        except Exception as exc:
-            logger.error("Risk recompute failed for client_id=%d: %s", cid, exc, exc_info=True)
-            errors.append(f"client_id={cid}: {exc!s}")
-            continue
-    result: dict = {"message": f"Recomputed risk for {count} clients"}
-    if errors:
-        result["errors"] = errors[:20]
-    return result
+    # Fetch all active client+portfolio pairs
+    result = await db.execute(text("""
+        SELECT c.id, p.id, c.client_code
+        FROM cpp_clients c
+        JOIN cpp_portfolios p ON p.client_id = c.id
+        WHERE c.is_active = true
+        ORDER BY c.client_code
+    """))
+    pairs = [(r[0], r[1], r[2]) for r in result.fetchall()]
+
+    if not pairs:
+        return {"message": "No active clients found"}
+
+    # Run batch with parallel processing (5 concurrent)
+    batch_result = await run_risk_engine_batch(
+        pairs, AsyncSessionLocal, concurrency=5, force=force,
+    )
+
+    return {
+        "message": f"Risk recompute: {batch_result['success']} updated, {batch_result['skipped']} skipped (up-to-date), {batch_result['failed']} failed",
+        "success": batch_result["success"],
+        "skipped": batch_result["skipped"],
+        "failed": batch_result["failed"],
+        "errors": batch_result["errors"][:20],
+    }
 
 
 @router.post("/update-prices")

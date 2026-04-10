@@ -301,21 +301,67 @@ def compute_all_metrics(
     return result
 
 
+async def is_risk_stale(
+    db_session: AsyncSession,
+    client_id: int,
+    portfolio_id: int,
+) -> bool:
+    """Check if risk metrics need recomputation.
+
+    Returns True if:
+      - No risk metrics exist for this client
+      - Latest NAV date > latest computed_date in risk_metrics
+    """
+    result = await db_session.execute(
+        text("""
+            SELECT
+                (SELECT MAX(nav_date) FROM cpp_nav_series
+                 WHERE client_id = :cid AND portfolio_id = :pid) AS latest_nav,
+                (SELECT MAX(computed_date) FROM cpp_risk_metrics
+                 WHERE client_id = :cid AND portfolio_id = :pid) AS latest_risk
+        """),
+        {"cid": client_id, "pid": portfolio_id},
+    )
+    row = result.fetchone()
+    if row is None or row[0] is None:
+        return False  # no NAV data at all
+    if row[1] is None:
+        return True  # NAV exists but no risk metrics
+    return row[0] > row[1]
+
+
 async def run_risk_engine(
     client_id: int,
     portfolio_id: int,
     db_session: AsyncSession,
     risk_free_rate: float = _RF_RATE,
+    *,
+    force: bool = False,
 ) -> dict:
     """
     Master orchestrator — computes all metrics and upserts to DB.
 
-    1. Fetch nav_df from cpp_nav_series for this client+portfolio
-    2. Compute all metrics
-    3. Compute drawdown series
-    4. Upsert into cpp_risk_metrics (via risk_db)
-    5. Upsert into cpp_drawdown_series (via risk_db)
+    Optimisation 2 (skip unchanged): if force=False (default), checks whether
+    the latest NAV date exceeds the latest computed_date in risk_metrics.
+    Skips computation entirely if metrics are already up-to-date.
+
+    1. Check staleness (skip if up-to-date)
+    2. Fetch nav_df from cpp_nav_series for this client+portfolio
+    3. Compute all metrics
+    4. Compute drawdown series
+    5. Upsert into cpp_risk_metrics (via risk_db)
+    6. Upsert into cpp_drawdown_series — incremental append for new dates
     """
+    # Optimisation 2: skip unchanged clients
+    if not force:
+        stale = await is_risk_stale(db_session, client_id, portfolio_id)
+        if not stale:
+            logger.debug(
+                "Skipping risk engine for client=%d portfolio=%d — already up to date",
+                client_id, portfolio_id,
+            )
+            return {}
+
     logger.info("Running risk engine for client=%d portfolio=%d", client_id, portfolio_id)
 
     # 1. Fetch NAV data
@@ -348,10 +394,7 @@ async def run_risk_engine(
         nav_df[col] = pd.to_numeric(nav_df[col], errors="coerce").fillna(0)
     nav_df = nav_df.sort_values("nav_date").reset_index(drop=True)
 
-    # 2. Compute TWR index that adjusts for corpus changes (infusions/withdrawals).
-    #    Raw nav_value includes cash infusions as value increases, which would be
-    #    incorrectly counted as investment returns. The TWR series chain-links
-    #    sub-period returns around corpus change events.
+    # 2. Compute TWR index
     nav_df["twr_value"] = compute_twr_series(nav_df)
 
     # 3. Compute all metrics (using twr_value for return calculations)
@@ -359,7 +402,7 @@ async def run_risk_engine(
     if not metrics:
         return {}
 
-    # 3b. Recompute XIRR using real cash flows if available in cpp_cash_flows
+    # 3b. Recompute XIRR using real cash flows if available
     cf_result = await db_session.execute(
         text("""
             SELECT flow_date, flow_type, amount
@@ -377,23 +420,93 @@ async def run_risk_engine(
         if len(real_flows) >= 2:
             xirr_val = compute_xirr(real_flows)
             metrics["xirr"] = xirr_val
-            logger.info(
-                "XIRR for client=%d portfolio=%d computed from %d actual cash flows",
-                client_id, portfolio_id, len(cf_rows),
-            )
 
-    # 4. Compute drawdown series (uses twr_value via the column in nav_df)
+    # 4. Compute drawdown series
     dd_df = compute_drawdown_series(nav_df)
 
     # 5. Upsert risk metrics
     computed = nav_df["nav_date"].iloc[-1].date()
     await upsert_risk_metrics(db_session, client_id, portfolio_id, computed, metrics)
 
-    # 6. Upsert drawdown series
+    # 6. Incremental drawdown: only replace if new data exists
     dd_count = await replace_drawdown_series(db_session, client_id, portfolio_id, dd_df)
 
     logger.info(
-        "Risk engine complete for client=%d portfolio=%d: %d metrics, %d drawdown points",
+        "Risk engine complete for client=%d portfolio=%d: %d metrics, %d dd points",
         client_id, portfolio_id, len(metrics), dd_count,
     )
     return metrics
+
+
+async def run_risk_engine_batch(
+    client_portfolio_pairs: list[tuple[int, int, str]],
+    db_factory,
+    *,
+    concurrency: int = 5,
+    force: bool = False,
+    progress_callback=None,
+) -> dict:
+    """
+    Optimisation 1: Run risk engine for multiple clients in parallel.
+
+    Uses asyncio.Semaphore to limit concurrent DB sessions.
+    Each client gets its own session to avoid transaction conflicts.
+
+    Args:
+        client_portfolio_pairs: list of (client_id, portfolio_id, client_code)
+        db_factory: async sessionmaker to create per-client sessions
+        concurrency: max parallel computations (default 5)
+        force: if True, recompute even if metrics are current
+        progress_callback: optional fn(completed, total, client_code)
+
+    Returns:
+        dict with success, skipped, failed counts
+    """
+    import asyncio
+
+    sem = asyncio.Semaphore(concurrency)
+    success = 0
+    skipped = 0
+    failed = 0
+    errors: list[str] = []
+    total = len(client_portfolio_pairs)
+
+    async def _process_one(client_id: int, portfolio_id: int, code: str):
+        nonlocal success, skipped, failed
+        async with sem:
+            try:
+                async with db_factory() as db:
+                    result = await run_risk_engine(
+                        client_id, portfolio_id, db, force=force,
+                    )
+                    await db.commit()
+                    if result:
+                        success += 1
+                    else:
+                        skipped += 1
+            except Exception as exc:
+                failed += 1
+                if len(errors) < 20:
+                    errors.append(f"{code}: {exc!s}")
+                logger.error("Risk engine failed for %s: %s", code, exc, exc_info=True)
+
+            done = success + skipped + failed
+            if progress_callback and done % 10 == 0:
+                progress_callback(done, total, code)
+
+    tasks = [
+        _process_one(cid, pid, code)
+        for cid, pid, code in client_portfolio_pairs
+    ]
+    await asyncio.gather(*tasks)
+
+    logger.info(
+        "Batch risk engine: %d success, %d skipped (up-to-date), %d failed out of %d",
+        success, skipped, failed, total,
+    )
+    return {
+        "success": success,
+        "skipped": skipped,
+        "failed": failed,
+        "errors": errors,
+    }

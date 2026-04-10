@@ -59,6 +59,7 @@ function ClientRow({ client, expanded, onToggle }) {
           {expanded ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
         </td>
         <td className="px-4 py-3 font-mono text-sm font-medium text-slate-800">{client.client_code}</td>
+        <td className="px-4 py-3 text-sm text-slate-600 truncate max-w-[180px]" title={client.client_name}>{client.client_name || '--'}</td>
         <td className="px-4 py-3 text-sm text-slate-600">{client.family_group}</td>
         <td className="px-4 py-3 text-sm font-mono text-center">{client.total_holdings_bo}</td>
         <td className="px-4 py-3 text-sm font-mono text-center">{client.total_holdings_ours}</td>
@@ -79,7 +80,7 @@ function ClientRow({ client, expanded, onToggle }) {
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={7} className="px-0 py-0">
+          <td colSpan={8} className="px-0 py-0">
             <div className="bg-slate-50 border-y border-slate-200">
               <table className="w-full text-sm">
                 <thead>
@@ -187,6 +188,7 @@ export default function ReconciliationPage() {
     return data.clients.filter(c => {
       const matchesSearch = !searchTerm ||
         c.client_code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (c.client_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
         c.family_group.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesFilter = statusFilter === 'ALL' ||
         (statusFilter === 'ISSUES_ONLY' && c.has_issues) ||
@@ -334,6 +336,7 @@ export default function ReconciliationPage() {
                 <tr className="bg-slate-50 border-b border-slate-200">
                   <th className="px-4 py-3 w-8" />
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Client Code</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Client Name</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Family Group</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">BO Holdings</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Our Holdings</th>

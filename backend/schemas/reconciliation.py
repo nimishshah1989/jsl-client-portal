@@ -48,6 +48,7 @@ class ClientReconciliationResponse(BaseModel):
     """Reconciliation result for a single client."""
 
     client_code: str
+    client_name: str = ""
     family_group: str = ""
     client_found: bool = True
     total_holdings_bo: int = 0

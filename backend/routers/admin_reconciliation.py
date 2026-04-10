@@ -62,6 +62,7 @@ def _match_to_response(m) -> HoldingMatchResponse:
 def _client_to_response(c) -> ClientReconciliationResponse:
     return ClientReconciliationResponse(
         client_code=c.client_code,
+        client_name=c.client_name,
         family_group=c.family_group,
         client_found=c.client_found,
         total_holdings_bo=c.total_holdings_bo,

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -73,6 +74,11 @@ class Transaction(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint(
+            "client_id", "portfolio_id", "txn_date", "txn_type", "symbol",
+            "quantity", "price", "settlement_no",
+            name="uq_cpp_txn_dedup",
+        ),
         Index("idx_cpp_txn_client", "client_id", "portfolio_id", "txn_date"),
         Index("idx_cpp_txn_type", "txn_type"),
     )

@@ -293,6 +293,9 @@ async def upsert_transactions(
                  asset_name, asset_class, instrument_type, exchange,
                  settlement_no, quantity, price, cost_rate, amount)
             VALUES {', '.join(values_parts)}
+            ON CONFLICT (client_id, portfolio_id, txn_date, txn_type, symbol,
+                         quantity, price, settlement_no)
+            DO NOTHING
         """)
         await db.execute(sql, params)
         count += len(batch)

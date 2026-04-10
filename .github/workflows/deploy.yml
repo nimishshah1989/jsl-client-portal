@@ -1,7 +1,5 @@
 # ============================================================
 # JSL Client Portfolio Portal — Deploy to EC2
-# Triggers on push to main branch.
-# SSH into EC2, pull latest code, rebuild Docker, health check.
 # ============================================================
 
 name: Deploy to EC2
@@ -24,7 +22,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy via SSH
+      - name: Build and start container
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -33,22 +31,19 @@ jobs:
           command_timeout: 15m
           script: |
             set -e
-            echo "=== Deploying Client Portal ==="
-
             cd ~/apps/client-portal
-
-            echo "[1/6] Pulling latest code..."
+            echo "[1/4] Pulling latest code..."
             git fetch origin main
             git reset --hard origin/main
 
-            echo "[2/6] Building Docker image..."
+            echo "[2/4] Building Docker image..."
             docker build -t client-portal .
 
-            echo "[3/6] Stopping old container..."
+            echo "[3/4] Stopping old container..."
             docker rm -f client-portal 2>/dev/null || true
             sleep 2
 
-            echo "[4/6] Starting new container..."
+            echo "[4/4] Starting new container..."
             docker run -d \
               --name client-portal \
               --env-file .env \
@@ -56,27 +51,46 @@ jobs:
               -p 8008:8000 \
               --restart unless-stopped \
               client-portal
+            echo "Container started"
 
-            echo "[5/6] Health check..."
-            for i in 1 2 3 4 5 6 7 8; do
-              sleep 5
-              if curl -sf http://localhost:8007/api/health > /dev/null 2>&1; then
-                echo "Health check PASSED on attempt $i"
+      - name: Wait for boot
+        run: sleep 45
+
+      - name: Health check and Nginx config
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            set -e
+
+            echo "=== Health Check ==="
+            for i in 1 2 3 4 5 6; do
+              if curl -sf http://localhost:8008/api/health > /dev/null 2>&1; then
+                echo "FastAPI health check PASSED (attempt $i)"
                 break
               fi
-              echo "Attempt $i: waiting for container..."
+              echo "Attempt $i: FastAPI not ready, waiting 10s..."
+              sleep 10
             done
-            curl -sf http://localhost:8007/api/health > /dev/null 2>&1 || { echo "Health check FAILED"; docker logs client-portal --tail 50; exit 1; }
+            curl -sf http://localhost:8008/api/health || { echo "FAILED: FastAPI not responding"; docker logs client-portal --tail 30; exit 1; }
 
-            echo "[6/6] Configuring Nginx..."
+            echo "=== Nginx Config ==="
             CONF="/etc/nginx/sites-available/clients.jslwealth.in"
-            if [ -f "$CONF" ] && ! grep -q "location /api/" "$CONF"; then
-              sudo cp "$CONF" "$CONF.bak"
-              printf 'server {\n    server_name clients.jslwealth.in;\n    client_max_body_size 60m;\n\n    location /api/ {\n        proxy_pass http://127.0.0.1:8008;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 600s;\n        proxy_send_timeout 600s;\n        proxy_request_buffering off;\n    }\n\n    location / {\n        proxy_pass http://127.0.0.1:8007;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 120s;\n        proxy_send_timeout 120s;\n    }\n\n    listen 443 ssl;\n    ssl_certificate /etc/letsencrypt/live/clients.jslwealth.in/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/clients.jslwealth.in/privkey.pem;\n    include /etc/letsencrypt/options-ssl-nginx.conf;\n    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;\n}\nserver {\n    if ($host = clients.jslwealth.in) {\n        return 301 https://$host$request_uri;\n    }\n    listen 80;\n    server_name clients.jslwealth.in;\n    return 404;\n}\n' | sudo tee "$CONF" > /dev/null
-              sudo nginx -t && sudo systemctl reload nginx
-              echo "Nginx updated: /api/ -> FastAPI:8008"
-            else
-              echo "Nginx already configured"
+            if [ ! -f "$CONF" ]; then
+              echo "Nginx config not found, skipping"
+              exit 0
             fi
 
+            # Always rewrite to ensure /api/ routing is present
+            sudo cp "$CONF" "$CONF.bak.$(date +%s)"
+            printf 'server {\n    server_name clients.jslwealth.in;\n    client_max_body_size 60m;\n\n    location /api/ {\n        proxy_pass http://127.0.0.1:8008;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 600s;\n        proxy_send_timeout 600s;\n        proxy_request_buffering off;\n    }\n\n    location / {\n        proxy_pass http://127.0.0.1:8007;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 120s;\n        proxy_send_timeout 120s;\n    }\n\n    listen 443 ssl;\n    ssl_certificate /etc/letsencrypt/live/clients.jslwealth.in/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/clients.jslwealth.in/privkey.pem;\n    include /etc/letsencrypt/options-ssl-nginx.conf;\n    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;\n}\nserver {\n    if ($host = clients.jslwealth.in) {\n        return 301 https://$host$request_uri;\n    }\n    listen 80;\n    server_name clients.jslwealth.in;\n    return 404;\n}\n' | sudo tee "$CONF" > /dev/null
+            sudo nginx -t && sudo systemctl reload nginx
+            echo "Nginx configured: /api/ -> FastAPI:8008, / -> Next.js:8007"
+
+            echo "=== Final verification ==="
+            curl -sf http://localhost:8008/api/health
+            echo ""
             echo "=== Deploy complete ==="

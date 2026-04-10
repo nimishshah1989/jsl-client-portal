@@ -264,7 +264,18 @@ async def ingest_transaction_file(
             logger.error("Failed processing client %s: %s", client_code, exc, exc_info=True)
             await db.rollback()
 
-    # 5. Log upload
+    # 5. Update live prices for all holdings
+    try:
+        from backend.services.live_prices import update_holdings_prices
+        logger.info("Updating live prices after transaction ingestion...")
+        price_result = await update_holdings_prices(db)
+        await db.commit()
+        logger.info("Price update: %s", price_result)
+    except Exception as exc:
+        logger.warning("Price update failed (non-critical): %s", exc)
+        await db.rollback()
+
+    # 6. Log upload
     await _log(db, upload, uploaded_by)
     await db.commit()
 

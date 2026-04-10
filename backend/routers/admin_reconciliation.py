@@ -331,3 +331,63 @@ async def export_mismatches(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=reconciliation_mismatches.csv"},
     )
+
+
+@router.post("/sync-costs")
+async def sync_costs_from_backoffice(
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Sync avg_cost from the last uploaded holding report into cpp_holdings.
+
+    Only updates holdings where:
+      - Quantity matches exactly (no position size mismatch)
+      - Cost differs (COST_MISMATCH status)
+
+    This corrects cost basis for corporate actions (face value changes,
+    unit consolidations) that the backoffice adjusted but our WAC didn't.
+    """
+    from sqlalchemy import text as sa_text
+
+    result = _cache.get("result")
+    if result is None:
+        stored = await load_latest_reconciliation(db)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="No reconciliation data. Upload a holding report first.")
+        # Use stored data
+        clients_data = stored["summary"].get("clients", [])
+        updates = []
+        for c in clients_data:
+            for m in c.get("matches", []):
+                if m.get("status") == "COST_MISMATCH" and m.get("bo_avg_cost"):
+                    updates.append((c["client_code"], m["symbol"], Decimal(m["bo_avg_cost"])))
+    else:
+        updates = []
+        for c in result.clients:
+            for m in c.matches:
+                if m.status == "COST_MISMATCH" and m.bo_avg_cost is not None:
+                    updates.append((c.client_code, m.symbol, m.bo_avg_cost))
+
+    if not updates:
+        return {"message": "No cost mismatches to sync", "updated": 0}
+
+    updated = 0
+    for client_code, symbol, bo_cost in updates:
+        r = await db.execute(sa_text("""
+            UPDATE cpp_holdings h
+            SET avg_cost = :cost,
+                unrealized_pnl = (h.current_price - :cost) * h.quantity,
+                current_value = h.current_price * h.quantity
+            FROM cpp_clients c
+            WHERE c.id = h.client_id
+              AND c.client_code = :code
+              AND h.symbol = :sym
+        """), {"cost": bo_cost, "code": client_code, "sym": symbol})
+        updated += 1
+
+    await db.commit()
+
+    return {
+        "message": f"Synced avg_cost for {updated} holdings from backoffice",
+        "updated": updated,
+    }

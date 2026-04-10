@@ -95,16 +95,34 @@ def _safe_decimal(value: object) -> Decimal:
         return Decimal("0")
 
 
+_KNOWN_INSTRUMENT_TYPES = {"EQ", "BE", "BZ", "ETF", "MF", "NCD", "GS", "SG"}
+
+
 def parse_script(script_raw: str) -> tuple[str, str]:
     """
     Parse script field like "RELIANCE     EQ" into (symbol, instrument_type).
+
+    Handles multi-word names: "Mirae Smallcap ETF" → ("MIRAESMALLCAP", "ETF")
+    Single-word: "RELIANCE     EQ" → ("RELIANCE", "EQ")
 
     Returns:
         Tuple of (symbol, instrument_type). Defaults instrument to "EQ".
     """
     parts = script_raw.strip().split()
-    symbol = parts[0].strip() if parts else script_raw.strip()
-    instrument = parts[-1].strip() if len(parts) > 1 else "EQ"
+    if not parts:
+        return script_raw.strip().upper(), "EQ"
+
+    # Last token is instrument type if it's a known type
+    if len(parts) >= 2 and parts[-1].upper() in _KNOWN_INSTRUMENT_TYPES:
+        instrument = parts[-1].upper()
+        name_parts = parts[:-1]
+    else:
+        instrument = "EQ"
+        name_parts = parts
+
+    # For single-word symbols (99% of cases): "RELIANCE" → "RELIANCE"
+    # For multi-word: "Mirae Smallcap" → "MIRAESMALLCAP" (concat, no spaces)
+    symbol = "".join(p.strip() for p in name_parts).upper()
     return symbol, instrument
 
 

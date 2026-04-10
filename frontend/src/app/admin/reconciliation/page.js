@@ -222,12 +222,30 @@ export default function ReconciliationPage() {
           </p>
         </div>
         {data && (
-          <button
-            onClick={handleExport}
-            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-          >
-            <Download className="w-4 h-4" /> Export Mismatches
-          </button>
+          <div className="flex items-center gap-2">
+            {data.total_cost_mismatches > 0 && (
+              <button
+                onClick={async () => {
+                  if (!confirm(`Sync avg cost for ${data.total_cost_mismatches} cost mismatches from backoffice?`)) return;
+                  try {
+                    const r = await apiFetch('/admin/reconciliation/sync-costs', { method: 'POST' });
+                    alert(`Synced ${r.updated} holdings. Re-upload holding report to verify.`);
+                  } catch (err) {
+                    setError(err.message || 'Sync failed');
+                  }
+                }}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-teal-700 bg-teal-50 border border-teal-200 rounded-lg hover:bg-teal-100"
+              >
+                Sync Costs from Backoffice ({data.total_cost_mismatches})
+              </button>
+            )}
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
+            >
+              <Download className="w-4 h-4" /> Export Mismatches
+            </button>
+          </div>
         )}
       </div>
 

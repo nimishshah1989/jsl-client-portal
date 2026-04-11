@@ -2,38 +2,9 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import { apiFetch } from '@/lib/api';
-import { formatINR, formatINRShort, formatIndianNumber, pnlColor } from '@/lib/format';
-import {
-  Upload,
-  CheckCircle2,
-  AlertTriangle,
-  XCircle,
-  ChevronDown,
-  ChevronRight,
-  Download,
-  Search,
-  Filter,
-} from 'lucide-react';
-
-const STATUS_CONFIG = {
-  MATCH: { label: 'Match', color: 'bg-emerald-100 text-emerald-700', icon: CheckCircle2 },
-  QTY_MISMATCH: { label: 'Qty Mismatch', color: 'bg-amber-100 text-amber-700', icon: AlertTriangle },
-  COST_MISMATCH: { label: 'Cost Mismatch', color: 'bg-orange-100 text-orange-700', icon: AlertTriangle },
-  VALUE_MISMATCH: { label: 'Value Mismatch', color: 'bg-yellow-100 text-yellow-700', icon: AlertTriangle },
-  MISSING_IN_OURS: { label: 'Missing', color: 'bg-red-100 text-red-700', icon: XCircle },
-  EXTRA_IN_OURS: { label: 'Extra', color: 'bg-blue-100 text-blue-700', icon: AlertTriangle },
-};
-
-function StatusBadge({ status }) {
-  const cfg = STATUS_CONFIG[status] || { label: status, color: 'bg-slate-100 text-slate-600' };
-  const Icon = cfg.icon;
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cfg.color}`}>
-      {Icon && <Icon className="w-3 h-3" />}
-      {cfg.label}
-    </span>
-  );
-}
+import { formatINRShort } from '@/lib/format';
+import { Upload, Download, Search, Filter } from 'lucide-react';
+import ReconciliationClientRow from '@/components/admin/ReconciliationClientRow';
 
 function SummaryCard({ label, value, subtext, color = 'text-slate-800' }) {
   return (
@@ -45,114 +16,11 @@ function SummaryCard({ label, value, subtext, color = 'text-slate-800' }) {
   );
 }
 
-function ClientRow({ client, expanded, onToggle }) {
-  const issues = client.qty_mismatch_count + client.cost_mismatch_count +
-    client.value_mismatch_count + client.missing_in_ours_count + client.extra_in_ours_count;
-
-  // Compute client-level value totals from matches
-  let clientBOValue = 0, clientOurValue = 0;
-  (client.matches || []).forEach(m => {
-    if (m.bo_market_value != null) clientBOValue += Number(m.bo_market_value);
-    if (m.our_market_value != null) clientOurValue += Number(m.our_market_value);
-  });
-  const clientValueDiff = clientBOValue - clientOurValue;
-
-  // Sort matches by absolute value_diff descending (biggest discrepancies first)
-  const sortedMatches = [...(client.matches || [])].sort((a, b) => {
-    const aDiff = Math.abs(Number(a.value_diff || 0));
-    const bDiff = Math.abs(Number(b.value_diff || 0));
-    return bDiff - aDiff;
-  });
-
-  return (
-    <>
-      <tr
-        className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
-        onClick={onToggle}
-      >
-        <td className="px-4 py-3">
-          {expanded ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
-        </td>
-        <td className="px-4 py-3 font-mono text-sm font-medium text-slate-800">{client.client_code}</td>
-        <td className="px-4 py-3 text-sm text-slate-600 truncate max-w-[180px]" title={client.client_name}>{client.client_name || '--'}</td>
-        <td className="px-4 py-3 text-sm text-slate-600">{client.family_group}</td>
-        <td className="px-4 py-3 text-sm font-mono text-right">{formatINRShort(clientBOValue)}</td>
-        <td className="px-4 py-3 text-sm font-mono text-right">{formatINRShort(clientOurValue)}</td>
-        <td className={`px-4 py-3 text-sm font-mono text-right font-medium ${Math.abs(clientValueDiff) > 100 ? 'text-red-600' : 'text-slate-400'}`}>
-          {formatINRShort(clientValueDiff)}
-        </td>
-        <td className="px-4 py-3 text-center">
-          <span className={`font-mono text-sm font-medium ${client.match_pct === 100 ? 'text-emerald-600' : 'text-amber-600'}`}>
-            {client.match_pct}%
-          </span>
-        </td>
-        <td className="px-4 py-3 text-center">
-          {issues > 0 ? (
-            <span className="inline-flex items-center gap-1 text-sm text-red-600 font-medium">
-              <AlertTriangle className="w-3.5 h-3.5" /> {issues}
-            </span>
-          ) : (
-            <CheckCircle2 className="w-4 h-4 text-emerald-500 mx-auto" />
-          )}
-        </td>
-      </tr>
-      {expanded && (
-        <tr>
-          <td colSpan={9} className="px-0 py-0">
-            <div className="bg-slate-50 border-y border-slate-200 overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-100">
-                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Symbol</th>
-                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Status</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Qty</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Qty</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Qty Diff</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Price</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Price</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Avg Cost</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Avg Cost</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Cost Diff</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Value</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Value</th>
-                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase bg-slate-200">Value Diff</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedMatches.map((m, i) => {
-                    const vDiff = m.value_diff != null ? Number(m.value_diff) : null;
-                    return (
-                      <tr key={i} className={`border-b border-slate-100 ${m.status !== 'MATCH' ? 'bg-amber-50/50' : ''}`}>
-                        <td className="px-3 py-2 font-mono font-medium text-slate-800">{m.symbol}</td>
-                        <td className="px-3 py-2"><StatusBadge status={m.status} /></td>
-                        <td className="px-3 py-2 text-right font-mono">{m.bo_quantity ?? '--'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{m.our_quantity ?? '--'}</td>
-                        <td className={`px-3 py-2 text-right font-mono ${m.qty_diff && Number(m.qty_diff) !== 0 ? 'text-red-600 font-medium' : 'text-slate-400'}`}>
-                          {m.qty_diff != null ? Number(m.qty_diff) : '--'}
-                        </td>
-                        <td className="px-3 py-2 text-right font-mono text-slate-600">{m.bo_market_price != null ? formatINR(Number(m.bo_market_price), 2) : '--'}</td>
-                        <td className="px-3 py-2 text-right font-mono text-slate-600">{m.our_market_price != null ? formatINR(Number(m.our_market_price), 2) : '--'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{m.bo_avg_cost != null ? formatINR(Number(m.bo_avg_cost), 2) : '--'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{m.our_avg_cost != null ? formatINR(Number(m.our_avg_cost), 2) : '--'}</td>
-                        <td className={`px-3 py-2 text-right font-mono ${m.cost_diff && Math.abs(Number(m.cost_diff)) > 0.02 ? 'text-red-600 font-medium' : 'text-slate-400'}`}>
-                          {m.cost_diff != null ? formatINR(Number(m.cost_diff), 4) : '--'}
-                        </td>
-                        <td className="px-3 py-2 text-right font-mono">{m.bo_market_value != null ? formatINR(Number(m.bo_market_value)) : '--'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{m.our_market_value != null ? formatINR(Number(m.our_market_value)) : '--'}</td>
-                        <td className={`px-3 py-2 text-right font-mono font-medium bg-slate-100/50 ${vDiff != null && Math.abs(vDiff) > 100 ? (vDiff > 0 ? 'text-amber-600' : 'text-red-600') : 'text-slate-400'}`}>
-                          {vDiff != null ? formatINR(vDiff) : '--'}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
-  );
+function pctColor(value, greenThreshold = 1, amberThreshold = 3) {
+  const abs = Math.abs(value);
+  if (abs <= greenThreshold) return 'text-emerald-600';
+  if (abs <= amberThreshold) return 'text-amber-600';
+  return 'text-red-600';
 }
 
 export default function ReconciliationPage() {
@@ -162,7 +30,7 @@ export default function ReconciliationPage() {
   const [error, setError] = useState(null);
   const [expandedClients, setExpandedClients] = useState(new Set());
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL'); // ALL | ISSUES_ONLY | MATCH_ONLY
+  const [statusFilter, setStatusFilter] = useState('ALL');
 
   // Load last reconciliation from DB on mount
   useState(() => {
@@ -171,7 +39,7 @@ export default function ReconciliationPage() {
         const result = await apiFetch('/admin/reconciliation/summary');
         setData(result);
       } catch {
-        // No saved data — that's fine
+        // No saved data — fine
       } finally {
         setInitialLoading(false);
       }
@@ -181,18 +49,12 @@ export default function ReconciliationPage() {
   const handleUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setLoading(true);
     setError(null);
-
     const formData = new FormData();
     formData.append('file', file);
-
     try {
-      const result = await apiFetch('/admin/reconciliation/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const result = await apiFetch('/admin/reconciliation/upload', { method: 'POST', body: formData });
       setData(result);
     } catch (err) {
       setError(err.message || 'Upload failed');
@@ -203,9 +65,7 @@ export default function ReconciliationPage() {
 
   const handleExport = useCallback(async () => {
     try {
-      const response = await fetch('/api/admin/reconciliation/export', {
-        credentials: 'include',
-      });
+      const response = await fetch('/api/admin/reconciliation/export', { credentials: 'include' });
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -213,7 +73,7 @@ export default function ReconciliationPage() {
       a.download = 'reconciliation_mismatches.csv';
       a.click();
       URL.revokeObjectURL(url);
-    } catch (err) {
+    } catch {
       setError('Export failed');
     }
   }, []);
@@ -221,8 +81,7 @@ export default function ReconciliationPage() {
   const toggleClient = useCallback((code) => {
     setExpandedClients(prev => {
       const next = new Set(prev);
-      if (next.has(code)) next.delete(code);
-      else next.add(code);
+      next.has(code) ? next.delete(code) : next.add(code);
       return next;
     });
   }, []);
@@ -241,13 +100,22 @@ export default function ReconciliationPage() {
     });
   }, [data, searchTerm, statusFilter]);
 
+  // 3-way value helpers
+  const navTotal = Number(data?.total_nav_value || 0);
+  const boTotal = Number(data?.total_bo_holdings_value || 0);
+  const ourTotal = Number(data?.total_our_holdings_value || 0);
+  const navVsBo = Number(data?.total_nav_vs_bo_diff || 0);
+  const boVsOurs = Number(data?.total_bo_vs_ours_diff || 0);
+  const navVsBoPct = navTotal > 0 ? (navVsBo / navTotal * 100) : 0;
+  const boVsOursPct = boTotal > 0 ? (boVsOurs / boTotal * 100) : 0;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-slate-800">Holdings Reconciliation</h2>
+          <h2 className="text-xl font-semibold text-slate-800">3-Way Holdings Reconciliation</h2>
           <p className="text-sm text-slate-500 mt-1">
-            Compare backoffice Holding Report against computed holdings
+            NAV file vs Holding Report vs Transaction-derived holdings
           </p>
         </div>
         {data && (
@@ -265,24 +133,19 @@ export default function ReconciliationPage() {
                 }}
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-teal-700 bg-teal-50 border border-teal-200 rounded-lg hover:bg-teal-100"
               >
-                Sync Costs from Backoffice ({data.total_cost_mismatches})
+                Sync Costs ({data.total_cost_mismatches})
               </button>
             )}
-            <button
-              onClick={handleExport}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-            >
-              <Download className="w-4 h-4" /> Export Mismatches
+            <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">
+              <Download className="w-4 h-4" /> Export
             </button>
           </div>
         )}
       </div>
 
-      {/* Upload Section */}
+      {/* Upload */}
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <label className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
-          loading ? 'border-teal-300 bg-teal-50' : 'border-slate-300 hover:border-teal-400 hover:bg-teal-50/50'
-        }`}>
+        <label className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${loading ? 'border-teal-300 bg-teal-50' : 'border-slate-300 hover:border-teal-400 hover:bg-teal-50/50'}`}>
           <div className="flex flex-col items-center">
             {loading ? (
               <>
@@ -292,138 +155,81 @@ export default function ReconciliationPage() {
             ) : (
               <>
                 <Upload className="w-8 h-8 text-slate-400" />
-                <p className="text-sm text-slate-600 mt-2">
-                  Upload Holding Report (.xlsx)
-                </p>
+                <p className="text-sm text-slate-600 mt-2">Upload Holding Report (.xlsx)</p>
                 <p className="text-xs text-slate-400">Click or drag file here</p>
               </>
             )}
           </div>
-          <input
-            type="file"
-            accept=".xlsx,.xls"
-            onChange={handleUpload}
-            disabled={loading}
-            className="hidden"
-          />
+          <input type="file" accept=".xlsx,.xls" onChange={handleUpload} disabled={loading} className="hidden" />
         </label>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
-          {error}
-        </div>
-      )}
+      {error && <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>}
 
-      {/* Summary Cards */}
       {data && (
         <>
-          {/* Accuracy + Issue count cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
-            <SummaryCard
-              label="Client Accuracy"
-              value={`${data.client_match_pct || 0}%`}
-              subtext={`${data.clients_fully_matched || 0} of ${data.total_clients_bo} clients fully clean`}
-              color={data.client_match_pct >= 90 ? 'text-emerald-600' : data.client_match_pct >= 70 ? 'text-amber-600' : 'text-red-600'}
-            />
-            <SummaryCard
-              label="Datapoint Accuracy"
-              value={`${data.match_pct}%`}
-              subtext={`${data.total_holdings_matched} of ${data.total_holdings_bo + (data.total_extra_in_ours || 0)} holdings match`}
-              color={data.match_pct >= 95 ? 'text-emerald-600' : data.match_pct >= 80 ? 'text-amber-600' : 'text-red-600'}
-            />
-            <SummaryCard
-              label="Clients"
-              value={data.total_clients_bo}
-              subtext={`${data.total_clients_matched} in our system`}
-            />
-            <SummaryCard
-              label="Qty Mismatches"
-              value={data.total_qty_mismatches}
-              color={data.total_qty_mismatches > 0 ? 'text-amber-600' : 'text-emerald-600'}
-            />
-            <SummaryCard
-              label="Cost Mismatches"
-              value={data.total_cost_mismatches}
-              color={data.total_cost_mismatches > 0 ? 'text-orange-600' : 'text-emerald-600'}
-            />
-            <SummaryCard
-              label="Missing in Ours"
-              value={data.total_missing_in_ours}
-              color={data.total_missing_in_ours > 0 ? 'text-red-600' : 'text-emerald-600'}
-            />
-            <SummaryCard
-              label="Extra in Ours"
-              value={data.total_extra_in_ours || 0}
-              color={(data.total_extra_in_ours || 0) > 0 ? 'text-blue-600' : 'text-emerald-600'}
-            />
+          {/* 3-Way Value Comparison */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-4">3-Way Portfolio Value Comparison</h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+              <SummaryCard label="NAV Total" value={formatINRShort(navTotal)} subtext={`${data.clients_with_nav || 0} clients with NAV data`} />
+              <SummaryCard label="BO Holdings Total" value={formatINRShort(boTotal)} subtext="Sum of holding market values" />
+              <SummaryCard label="Our Holdings Total" value={formatINRShort(ourTotal)} subtext="Our qty × BO market price" />
+              <SummaryCard
+                label="NAV vs BO"
+                value={formatINRShort(navVsBo)}
+                subtext={`${navVsBoPct >= 0 ? '+' : ''}${navVsBoPct.toFixed(2)}% — should be ~0`}
+                color={pctColor(navVsBoPct)}
+              />
+              <SummaryCard
+                label="BO vs Ours"
+                value={formatINRShort(boVsOurs)}
+                subtext={`${boVsOursPct >= 0 ? '+' : ''}${boVsOursPct.toFixed(2)}% — position mismatch`}
+                color={pctColor(boVsOursPct)}
+              />
+              <SummaryCard
+                label="Datapoint Accuracy"
+                value={`${data.match_pct}%`}
+                subtext={`${data.total_holdings_matched} of ${data.total_holdings_bo + (data.total_extra_in_ours || 0)} match`}
+                color={data.match_pct >= 95 ? 'text-emerald-600' : data.match_pct >= 80 ? 'text-amber-600' : 'text-red-600'}
+              />
+            </div>
           </div>
 
-          {/* Portfolio Value Comparison cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <SummaryCard
-              label="BO Total Value"
-              value={formatINRShort(Number(data.total_bo_value || 0))}
-              subtext="Backoffice portfolio value"
-            />
-            <SummaryCard
-              label="Our Total Value"
-              value={formatINRShort(Number(data.total_our_value || 0))}
-              subtext="Computed portfolio value"
-            />
-            <SummaryCard
-              label="Net Value Difference"
-              value={formatINRShort(Number(data.total_value_diff || 0))}
-              subtext="BO − Ours (net directional)"
-              color={Math.abs(Number(data.total_value_diff || 0)) > 10000 ? 'text-red-600' : 'text-emerald-600'}
-            />
-            <SummaryCard
-              label="Gross Value Difference"
-              value={formatINRShort(Number(data.total_abs_value_diff || 0))}
-              subtext="Sum of |value diff| per holding"
-              color={Number(data.total_abs_value_diff || 0) > 50000 ? 'text-amber-600' : 'text-emerald-600'}
-            />
+          {/* Issue count cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+            <SummaryCard label="Client Accuracy" value={`${data.client_match_pct || 0}%`}
+              subtext={`${data.clients_fully_matched || 0} of ${data.total_clients_bo} clean`}
+              color={data.client_match_pct >= 90 ? 'text-emerald-600' : data.client_match_pct >= 70 ? 'text-amber-600' : 'text-red-600'} />
+            <SummaryCard label="Clients" value={data.total_clients_bo} subtext={`${data.total_clients_matched} in our system`} />
+            <SummaryCard label="Qty Mismatches" value={data.total_qty_mismatches}
+              color={data.total_qty_mismatches > 0 ? 'text-amber-600' : 'text-emerald-600'} />
+            <SummaryCard label="Cost Mismatches" value={data.total_cost_mismatches}
+              color={data.total_cost_mismatches > 0 ? 'text-orange-600' : 'text-emerald-600'} />
+            <SummaryCard label="Missing in Ours" value={data.total_missing_in_ours}
+              color={data.total_missing_in_ours > 0 ? 'text-red-600' : 'text-emerald-600'} />
+            <SummaryCard label="Extra in Ours" value={data.total_extra_in_ours || 0}
+              color={(data.total_extra_in_ours || 0) > 0 ? 'text-blue-600' : 'text-emerald-600'} />
           </div>
 
           <div className="flex items-center gap-4 text-xs text-slate-400">
-            {data.market_date && (
-              <span>Holding Report as of: <span className="font-medium text-slate-600">{data.market_date}</span></span>
-            )}
-            {data.run_at && (
-              <span>Reconciled: <span className="font-medium text-slate-600">{new Date(data.run_at).toLocaleString('en-IN')}</span></span>
-            )}
-            {data.filename && (
-              <span>File: <span className="font-medium text-slate-600">{data.filename}</span></span>
-            )}
-            <span>Match % = matched instruments / total instruments per client</span>
+            {data.market_date && <span>BO as of: <span className="font-medium text-slate-600">{data.market_date}</span></span>}
+            {data.run_at && <span>Reconciled: <span className="font-medium text-slate-600">{new Date(data.run_at).toLocaleString('en-IN')}</span></span>}
+            <span>Our Value = our qty × BO market price (apples-to-apples)</span>
           </div>
 
-          {/* Commentary / Insights */}
-          {data.commentary && data.commentary.length > 0 && (
+          {/* Commentary */}
+          {data.commentary?.length > 0 && (
             <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
-              <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider">Reconciliation Insights</h3>
+              <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider">Insights</h3>
               {data.commentary.map((c, i) => {
-                const severityStyles = {
-                  critical: 'border-l-red-500 bg-red-50',
-                  high: 'border-l-amber-500 bg-amber-50',
-                  medium: 'border-l-yellow-400 bg-yellow-50',
-                  good: 'border-l-emerald-500 bg-emerald-50',
-                };
-                const severityText = {
-                  critical: 'text-red-800',
-                  high: 'text-amber-800',
-                  medium: 'text-yellow-800',
-                  good: 'text-emerald-800',
-                };
+                const styles = { critical: 'border-l-red-500 bg-red-50', high: 'border-l-amber-500 bg-amber-50', medium: 'border-l-yellow-400 bg-yellow-50', good: 'border-l-emerald-500 bg-emerald-50' };
+                const text = { critical: 'text-red-800', high: 'text-amber-800', medium: 'text-yellow-800', good: 'text-emerald-800' };
                 return (
-                  <div key={i} className={`border-l-4 rounded-r-lg p-3 ${severityStyles[c.severity] || 'bg-slate-50 border-l-slate-300'}`}>
+                  <div key={i} className={`border-l-4 rounded-r-lg p-3 ${styles[c.severity] || 'bg-slate-50 border-l-slate-300'}`}>
                     <div className="flex items-start justify-between gap-2">
-                      <p className={`text-sm font-medium ${severityText[c.severity] || 'text-slate-800'}`}>
-                        {c.title}
-                      </p>
-                      {c.affected_clients > 0 && (
-                        <span className="text-xs text-slate-500 whitespace-nowrap">{c.affected_clients} clients</span>
-                      )}
+                      <p className={`text-sm font-medium ${text[c.severity] || 'text-slate-800'}`}>{c.title}</p>
+                      {c.affected_clients > 0 && <span className="text-xs text-slate-500 whitespace-nowrap">{c.affected_clients} clients</span>}
                     </div>
                     <p className="text-xs text-slate-600 mt-1">{c.detail}</p>
                   </div>
@@ -436,33 +242,20 @@ export default function ReconciliationPage() {
           <div className="flex items-center gap-4">
             <div className="relative flex-1 max-w-xs">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search by client code or group..."
-                value={searchTerm}
+              <input type="text" placeholder="Search client code, name, or group..." value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
-              />
+                className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent" />
             </div>
             <div className="flex items-center gap-2">
               <Filter className="w-4 h-4 text-slate-400" />
               {['ALL', 'ISSUES_ONLY', 'MATCH_ONLY'].map(f => (
-                <button
-                  key={f}
-                  onClick={() => setStatusFilter(f)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                    statusFilter === f
-                      ? 'bg-teal-100 text-teal-700'
-                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                  }`}
-                >
+                <button key={f} onClick={() => setStatusFilter(f)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${statusFilter === f ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
                   {f === 'ALL' ? 'All' : f === 'ISSUES_ONLY' ? 'Issues Only' : 'Clean Only'}
                 </button>
               ))}
             </div>
-            <span className="text-xs text-slate-400">
-              {filteredClients.length} of {data.clients.length} clients
-            </span>
+            <span className="text-xs text-slate-400">{filteredClients.length} of {data.clients.length} clients</span>
           </div>
 
           {/* Client Table */}
@@ -470,20 +263,20 @@ export default function ReconciliationPage() {
             <table className="w-full">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="px-4 py-3 w-8" />
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Client Code</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Client Name</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Family Group</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">BO Value</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Our Value</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Value Diff</th>
-                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Match %</th>
-                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Issues</th>
+                  <th className="px-3 py-3 w-8" />
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Code</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Name</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">NAV Total</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">BO Value</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Our Value</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">BO vs Ours</th>
+                  <th className="px-3 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Match %</th>
+                  <th className="px-3 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Issues</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredClients.map(client => (
-                  <ClientRow
+                  <ReconciliationClientRow
                     key={client.client_code}
                     client={client}
                     expanded={expandedClients.has(client.client_code)}

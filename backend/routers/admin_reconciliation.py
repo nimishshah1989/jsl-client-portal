@@ -36,76 +36,32 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/reconciliation", tags=["admin-reconciliation"])
 
-# In-memory cache (populated from DB on first GET, refreshed on upload)
 _cache: dict = {}
-
-_ZERO = Decimal("0")
-
-
-def _compute_value_aggregates(clients) -> dict:
-    """Sum portfolio values across all clients from their match-level data.
-
-    Works with both HoldingMatch dataclasses and HoldingMatchResponse schemas.
-    """
-    total_bo = _ZERO
-    total_ours = _ZERO
-    total_abs_diff = _ZERO
-    for client in clients:
-        matches = client.matches if hasattr(client, "matches") else []
-        for m in matches:
-            bo_val = getattr(m, "bo_market_value", None)
-            our_val = getattr(m, "our_market_value", None)
-            if bo_val is not None:
-                total_bo += Decimal(str(bo_val))
-            if our_val is not None:
-                total_ours += Decimal(str(our_val))
-            v_diff = getattr(m, "value_diff", None)
-            if v_diff is not None:
-                total_abs_diff += abs(Decimal(str(v_diff)))
-    return {
-        "total_bo_value": total_bo,
-        "total_our_value": total_ours,
-        "total_value_diff": total_bo - total_ours,
-        "total_abs_value_diff": total_abs_diff,
-    }
 
 
 def _match_to_response(m) -> HoldingMatchResponse:
     """Convert a HoldingMatch dataclass to response schema."""
     return HoldingMatchResponse(
-        client_code=m.client_code,
-        symbol=m.symbol,
-        status=m.status,
+        client_code=m.client_code, symbol=m.symbol, status=m.status,
         family_group=m.family_group,
-        bo_quantity=m.bo_quantity,
-        bo_avg_cost=m.bo_avg_cost,
-        bo_total_cost=m.bo_total_cost,
-        bo_market_price=m.bo_market_price,
-        bo_market_value=m.bo_market_value,
-        bo_pnl=m.bo_pnl,
-        bo_weight_pct=m.bo_weight_pct,
-        bo_isin=m.bo_isin,
-        our_quantity=m.our_quantity,
-        our_avg_cost=m.our_avg_cost,
-        our_total_cost=m.our_total_cost,
-        our_market_price=m.our_market_price,
-        our_market_value=m.our_market_value,
-        our_pnl=m.our_pnl,
+        bo_quantity=m.bo_quantity, bo_avg_cost=m.bo_avg_cost,
+        bo_total_cost=m.bo_total_cost, bo_market_price=m.bo_market_price,
+        bo_market_value=m.bo_market_value, bo_pnl=m.bo_pnl,
+        bo_weight_pct=m.bo_weight_pct, bo_isin=m.bo_isin,
+        our_quantity=m.our_quantity, our_avg_cost=m.our_avg_cost,
+        our_total_cost=m.our_total_cost, our_market_price=m.our_market_price,
+        our_market_value=m.our_market_value, our_pnl=m.our_pnl,
         our_weight_pct=m.our_weight_pct,
-        qty_diff=m.qty_diff,
-        cost_diff=m.cost_diff,
-        value_diff=m.value_diff,
-        pnl_diff=m.pnl_diff,
+        qty_diff=m.qty_diff, cost_diff=m.cost_diff,
+        value_diff=m.value_diff, pnl_diff=m.pnl_diff,
     )
 
 
 def _client_to_response(c) -> ClientReconciliationResponse:
     """Convert a ClientReconciliation dataclass to response schema."""
     return ClientReconciliationResponse(
-        client_code=c.client_code,
-        client_name=c.client_name,
-        family_group=c.family_group,
-        client_found=c.client_found,
+        client_code=c.client_code, client_name=c.client_name,
+        family_group=c.family_group, client_found=c.client_found,
         total_holdings_bo=c.total_holdings_bo,
         total_holdings_ours=c.total_holdings_ours,
         matched_count=c.matched_count,
@@ -114,9 +70,43 @@ def _client_to_response(c) -> ClientReconciliationResponse:
         value_mismatch_count=c.value_mismatch_count,
         missing_in_ours_count=c.missing_in_ours_count,
         extra_in_ours_count=c.extra_in_ours_count,
-        match_pct=c.match_pct,
-        has_issues=c.has_issues,
+        match_pct=c.match_pct, has_issues=c.has_issues,
         matches=[_match_to_response(m) for m in c.matches],
+        # 3-way fields
+        nav_total=c.nav_total,
+        bo_holdings_total=c.bo_holdings_total,
+        our_holdings_total=c.our_holdings_total,
+        nav_vs_bo_diff=c.nav_vs_bo_diff,
+        bo_vs_ours_diff=c.bo_vs_ours_diff,
+        nav_date=c.nav_date,
+    )
+
+
+def _summary_to_response(result, market_date=None) -> ReconciliationSummaryResponse:
+    """Convert a ReconciliationSummary to response schema."""
+    return ReconciliationSummaryResponse(
+        total_clients_bo=result.total_clients_bo,
+        total_clients_matched=result.total_clients_matched,
+        total_clients_missing=result.total_clients_missing,
+        total_holdings_bo=result.total_holdings_bo,
+        total_holdings_matched=result.total_holdings_matched,
+        total_qty_mismatches=result.total_qty_mismatches,
+        total_cost_mismatches=result.total_cost_mismatches,
+        total_value_mismatches=result.total_value_mismatches,
+        total_missing_in_ours=result.total_missing_in_ours,
+        total_extra_in_ours=result.total_extra_in_ours,
+        match_pct=result.match_pct,
+        client_match_pct=result.client_match_pct,
+        clients_fully_matched=result.clients_fully_matched,
+        total_nav_value=result.total_nav_value,
+        total_bo_holdings_value=result.total_bo_holdings_value,
+        total_our_holdings_value=result.total_our_holdings_value,
+        total_nav_vs_bo_diff=result.total_nav_vs_bo_diff,
+        total_bo_vs_ours_diff=result.total_bo_vs_ours_diff,
+        clients_with_nav=result.clients_with_nav,
+        market_date=market_date,
+        commentary=result.commentary,
+        clients=[_client_to_response(c) for c in result.clients],
     )
 
 
@@ -129,34 +119,26 @@ def _db_row_to_client_response(c: dict) -> ClientReconciliationResponse:
             return Decimal(str(v)) if v is not None else None
 
         matches.append(HoldingMatchResponse(
-            client_code=c["client_code"],
-            symbol=m["symbol"],
-            status=m["status"],
+            client_code=c["client_code"], symbol=m["symbol"], status=m["status"],
             family_group=m.get("family_group", ""),
-            bo_quantity=_dec("bo_quantity"),
-            bo_avg_cost=_dec("bo_avg_cost"),
-            bo_total_cost=_dec("bo_total_cost"),
-            bo_market_price=_dec("bo_market_price"),
-            bo_market_value=_dec("bo_market_value"),
-            bo_pnl=_dec("bo_pnl"),
-            bo_weight_pct=_dec("bo_weight_pct"),
-            bo_isin=m.get("bo_isin"),
-            our_quantity=_dec("our_quantity"),
-            our_avg_cost=_dec("our_avg_cost"),
-            our_total_cost=_dec("our_total_cost"),
-            our_market_price=_dec("our_market_price"),
-            our_market_value=_dec("our_market_value"),
-            our_pnl=_dec("our_pnl"),
+            bo_quantity=_dec("bo_quantity"), bo_avg_cost=_dec("bo_avg_cost"),
+            bo_total_cost=_dec("bo_total_cost"), bo_market_price=_dec("bo_market_price"),
+            bo_market_value=_dec("bo_market_value"), bo_pnl=_dec("bo_pnl"),
+            bo_weight_pct=_dec("bo_weight_pct"), bo_isin=m.get("bo_isin"),
+            our_quantity=_dec("our_quantity"), our_avg_cost=_dec("our_avg_cost"),
+            our_total_cost=_dec("our_total_cost"), our_market_price=_dec("our_market_price"),
+            our_market_value=_dec("our_market_value"), our_pnl=_dec("our_pnl"),
             our_weight_pct=_dec("our_weight_pct"),
-            qty_diff=_dec("qty_diff"),
-            cost_diff=_dec("cost_diff"),
-            value_diff=_dec("value_diff"),
-            pnl_diff=_dec("pnl_diff"),
+            qty_diff=_dec("qty_diff"), cost_diff=_dec("cost_diff"),
+            value_diff=_dec("value_diff"), pnl_diff=_dec("pnl_diff"),
         ))
 
+    def _dec_field(key):
+        v = c.get(key)
+        return Decimal(str(v)) if v is not None else None
+
     return ClientReconciliationResponse(
-        client_code=c["client_code"],
-        client_name=c.get("client_name", ""),
+        client_code=c["client_code"], client_name=c.get("client_name", ""),
         family_group=c.get("family_group", ""),
         client_found=c.get("client_found", True),
         total_holdings_bo=c.get("total_holdings_bo", 0),
@@ -170,6 +152,12 @@ def _db_row_to_client_response(c: dict) -> ClientReconciliationResponse:
         match_pct=c.get("match_pct", 100.0),
         has_issues=c.get("has_issues", False),
         matches=matches,
+        nav_total=_dec_field("nav_total"),
+        bo_holdings_total=Decimal(str(c.get("bo_holdings_total", "0"))),
+        our_holdings_total=Decimal(str(c.get("our_holdings_total", "0"))),
+        nav_vs_bo_diff=_dec_field("nav_vs_bo_diff"),
+        bo_vs_ours_diff=Decimal(str(c.get("bo_vs_ours_diff", "0"))),
+        nav_date=c.get("nav_date"),
     )
 
 
@@ -203,37 +191,13 @@ async def upload_holding_report(
         summary_info = holding_report_summary(records)
         result = await reconcile(records, db)
 
-        # Persist to DB
         market_date = summary_info.get("market_date")
         await save_reconciliation(db, result, market_date, file.filename)
 
-        # Update in-memory cache
         _cache["result"] = result
         _cache["market_date"] = market_date
 
-        val_agg = _compute_value_aggregates(result.clients)
-        return ReconciliationSummaryResponse(
-            total_clients_bo=result.total_clients_bo,
-            total_clients_matched=result.total_clients_matched,
-            total_clients_missing=result.total_clients_missing,
-            total_holdings_bo=result.total_holdings_bo,
-            total_holdings_matched=result.total_holdings_matched,
-            total_qty_mismatches=result.total_qty_mismatches,
-            total_cost_mismatches=result.total_cost_mismatches,
-            total_value_mismatches=result.total_value_mismatches,
-            total_missing_in_ours=result.total_missing_in_ours,
-            total_extra_in_ours=result.total_extra_in_ours,
-            match_pct=result.match_pct,
-            client_match_pct=result.client_match_pct,
-            clients_fully_matched=result.clients_fully_matched,
-            total_bo_value=val_agg["total_bo_value"],
-            total_our_value=val_agg["total_our_value"],
-            total_value_diff=val_agg["total_value_diff"],
-            total_abs_value_diff=val_agg["total_abs_value_diff"],
-            market_date=market_date,
-            commentary=result.commentary,
-            clients=[_client_to_response(c) for c in result.clients],
-        )
+        return _summary_to_response(result, market_date)
     except HTTPException:
         raise
     except Exception as exc:
@@ -249,34 +213,9 @@ async def get_summary(
     db: AsyncSession = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
     """Get the latest reconciliation summary. Loads from DB if not in memory."""
-    # Try in-memory cache first
     if _cache.get("result"):
-        result = _cache["result"]
-        val_agg = _compute_value_aggregates(result.clients)
-        return ReconciliationSummaryResponse(
-            total_clients_bo=result.total_clients_bo,
-            total_clients_matched=result.total_clients_matched,
-            total_clients_missing=result.total_clients_missing,
-            total_holdings_bo=result.total_holdings_bo,
-            total_holdings_matched=result.total_holdings_matched,
-            total_qty_mismatches=result.total_qty_mismatches,
-            total_cost_mismatches=result.total_cost_mismatches,
-            total_value_mismatches=result.total_value_mismatches,
-            total_missing_in_ours=result.total_missing_in_ours,
-            total_extra_in_ours=result.total_extra_in_ours,
-            match_pct=result.match_pct,
-            client_match_pct=result.client_match_pct,
-            clients_fully_matched=result.clients_fully_matched,
-            total_bo_value=val_agg["total_bo_value"],
-            total_our_value=val_agg["total_our_value"],
-            total_value_diff=val_agg["total_value_diff"],
-            total_abs_value_diff=val_agg["total_abs_value_diff"],
-            market_date=_cache.get("market_date"),
-            commentary=result.commentary,
-            clients=[_client_to_response(c) for c in result.clients],
-        )
+        return _summary_to_response(_cache["result"], _cache.get("market_date"))
 
-    # Fall back to DB
     stored = await load_latest_reconciliation(db)
     if stored is None:
         raise HTTPException(status_code=404, detail="No reconciliation data. Upload a holding report first.")
@@ -284,7 +223,6 @@ async def get_summary(
     stats = stored["stats"]
     clients_data = stored["summary"].get("clients", [])
     client_responses = [_db_row_to_client_response(c) for c in clients_data]
-    val_agg = _compute_value_aggregates(client_responses)
 
     return ReconciliationSummaryResponse(
         total_clients_bo=stats.get("total_clients_bo", 0),
@@ -300,10 +238,12 @@ async def get_summary(
         match_pct=stats.get("match_pct", 0),
         client_match_pct=stats.get("client_match_pct", 0),
         clients_fully_matched=stats.get("clients_fully_matched", 0),
-        total_bo_value=val_agg["total_bo_value"],
-        total_our_value=val_agg["total_our_value"],
-        total_value_diff=val_agg["total_value_diff"],
-        total_abs_value_diff=val_agg["total_abs_value_diff"],
+        total_nav_value=Decimal(str(stats.get("total_nav_value", "0"))),
+        total_bo_holdings_value=Decimal(str(stats.get("total_bo_holdings_value", "0"))),
+        total_our_holdings_value=Decimal(str(stats.get("total_our_holdings_value", "0"))),
+        total_nav_vs_bo_diff=Decimal(str(stats.get("total_nav_vs_bo_diff", "0"))),
+        total_bo_vs_ours_diff=Decimal(str(stats.get("total_bo_vs_ours_diff", "0"))),
+        clients_with_nav=stats.get("clients_with_nav", 0),
         market_date=stored.get("market_date"),
         commentary=stored.get("commentary", []),
         clients=client_responses,
@@ -317,13 +257,11 @@ async def get_client_detail(
     db: AsyncSession = Depends(get_db),
 ) -> ClientReconciliationResponse:
     """Get reconciliation detail for a specific client."""
-    # Try in-memory first
     if _cache.get("result"):
         for c in _cache["result"].clients:
             if c.client_code == client_code:
                 return _client_to_response(c)
 
-    # Fall back to DB
     stored = await load_latest_reconciliation(db)
     if stored:
         for c in stored["summary"].get("clients", []):
@@ -340,20 +278,18 @@ async def export_mismatches(
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Export reconciliation mismatches as CSV."""
-    # Get data from cache or DB
     clients_data = None
     if _cache.get("result"):
         clients_data = [
             {
-                "client_code": c.client_code,
-                "family_group": c.family_group,
+                "client_code": c.client_code, "family_group": c.family_group,
                 "matches": [
                     {
                         "symbol": m.symbol, "status": m.status, "bo_isin": m.bo_isin,
                         "bo_quantity": m.bo_quantity, "our_quantity": m.our_quantity, "qty_diff": m.qty_diff,
                         "bo_avg_cost": m.bo_avg_cost, "our_avg_cost": m.our_avg_cost, "cost_diff": m.cost_diff,
                         "bo_market_value": m.bo_market_value, "our_market_value": m.our_market_value,
-                        "value_diff": m.value_diff, "bo_pnl": m.bo_pnl, "our_pnl": m.our_pnl, "pnl_diff": m.pnl_diff,
+                        "value_diff": m.value_diff,
                     }
                     for m in c.matches
                 ],
@@ -405,56 +341,41 @@ async def sync_costs_from_backoffice(
     admin: dict = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Sync avg_cost from the last uploaded holding report into cpp_holdings.
-
-    Only updates holdings where:
-      - Quantity matches exactly (no position size mismatch)
-      - Cost differs (COST_MISMATCH status)
-
-    This corrects cost basis for corporate actions (face value changes,
-    unit consolidations) that the backoffice adjusted but our WAC didn't.
-    """
+    """Sync avg_cost from backoffice for COST_MISMATCH holdings."""
     from sqlalchemy import text as sa_text
 
     result = _cache.get("result")
     if result is None:
         stored = await load_latest_reconciliation(db)
         if stored is None:
-            raise HTTPException(status_code=404, detail="No reconciliation data. Upload a holding report first.")
-        # Use stored data
-        clients_data = stored["summary"].get("clients", [])
+            raise HTTPException(status_code=404, detail="No reconciliation data.")
         updates = []
-        for c in clients_data:
+        for c in stored["summary"].get("clients", []):
             for m in c.get("matches", []):
                 if m.get("status") == "COST_MISMATCH" and m.get("bo_avg_cost"):
                     updates.append((c["client_code"], m["symbol"], Decimal(m["bo_avg_cost"])))
     else:
-        updates = []
-        for c in result.clients:
-            for m in c.matches:
-                if m.status == "COST_MISMATCH" and m.bo_avg_cost is not None:
-                    updates.append((c.client_code, m.symbol, m.bo_avg_cost))
+        updates = [
+            (c.client_code, m.symbol, m.bo_avg_cost)
+            for c in result.clients for m in c.matches
+            if m.status == "COST_MISMATCH" and m.bo_avg_cost is not None
+        ]
 
     if not updates:
         return {"message": "No cost mismatches to sync", "updated": 0}
 
     updated = 0
     for client_code, symbol, bo_cost in updates:
-        r = await db.execute(sa_text("""
+        await db.execute(sa_text("""
             UPDATE cpp_holdings h
             SET avg_cost = :cost,
                 unrealized_pnl = (h.current_price - :cost) * h.quantity,
                 current_value = h.current_price * h.quantity
             FROM cpp_clients c
             WHERE c.id = h.client_id
-              AND c.client_code = :code
-              AND h.symbol = :sym
+              AND c.client_code = :code AND h.symbol = :sym
         """), {"cost": bo_cost, "code": client_code, "sym": symbol})
         updated += 1
 
     await db.commit()
-
-    return {
-        "message": f"Synced avg_cost for {updated} holdings from backoffice",
-        "updated": updated,
-    }
+    return {"message": f"Synced avg_cost for {updated} holdings from backoffice", "updated": updated}

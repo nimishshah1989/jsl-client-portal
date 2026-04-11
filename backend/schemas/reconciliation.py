@@ -15,7 +15,7 @@ class HoldingMatchResponse(BaseModel):
 
     client_code: str
     symbol: str
-    status: str  # MATCH | QTY_MISMATCH | COST_MISMATCH | VALUE_MISMATCH | MISSING_IN_OURS | EXTRA_IN_OURS
+    status: str  # MATCH | QTY_MISMATCH | COST_MISMATCH | MISSING_IN_OURS | EXTRA_IN_OURS
     family_group: str = ""
 
     # Backoffice values
@@ -65,6 +65,14 @@ class ClientReconciliationResponse(BaseModel):
     has_issues: bool = False
     matches: list[HoldingMatchResponse] = Field(default_factory=list)
 
+    # 3-way value totals
+    nav_total: Decimal | None = None
+    bo_holdings_total: Decimal = Decimal("0")
+    our_holdings_total: Decimal = Decimal("0")
+    nav_vs_bo_diff: Decimal | None = None
+    bo_vs_ours_diff: Decimal = Decimal("0")
+    nav_date: dt.date | None = None
+
 
 class ReconciliationSummaryResponse(BaseModel):
     """Top-level reconciliation summary."""
@@ -82,11 +90,15 @@ class ReconciliationSummaryResponse(BaseModel):
     match_pct: float = 100.0
     client_match_pct: float = 100.0
     clients_fully_matched: int = 0
-    # Aggregate portfolio value metrics
-    total_bo_value: Decimal = Decimal("0")
-    total_our_value: Decimal = Decimal("0")
-    total_value_diff: Decimal = Decimal("0")  # BO - Ours (positive = we undervalue)
-    total_abs_value_diff: Decimal = Decimal("0")  # Sum of |value_diff| per holding
+
+    # 3-way aggregate totals
+    total_nav_value: Decimal = Decimal("0")
+    total_bo_holdings_value: Decimal = Decimal("0")
+    total_our_holdings_value: Decimal = Decimal("0")
+    total_nav_vs_bo_diff: Decimal = Decimal("0")
+    total_bo_vs_ours_diff: Decimal = Decimal("0")
+    clients_with_nav: int = 0
+
     market_date: dt.date | None = None
     run_at: str | None = None
     filename: str | None = None

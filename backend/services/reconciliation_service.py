@@ -315,12 +315,23 @@ async def reconcile(
                 our_pnl = our["unrealized_pnl"]
                 our_weight = our["weight_pct"]
 
-                status = _classify(bo, our_qty, our_avg, our_price, our_value, our_pnl)
-
                 bo_qty = _safe_dec(bo["quantity"])
                 bo_cost = _safe_dec(bo["avg_cost"])
+                bo_price = _safe_dec(bo["market_price"])
                 bo_value = _safe_dec(bo["market_value"])
                 bo_pnl_val = _safe_dec(bo["notional_pnl"])
+
+                # If our current_price is missing (not yet fetched from yfinance),
+                # use the BO market price for apples-to-apples value comparison.
+                # This way value_diff reflects qty/cost differences only, not
+                # stale-price artifacts.
+                if our_price == _ZERO and bo_price > _ZERO:
+                    our_price = bo_price
+                    our_value = our_qty * bo_price
+                    cost_basis = our_qty * our_avg
+                    our_pnl = our_value - cost_basis
+
+                status = _classify(bo, our_qty, our_avg, our_price, our_value, our_pnl)
 
                 match = HoldingMatch(
                     client_code=ucc,
@@ -329,7 +340,7 @@ async def reconcile(
                     bo_quantity=bo_qty,
                     bo_avg_cost=bo_cost,
                     bo_total_cost=_safe_dec(bo["total_cost"]),
-                    bo_market_price=_safe_dec(bo["market_price"]),
+                    bo_market_price=bo_price,
                     bo_market_value=bo_value,
                     bo_pnl=bo_pnl_val,
                     bo_weight_pct=_safe_dec(bo["holding_market_pct"]),

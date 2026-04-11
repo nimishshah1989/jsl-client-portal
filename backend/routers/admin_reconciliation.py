@@ -39,6 +39,36 @@ router = APIRouter(prefix="/api/admin/reconciliation", tags=["admin-reconciliati
 # In-memory cache (populated from DB on first GET, refreshed on upload)
 _cache: dict = {}
 
+_ZERO = Decimal("0")
+
+
+def _compute_value_aggregates(clients) -> dict:
+    """Sum portfolio values across all clients from their match-level data.
+
+    Works with both HoldingMatch dataclasses and HoldingMatchResponse schemas.
+    """
+    total_bo = _ZERO
+    total_ours = _ZERO
+    total_abs_diff = _ZERO
+    for client in clients:
+        matches = client.matches if hasattr(client, "matches") else []
+        for m in matches:
+            bo_val = getattr(m, "bo_market_value", None)
+            our_val = getattr(m, "our_market_value", None)
+            if bo_val is not None:
+                total_bo += Decimal(str(bo_val))
+            if our_val is not None:
+                total_ours += Decimal(str(our_val))
+            v_diff = getattr(m, "value_diff", None)
+            if v_diff is not None:
+                total_abs_diff += abs(Decimal(str(v_diff)))
+    return {
+        "total_bo_value": total_bo,
+        "total_our_value": total_ours,
+        "total_value_diff": total_bo - total_ours,
+        "total_abs_value_diff": total_abs_diff,
+    }
+
 
 def _match_to_response(m) -> HoldingMatchResponse:
     """Convert a HoldingMatch dataclass to response schema."""
@@ -94,19 +124,34 @@ def _db_row_to_client_response(c: dict) -> ClientReconciliationResponse:
     """Convert a DB-stored client dict to response schema."""
     matches = []
     for m in c.get("matches", []):
+        def _dec(key):
+            v = m.get(key)
+            return Decimal(str(v)) if v is not None else None
+
         matches.append(HoldingMatchResponse(
             client_code=c["client_code"],
             symbol=m["symbol"],
             status=m["status"],
-            bo_quantity=Decimal(m["bo_quantity"]) if m.get("bo_quantity") else None,
-            bo_avg_cost=Decimal(m["bo_avg_cost"]) if m.get("bo_avg_cost") else None,
-            bo_market_value=Decimal(m["bo_market_value"]) if m.get("bo_market_value") else None,
-            our_quantity=Decimal(m["our_quantity"]) if m.get("our_quantity") else None,
-            our_avg_cost=Decimal(m["our_avg_cost"]) if m.get("our_avg_cost") else None,
-            our_market_value=Decimal(m["our_market_value"]) if m.get("our_market_value") else None,
-            qty_diff=Decimal(m["qty_diff"]) if m.get("qty_diff") else None,
-            cost_diff=Decimal(m["cost_diff"]) if m.get("cost_diff") else None,
+            family_group=m.get("family_group", ""),
+            bo_quantity=_dec("bo_quantity"),
+            bo_avg_cost=_dec("bo_avg_cost"),
+            bo_total_cost=_dec("bo_total_cost"),
+            bo_market_price=_dec("bo_market_price"),
+            bo_market_value=_dec("bo_market_value"),
+            bo_pnl=_dec("bo_pnl"),
+            bo_weight_pct=_dec("bo_weight_pct"),
             bo_isin=m.get("bo_isin"),
+            our_quantity=_dec("our_quantity"),
+            our_avg_cost=_dec("our_avg_cost"),
+            our_total_cost=_dec("our_total_cost"),
+            our_market_price=_dec("our_market_price"),
+            our_market_value=_dec("our_market_value"),
+            our_pnl=_dec("our_pnl"),
+            our_weight_pct=_dec("our_weight_pct"),
+            qty_diff=_dec("qty_diff"),
+            cost_diff=_dec("cost_diff"),
+            value_diff=_dec("value_diff"),
+            pnl_diff=_dec("pnl_diff"),
         ))
 
     return ClientReconciliationResponse(
@@ -166,6 +211,7 @@ async def upload_holding_report(
         _cache["result"] = result
         _cache["market_date"] = market_date
 
+        val_agg = _compute_value_aggregates(result.clients)
         return ReconciliationSummaryResponse(
             total_clients_bo=result.total_clients_bo,
             total_clients_matched=result.total_clients_matched,
@@ -180,6 +226,10 @@ async def upload_holding_report(
             match_pct=result.match_pct,
             client_match_pct=result.client_match_pct,
             clients_fully_matched=result.clients_fully_matched,
+            total_bo_value=val_agg["total_bo_value"],
+            total_our_value=val_agg["total_our_value"],
+            total_value_diff=val_agg["total_value_diff"],
+            total_abs_value_diff=val_agg["total_abs_value_diff"],
             market_date=market_date,
             commentary=result.commentary,
             clients=[_client_to_response(c) for c in result.clients],
@@ -202,6 +252,7 @@ async def get_summary(
     # Try in-memory cache first
     if _cache.get("result"):
         result = _cache["result"]
+        val_agg = _compute_value_aggregates(result.clients)
         return ReconciliationSummaryResponse(
             total_clients_bo=result.total_clients_bo,
             total_clients_matched=result.total_clients_matched,
@@ -216,6 +267,10 @@ async def get_summary(
             match_pct=result.match_pct,
             client_match_pct=result.client_match_pct,
             clients_fully_matched=result.clients_fully_matched,
+            total_bo_value=val_agg["total_bo_value"],
+            total_our_value=val_agg["total_our_value"],
+            total_value_diff=val_agg["total_value_diff"],
+            total_abs_value_diff=val_agg["total_abs_value_diff"],
             market_date=_cache.get("market_date"),
             commentary=result.commentary,
             clients=[_client_to_response(c) for c in result.clients],
@@ -228,6 +283,8 @@ async def get_summary(
 
     stats = stored["stats"]
     clients_data = stored["summary"].get("clients", [])
+    client_responses = [_db_row_to_client_response(c) for c in clients_data]
+    val_agg = _compute_value_aggregates(client_responses)
 
     return ReconciliationSummaryResponse(
         total_clients_bo=stats.get("total_clients_bo", 0),
@@ -243,9 +300,13 @@ async def get_summary(
         match_pct=stats.get("match_pct", 0),
         client_match_pct=stats.get("client_match_pct", 0),
         clients_fully_matched=stats.get("clients_fully_matched", 0),
+        total_bo_value=val_agg["total_bo_value"],
+        total_our_value=val_agg["total_our_value"],
+        total_value_diff=val_agg["total_value_diff"],
+        total_abs_value_diff=val_agg["total_abs_value_diff"],
         market_date=stored.get("market_date"),
         commentary=stored.get("commentary", []),
-        clients=[_db_row_to_client_response(c) for c in clients_data],
+        clients=client_responses,
     )
 
 

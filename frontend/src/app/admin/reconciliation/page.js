@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import { apiFetch } from '@/lib/api';
-import { formatINR, formatIndianNumber, pnlColor } from '@/lib/format';
+import { formatINR, formatINRShort, formatIndianNumber, pnlColor } from '@/lib/format';
 import {
   Upload,
   CheckCircle2,
@@ -49,6 +49,21 @@ function ClientRow({ client, expanded, onToggle }) {
   const issues = client.qty_mismatch_count + client.cost_mismatch_count +
     client.value_mismatch_count + client.missing_in_ours_count + client.extra_in_ours_count;
 
+  // Compute client-level value totals from matches
+  let clientBOValue = 0, clientOurValue = 0;
+  (client.matches || []).forEach(m => {
+    if (m.bo_market_value != null) clientBOValue += Number(m.bo_market_value);
+    if (m.our_market_value != null) clientOurValue += Number(m.our_market_value);
+  });
+  const clientValueDiff = clientBOValue - clientOurValue;
+
+  // Sort matches by absolute value_diff descending (biggest discrepancies first)
+  const sortedMatches = [...(client.matches || [])].sort((a, b) => {
+    const aDiff = Math.abs(Number(a.value_diff || 0));
+    const bDiff = Math.abs(Number(b.value_diff || 0));
+    return bDiff - aDiff;
+  });
+
   return (
     <>
       <tr
@@ -61,8 +76,11 @@ function ClientRow({ client, expanded, onToggle }) {
         <td className="px-4 py-3 font-mono text-sm font-medium text-slate-800">{client.client_code}</td>
         <td className="px-4 py-3 text-sm text-slate-600 truncate max-w-[180px]" title={client.client_name}>{client.client_name || '--'}</td>
         <td className="px-4 py-3 text-sm text-slate-600">{client.family_group}</td>
-        <td className="px-4 py-3 text-sm font-mono text-center">{client.total_holdings_bo}</td>
-        <td className="px-4 py-3 text-sm font-mono text-center">{client.total_holdings_ours}</td>
+        <td className="px-4 py-3 text-sm font-mono text-right">{formatINRShort(clientBOValue)}</td>
+        <td className="px-4 py-3 text-sm font-mono text-right">{formatINRShort(clientOurValue)}</td>
+        <td className={`px-4 py-3 text-sm font-mono text-right font-medium ${Math.abs(clientValueDiff) > 100 ? 'text-red-600' : 'text-slate-400'}`}>
+          {formatINRShort(clientValueDiff)}
+        </td>
         <td className="px-4 py-3 text-center">
           <span className={`font-mono text-sm font-medium ${client.match_pct === 100 ? 'text-emerald-600' : 'text-amber-600'}`}>
             {client.match_pct}%
@@ -80,42 +98,53 @@ function ClientRow({ client, expanded, onToggle }) {
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={8} className="px-0 py-0">
-            <div className="bg-slate-50 border-y border-slate-200">
+          <td colSpan={9} className="px-0 py-0">
+            <div className="bg-slate-50 border-y border-slate-200 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-slate-100">
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Symbol</th>
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Status</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Qty</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Qty</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Qty Diff</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Avg Cost</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Avg Cost</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Cost Diff</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Value</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Value</th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Symbol</th>
+                    <th className="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Status</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Qty</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Qty</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Qty Diff</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Price</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Price</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Avg Cost</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Avg Cost</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Cost Diff</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">BO Value</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase">Our Value</th>
+                    <th className="px-3 py-2 text-right text-xs font-semibold text-slate-500 uppercase bg-slate-200">Value Diff</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {client.matches.map((m, i) => (
-                    <tr key={i} className={`border-b border-slate-100 ${m.status !== 'MATCH' ? 'bg-amber-50/50' : ''}`}>
-                      <td className="px-4 py-2 font-mono font-medium text-slate-800">{m.symbol}</td>
-                      <td className="px-4 py-2"><StatusBadge status={m.status} /></td>
-                      <td className="px-4 py-2 text-right font-mono">{m.bo_quantity ?? '--'}</td>
-                      <td className="px-4 py-2 text-right font-mono">{m.our_quantity ?? '--'}</td>
-                      <td className={`px-4 py-2 text-right font-mono ${m.qty_diff && Number(m.qty_diff) !== 0 ? 'text-red-600 font-medium' : 'text-slate-400'}`}>
-                        {m.qty_diff != null ? Number(m.qty_diff) : '--'}
-                      </td>
-                      <td className="px-4 py-2 text-right font-mono">{m.bo_avg_cost != null ? formatINR(Number(m.bo_avg_cost), 2) : '--'}</td>
-                      <td className="px-4 py-2 text-right font-mono">{m.our_avg_cost != null ? formatINR(Number(m.our_avg_cost), 2) : '--'}</td>
-                      <td className={`px-4 py-2 text-right font-mono ${m.cost_diff && Math.abs(Number(m.cost_diff)) > 0.02 ? 'text-red-600 font-medium' : 'text-slate-400'}`}>
-                        {m.cost_diff != null ? formatINR(Number(m.cost_diff), 4) : '--'}
-                      </td>
-                      <td className="px-4 py-2 text-right font-mono">{m.bo_market_value != null ? formatINR(Number(m.bo_market_value)) : '--'}</td>
-                      <td className="px-4 py-2 text-right font-mono">{m.our_market_value != null ? formatINR(Number(m.our_market_value)) : '--'}</td>
-                    </tr>
-                  ))}
+                  {sortedMatches.map((m, i) => {
+                    const vDiff = m.value_diff != null ? Number(m.value_diff) : null;
+                    return (
+                      <tr key={i} className={`border-b border-slate-100 ${m.status !== 'MATCH' ? 'bg-amber-50/50' : ''}`}>
+                        <td className="px-3 py-2 font-mono font-medium text-slate-800">{m.symbol}</td>
+                        <td className="px-3 py-2"><StatusBadge status={m.status} /></td>
+                        <td className="px-3 py-2 text-right font-mono">{m.bo_quantity ?? '--'}</td>
+                        <td className="px-3 py-2 text-right font-mono">{m.our_quantity ?? '--'}</td>
+                        <td className={`px-3 py-2 text-right font-mono ${m.qty_diff && Number(m.qty_diff) !== 0 ? 'text-red-600 font-medium' : 'text-slate-400'}`}>
+                          {m.qty_diff != null ? Number(m.qty_diff) : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono text-slate-600">{m.bo_market_price != null ? formatINR(Number(m.bo_market_price), 2) : '--'}</td>
+                        <td className="px-3 py-2 text-right font-mono text-slate-600">{m.our_market_price != null ? formatINR(Number(m.our_market_price), 2) : '--'}</td>
+                        <td className="px-3 py-2 text-right font-mono">{m.bo_avg_cost != null ? formatINR(Number(m.bo_avg_cost), 2) : '--'}</td>
+                        <td className="px-3 py-2 text-right font-mono">{m.our_avg_cost != null ? formatINR(Number(m.our_avg_cost), 2) : '--'}</td>
+                        <td className={`px-3 py-2 text-right font-mono ${m.cost_diff && Math.abs(Number(m.cost_diff)) > 0.02 ? 'text-red-600 font-medium' : 'text-slate-400'}`}>
+                          {m.cost_diff != null ? formatINR(Number(m.cost_diff), 4) : '--'}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">{m.bo_market_value != null ? formatINR(Number(m.bo_market_value)) : '--'}</td>
+                        <td className="px-3 py-2 text-right font-mono">{m.our_market_value != null ? formatINR(Number(m.our_market_value)) : '--'}</td>
+                        <td className={`px-3 py-2 text-right font-mono font-medium bg-slate-100/50 ${vDiff != null && Math.abs(vDiff) > 100 ? (vDiff > 0 ? 'text-amber-600' : 'text-red-600') : 'text-slate-400'}`}>
+                          {vDiff != null ? formatINR(vDiff) : '--'}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -289,6 +318,7 @@ export default function ReconciliationPage() {
       {/* Summary Cards */}
       {data && (
         <>
+          {/* Accuracy + Issue count cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
             <SummaryCard
               label="Client Accuracy"
@@ -326,6 +356,32 @@ export default function ReconciliationPage() {
               label="Extra in Ours"
               value={data.total_extra_in_ours || 0}
               color={(data.total_extra_in_ours || 0) > 0 ? 'text-blue-600' : 'text-emerald-600'}
+            />
+          </div>
+
+          {/* Portfolio Value Comparison cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <SummaryCard
+              label="BO Total Value"
+              value={formatINRShort(Number(data.total_bo_value || 0))}
+              subtext="Backoffice portfolio value"
+            />
+            <SummaryCard
+              label="Our Total Value"
+              value={formatINRShort(Number(data.total_our_value || 0))}
+              subtext="Computed portfolio value"
+            />
+            <SummaryCard
+              label="Net Value Difference"
+              value={formatINRShort(Number(data.total_value_diff || 0))}
+              subtext="BO − Ours (net directional)"
+              color={Math.abs(Number(data.total_value_diff || 0)) > 10000 ? 'text-red-600' : 'text-emerald-600'}
+            />
+            <SummaryCard
+              label="Gross Value Difference"
+              value={formatINRShort(Number(data.total_abs_value_diff || 0))}
+              subtext="Sum of |value diff| per holding"
+              color={Number(data.total_abs_value_diff || 0) > 50000 ? 'text-amber-600' : 'text-emerald-600'}
             />
           </div>
 
@@ -418,8 +474,9 @@ export default function ReconciliationPage() {
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Client Code</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Client Name</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Family Group</th>
-                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">BO Holdings</th>
-                  <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Our Holdings</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">BO Value</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Our Value</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Value Diff</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Match %</th>
                   <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">Issues</th>
                 </tr>

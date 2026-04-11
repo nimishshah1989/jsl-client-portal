@@ -82,6 +82,11 @@ class ReconciliationSummaryResponse(BaseModel):
     match_pct: float = 100.0
     client_match_pct: float = 100.0
     clients_fully_matched: int = 0
+    # Aggregate portfolio value metrics
+    total_bo_value: Decimal = Decimal("0")
+    total_our_value: Decimal = Decimal("0")
+    total_value_diff: Decimal = Decimal("0")  # BO - Ours (positive = we undervalue)
+    total_abs_value_diff: Decimal = Decimal("0")  # Sum of |value_diff| per holding
     market_date: dt.date | None = None
     run_at: str | None = None
     filename: str | None = None

@@ -29,7 +29,7 @@ class TestParseScript:
 
     def test_multi_segment(self):
         symbol, inst = parse_script("HDFC BANK   EQ")
-        assert symbol == "HDFC"
+        assert symbol == "HDFCBANK"
         assert inst == "EQ"
 
 

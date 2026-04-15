@@ -99,21 +99,54 @@ async def get_nav_series(
         .where(NavSeries.portfolio_id == portfolio.id)
         .order_by(NavSeries.nav_date)
     )
-    rows = list((await db.execute(stmt)).scalars().all())
-    if not rows:
+    all_rows = list((await db.execute(stmt)).scalars().all())
+    if not all_rows:
         return []
 
-    cutoff = date_cutoff(time_range, rows[-1].nav_date)
+    cutoff = date_cutoff(time_range, all_rows[-1].nav_date)
+    flow_map = await _build_flow_map(db, client_id, portfolio.id)
+
+    # ── Pre-seed nifty_units from historical flows before the filter window ──
+    # Without this, a 1Y chart starts with nifty_units=0, ignoring all prior
+    # inflows and making the benchmark line meaningless for filtered ranges.
+    nifty_units = 0.0
     if cutoff is not None:
-        rows = [r for r in rows if r.nav_date >= cutoff]
+        for r in all_rows:
+            if r.nav_date >= cutoff:
+                break
+            bench_p = (
+                float(r.benchmark_value)
+                if r.benchmark_value and r.benchmark_value != Decimal("0")
+                else None
+            )
+            if bench_p and r.nav_date in flow_map:
+                nifty_units += flow_map[r.nav_date] / bench_p
+
+        # If no explicit flows found before cutoff, seed from the invested_amount
+        # at the last pre-cutoff row (captures clients with a single corpus entry)
+        if nifty_units == 0.0:
+            for r in reversed(all_rows):
+                if r.nav_date >= cutoff:
+                    continue
+                bench_p = (
+                    float(r.benchmark_value)
+                    if r.benchmark_value and r.benchmark_value != Decimal("0")
+                    else None
+                )
+                if bench_p and r.invested_amount and float(r.invested_amount) > 0:
+                    nifty_units = float(r.invested_amount) / bench_p
+                    break
+
+        rows = [r for r in all_rows if r.nav_date >= cutoff]
+    else:
+        rows = all_rows
+
     if not rows:
         return []
 
     first_bench = rows[0].benchmark_value
-    flow_map = await _build_flow_map(db, client_id, portfolio.id)
 
-    # Compute benchmark using virtual Nifty units
-    nifty_units = 0.0
+    # ── Build series points ───────────────────────────────────────────────────
     points: list[NavSeriesPoint] = []
     for idx, row in enumerate(rows):
         bench_price = (
@@ -122,12 +155,13 @@ async def get_nav_series(
             else None
         )
 
-        # Accumulate Nifty units on cash flow dates
+        # Accumulate Nifty units on cash flow dates within the visible window
         if bench_price and row.nav_date in flow_map:
             flow_amt = flow_map[row.nav_date]
             nifty_units += flow_amt / bench_price
 
-        # Safety: if first row and no cash flow matched, seed from invested_amount
+        # Safety: if nifty_units is still 0 at the first row (ALL range with no
+        # flow data at all), seed from invested_amount so the line isn't flat
         if bench_price and nifty_units == 0.0 and idx == 0:
             initial = float(row.invested_amount) if row.invested_amount else 0.0
             if initial > 0 and row.nav_date not in flow_map:

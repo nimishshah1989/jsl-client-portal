@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -20,7 +21,8 @@ from backend.database import Base
 class Holding(Base):
     """
     Current holdings for a client portfolio.
-    Computed by aggregating buy/sell transactions using weighted average cost.
+    Computed by aggregating buy/sell transactions using FIFO cost method.
+    avg_cost matches the backoffice PMS valuation (FIFO + net rate).
     """
 
     __tablename__ = "cpp_holdings"
@@ -33,12 +35,16 @@ class Holding(Base):
         Integer, ForeignKey("cpp_portfolios.id", ondelete="CASCADE"), nullable=False
     )
     symbol: Mapped[str] = mapped_column(String(100), nullable=False)
+    isin: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="ISIN code — primary reconciliation key"
+    )
     asset_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     asset_class: Mapped[str | None] = mapped_column(String(50), nullable=True)
     sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     avg_cost: Mapped[Decimal] = mapped_column(
-        Numeric(18, 4), nullable=False, comment="Weighted average cost per unit"
+        Numeric(18, 4), nullable=False,
+        comment="FIFO weighted average cost per unit (matches backoffice)"
     )
     current_price: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4), nullable=True, comment="Latest market price"
@@ -61,6 +67,7 @@ class Holding(Base):
             "client_id", "portfolio_id", "symbol",
             name="uq_cpp_holdings_client_portfolio_symbol",
         ),
+        Index("idx_cpp_holdings_isin", "isin"),
     )
 
     def __repr__(self) -> str:

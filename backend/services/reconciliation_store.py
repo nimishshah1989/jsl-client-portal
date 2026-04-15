@@ -68,12 +68,18 @@ async def save_reconciliation(
         "match_pct": result.match_pct,
         "client_match_pct": result.client_match_pct,
         "clients_fully_matched": result.clients_fully_matched,
-        # 3-way aggregate totals
+        # 4-component aggregate totals
         "total_nav_value": str(result.total_nav_value),
+        "total_nav_equity_value": str(result.total_nav_equity_value),
+        "total_etf_value": str(result.total_etf_value),
+        "total_cash_value": str(result.total_cash_value),
         "total_bo_holdings_value": str(result.total_bo_holdings_value),
         "total_our_holdings_value": str(result.total_our_holdings_value),
+        "total_our_etf_holdings_value": str(result.total_our_etf_holdings_value),
+        "total_nav_equity_vs_bo_diff": str(result.total_nav_equity_vs_bo_diff),
         "total_nav_vs_bo_diff": str(result.total_nav_vs_bo_diff),
         "total_bo_vs_ours_diff": str(result.total_bo_vs_ours_diff),
+        "total_etf_vs_ours_diff": str(result.total_etf_vs_ours_diff),
         "clients_with_nav": result.clients_with_nav,
     }
 
@@ -98,16 +104,23 @@ async def save_reconciliation(
             "extra_in_ours_count": c.extra_in_ours_count,
             "match_pct": c.match_pct,
             "has_issues": c.has_issues,
-            # 3-way value totals
+            # 4-component value totals
             "nav_total": _s(c.nav_total),
+            "nav_equity_component": _s(c.nav_equity_component),
+            "etf_component_nav": _s(c.etf_component_nav),
+            "cash_component_nav": _s(c.cash_component_nav),
             "bo_holdings_total": _s(c.bo_holdings_total),
             "our_holdings_total": _s(c.our_holdings_total),
+            "our_etf_holdings_total": _s(c.our_etf_holdings_total),
+            "nav_equity_vs_bo_diff": _s(c.nav_equity_vs_bo_diff),
             "nav_vs_bo_diff": _s(c.nav_vs_bo_diff),
             "bo_vs_ours_diff": _s(c.bo_vs_ours_diff),
+            "etf_vs_ours_diff": _s(c.etf_vs_ours_diff),
             "nav_date": str(c.nav_date) if c.nav_date else None,
             "matches": [
                 {
                     "symbol": m.symbol, "status": m.status,
+                    "matched_by": m.matched_by,
                     "family_group": m.family_group,
                     "bo_quantity": _s(m.bo_quantity), "bo_avg_cost": _s(m.bo_avg_cost),
                     "bo_total_cost": _s(m.bo_total_cost),
@@ -120,6 +133,7 @@ async def save_reconciliation(
                     "our_market_price": _s(m.our_market_price),
                     "our_market_value": _s(m.our_market_value),
                     "our_pnl": _s(m.our_pnl), "our_weight_pct": _s(m.our_weight_pct),
+                    "our_asset_class": m.our_asset_class,
                     "qty_diff": _s(m.qty_diff), "cost_diff": _s(m.cost_diff),
                     "value_diff": _s(m.value_diff), "pnl_diff": _s(m.pnl_diff),
                 }

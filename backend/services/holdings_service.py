@@ -1,18 +1,21 @@
-"""Holdings computation service — Weighted Average Cost Method.
+"""Holdings computation service — FIFO cost method (matches backoffice).
 
 Aggregates all BUY/SELL/BONUS/CORPUS_IN transactions per symbol to compute
 current holdings with average cost, unrealized P&L, and portfolio weights.
 
-Cost method:
-  BUY:       new_avg = (old_qty * old_avg + buy_qty * buy_price) / (old_qty + buy_qty)
-  SELL:      avg_cost unchanged, reduce quantity
-  BONUS:     new_avg = (old_qty * old_avg) / (old_qty + bonus_qty)
-  CORPUS_IN: treated as initial position — same as BUY logic
+Cost method: FIFO (First-In, First-Out) using the NET RATE column.
+This exactly matches the PMS backoffice computation.
+
+  BUY / CORPUS_IN:  append a new lot (qty, price) to the symbol's lot queue
+  SELL:             consume oldest lots first (FIFO); avg cost of remaining lots
+                    = sum(qty_i × price_i) / total_qty
+  BONUS:            append a zero-cost lot (qty, 0); dilutes avg cost naturally
 """
 
 from __future__ import annotations
 
 import logging
+from collections import deque
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import pandas as pd
@@ -37,40 +40,68 @@ def _dec(value: object) -> Decimal:
         return _ZERO
 
 
+def _fifo_avg_cost(lots: deque) -> Decimal:
+    """Compute weighted average cost of remaining FIFO lots.
+
+    Returns the weighted average of (qty × price) across all remaining lots.
+    Returns zero if the lot queue is empty.
+    """
+    total_qty = _ZERO
+    total_cost = _ZERO
+    for lot_qty, lot_price in lots:
+        total_qty += lot_qty
+        total_cost += lot_qty * lot_price
+    if total_qty <= _ZERO:
+        return _ZERO
+    return (total_cost / total_qty).quantize(_FOUR_PLACES, rounding=ROUND_HALF_UP)
+
+
 def compute_holdings(
     transactions_df: pd.DataFrame,
     current_prices: dict[str, Decimal] | None = None,
 ) -> pd.DataFrame:
     """
-    Compute current holdings from transaction history using Weighted Average Cost.
+    Compute current holdings from transaction history using FIFO cost method.
+
+    Uses NET RATE (the price column) to match the backoffice avg cost calculation.
 
     Args:
         transactions_df: DataFrame with columns:
             symbol, txn_type, quantity, price, amount, asset_class, date
             Must be sorted ascending by date.
-        current_prices: Optional dict of {symbol: current_price} for P&L computation.
+            Optional column: isin (carried through to output if present)
+        current_prices: Optional dict of {symbol: current_price} for P&L.
             If not provided, P&L fields will be zero.
 
     Returns:
         DataFrame with columns:
-            symbol, asset_class, quantity, avg_cost, current_price,
+            symbol, isin, asset_class, quantity, avg_cost, current_price,
             current_value, unrealized_pnl, unrealized_pnl_pct, weight_pct
         Only symbols with quantity > 0 are returned.
     """
     if transactions_df.empty:
         return pd.DataFrame(columns=[
-            "symbol", "asset_class", "quantity", "avg_cost", "current_price",
-            "current_value", "unrealized_pnl", "unrealized_pnl_pct", "weight_pct",
+            "symbol", "isin", "asset_class", "quantity", "avg_cost",
+            "current_price", "current_value", "unrealized_pnl",
+            "unrealized_pnl_pct", "weight_pct",
         ])
 
     if current_prices is None:
         current_prices = {}
 
-    # Track positions per symbol
-    positions: dict[str, dict] = {}
+    has_isin_col = "isin" in transactions_df.columns
+
+    # Per-symbol state
+    lots: dict[str, deque] = {}          # symbol → deque of (qty, price) lots
+    asset_classes: dict[str, str] = {}   # symbol → asset_class
+    isins: dict[str, str] = {}           # symbol → most recently seen ISIN
 
     # Sort by date to process in chronological order
-    sorted_df = transactions_df.sort_values("date") if "date" in transactions_df.columns else transactions_df
+    sorted_df = (
+        transactions_df.sort_values("date")
+        if "date" in transactions_df.columns
+        else transactions_df
+    )
 
     for _, txn in sorted_df.iterrows():
         symbol = str(txn["symbol"]).strip()
@@ -79,96 +110,109 @@ def compute_holdings(
         price = _dec(txn["price"])
         asset_class = str(txn.get("asset_class", "EQUITY")).strip()
 
-        if symbol not in positions:
-            positions[symbol] = {
-                "quantity": _ZERO,
-                "avg_cost": _ZERO,
-                "asset_class": asset_class,
-            }
+        # Track ISIN — use the last non-empty ISIN seen for this symbol
+        if has_isin_col:
+            raw_isin = txn.get("isin", "")
+            if raw_isin and str(raw_isin).strip() and str(raw_isin).strip().lower() not in ("nan", "none", ""):
+                isins[symbol] = str(raw_isin).strip()
 
-        pos = positions[symbol]
+        if symbol not in lots:
+            lots[symbol] = deque()
+            asset_classes[symbol] = asset_class
 
         if txn_type in ("BUY", "CORPUS_IN"):
-            # Weighted average cost: (old_qty * old_avg + new_qty * new_price) / total_qty
-            old_qty = pos["quantity"]
-            old_avg = pos["avg_cost"]
-            new_total_qty = old_qty + qty
-            if new_total_qty > 0:
-                pos["avg_cost"] = (
-                    (old_qty * old_avg + qty * price) / new_total_qty
-                ).quantize(_FOUR_PLACES, rounding=ROUND_HALF_UP)
-            pos["quantity"] = new_total_qty
+            # Add a new lot at the purchase price
+            if qty > _ZERO:
+                lots[symbol].append((qty, price))
 
         elif txn_type == "SELL":
-            # Avg cost unchanged, reduce quantity
-            pos["quantity"] = max(pos["quantity"] - qty, _ZERO)
+            # Consume oldest lots first (FIFO)
+            remaining = qty
+            lot_queue = lots[symbol]
+            while remaining > _ZERO and lot_queue:
+                lot_qty, lot_price = lot_queue[0]
+                if lot_qty <= remaining:
+                    remaining -= lot_qty
+                    lot_queue.popleft()
+                else:
+                    lot_queue[0] = (lot_qty - remaining, lot_price)
+                    remaining = _ZERO
+            if remaining > _ZERO:
+                logger.warning(
+                    "FIFO sell for %s: over-sold by %s — likely missing BUY transactions",
+                    symbol,
+                    remaining,
+                )
 
         elif txn_type == "BONUS":
-            # Bonus shares: zero cost, dilutes average
-            old_qty = pos["quantity"]
-            old_avg = pos["avg_cost"]
-            new_total_qty = old_qty + qty
-            if new_total_qty > 0:
-                # new_avg = (old_qty * old_avg) / (old_qty + bonus_qty)
-                pos["avg_cost"] = (
-                    (old_qty * old_avg) / new_total_qty
-                ).quantize(_FOUR_PLACES, rounding=ROUND_HALF_UP)
-            pos["quantity"] = new_total_qty
+            # Bonus shares have zero cost — append a zero-price lot
+            if qty > _ZERO:
+                lots[symbol].append((qty, _ZERO))
 
         else:
             logger.debug("Unknown txn_type %r for symbol %s — skipping", txn_type, symbol)
 
-        # Update asset class if not set
-        if not pos["asset_class"] or pos["asset_class"] == "EQUITY":
-            pos["asset_class"] = asset_class
+        # Update asset class
+        if asset_class and asset_class != "EQUITY":
+            asset_classes[symbol] = asset_class
 
-    # Build result — only symbols with positive quantity
+    # ── Build result rows ─────────────────────────────────────────────────────
     rows: list[dict] = []
-    for symbol, pos in positions.items():
-        if pos["quantity"] <= 0:
+    for symbol, lot_queue in lots.items():
+        total_qty = sum(lq for lq, _ in lot_queue)
+        if total_qty <= _ZERO:
             continue
 
+        total_qty_dec = _dec(total_qty)
+        avg_cost = _fifo_avg_cost(lot_queue)
         cur_price = _dec(current_prices.get(symbol, _ZERO))
-        cur_value = (pos["quantity"] * cur_price).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
-        cost_basis = (pos["quantity"] * pos["avg_cost"]).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+        cur_value = (total_qty_dec * cur_price).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+        cost_basis = (total_qty_dec * avg_cost).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
         unrealized = cur_value - cost_basis
         pnl_pct = _ZERO
-        if cost_basis > 0:
+        if cost_basis > _ZERO:
             pnl_pct = ((cur_value / cost_basis - 1) * 100).quantize(
                 _TWO_PLACES, rounding=ROUND_HALF_UP
             )
 
         rows.append({
             "symbol": symbol,
-            "asset_class": pos["asset_class"],
-            "quantity": pos["quantity"],
-            "avg_cost": pos["avg_cost"],
+            "isin": isins.get(symbol, ""),
+            "asset_class": asset_classes.get(symbol, "EQUITY"),
+            "quantity": total_qty_dec,
+            "avg_cost": avg_cost,
             "current_price": cur_price,
             "current_value": cur_value,
             "unrealized_pnl": unrealized,
             "unrealized_pnl_pct": pnl_pct,
-            "weight_pct": _ZERO,  # Computed below after total is known
+            "weight_pct": _ZERO,  # computed below
         })
 
     if not rows:
         return pd.DataFrame(columns=[
-            "symbol", "asset_class", "quantity", "avg_cost", "current_price",
-            "current_value", "unrealized_pnl", "unrealized_pnl_pct", "weight_pct",
+            "symbol", "isin", "asset_class", "quantity", "avg_cost",
+            "current_price", "current_value", "unrealized_pnl",
+            "unrealized_pnl_pct", "weight_pct",
         ])
 
     result_df = pd.DataFrame(rows)
 
-    # Compute weight_pct based on total portfolio value
-    total_value = sum(r["current_value"] for r in rows)
+    # Compute weight_pct based on total portfolio value (non-zero current_value only)
+    total_value = result_df["current_value"].sum()
     if total_value > 0:
         result_df["weight_pct"] = result_df["current_value"].apply(
-            lambda v: (v / total_value * 100).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+            lambda v: (_dec(v) / _dec(total_value) * 100).quantize(
+                _TWO_PLACES, rounding=ROUND_HALF_UP
+            )
         )
 
-    # Sort by weight descending
     result_df = result_df.sort_values("weight_pct", ascending=False).reset_index(drop=True)
 
-    logger.info("Holdings computed: %d active positions", len(result_df))
+    logger.info(
+        "FIFO holdings computed: %d active positions across %d symbols processed",
+        len(result_df),
+        len(lots),
+    )
     return result_df
 
 

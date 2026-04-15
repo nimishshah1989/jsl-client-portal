@@ -44,6 +44,9 @@ class Transaction(Base):
     symbol: Mapped[str] = mapped_column(
         String(100), nullable=False, comment="Cleaned symbol e.g. RELIANCE"
     )
+    isin: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="ISIN code e.g. INE002A01018"
+    )
     asset_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     asset_class: Mapped[str | None] = mapped_column(
         String(50), nullable=True, comment="EQUITY, CASH"
@@ -60,7 +63,7 @@ class Transaction(Base):
     )
     quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     price: Mapped[Decimal | None] = mapped_column(
-        Numeric(18, 4), nullable=True, comment="Net rate per share"
+        Numeric(18, 4), nullable=True, comment="Net rate per share (matches backoffice FIFO)"
     )
     cost_rate: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4), nullable=True, comment="All-in cost rate incl taxes"
@@ -81,6 +84,7 @@ class Transaction(Base):
         ),
         Index("idx_cpp_txn_client", "client_id", "portfolio_id", "txn_date"),
         Index("idx_cpp_txn_type", "txn_type"),
+        Index("idx_cpp_txn_isin", "isin"),
     )
 
     def __repr__(self) -> str:

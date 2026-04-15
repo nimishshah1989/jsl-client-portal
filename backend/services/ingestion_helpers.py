@@ -254,7 +254,7 @@ async def upsert_transactions(
     portfolio_id: int,
     records: list[dict],
 ) -> int:
-    """Bulk insert transaction records. Returns count."""
+    """Bulk insert transaction records (including ISIN). Returns count."""
     if not records:
         return 0
 
@@ -267,8 +267,9 @@ async def upsert_transactions(
         for i, rec in enumerate(batch):
             idx = f"{start + i}"
             txn_date = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
+            isin_val = rec.get("isin", "") or ""
             values_parts.append(
-                f"(:cid_{idx}, :pid_{idx}, :td_{idx}, :tt_{idx}, :sym_{idx},"
+                f"(:cid_{idx}, :pid_{idx}, :td_{idx}, :tt_{idx}, :sym_{idx}, :isin_{idx},"
                 f" :an_{idx}, :ac_{idx}, :it_{idx}, :ex_{idx},"
                 f" :sn_{idx}, :qty_{idx}, :pr_{idx}, :cr_{idx}, :amt_{idx})"
             )
@@ -277,6 +278,7 @@ async def upsert_transactions(
             params[f"td_{idx}"] = txn_date
             params[f"tt_{idx}"] = rec["txn_type"]
             params[f"sym_{idx}"] = rec["symbol"]
+            params[f"isin_{idx}"] = isin_val if isin_val else None
             params[f"an_{idx}"] = rec["symbol"]
             params[f"ac_{idx}"] = rec["asset_class"]
             params[f"it_{idx}"] = rec.get("instrument_type", "EQ")
@@ -289,13 +291,14 @@ async def upsert_transactions(
 
         sql = text(f"""
             INSERT INTO cpp_transactions
-                (client_id, portfolio_id, txn_date, txn_type, symbol,
+                (client_id, portfolio_id, txn_date, txn_type, symbol, isin,
                  asset_name, asset_class, instrument_type, exchange,
                  settlement_no, quantity, price, cost_rate, amount)
             VALUES {', '.join(values_parts)}
             ON CONFLICT (client_id, portfolio_id, txn_date, txn_type, symbol,
                          quantity, price, settlement_no)
-            DO NOTHING
+            DO UPDATE SET
+                isin = COALESCE(EXCLUDED.isin, cpp_transactions.isin)
         """)
         await db.execute(sql, params)
         count += len(batch)
@@ -308,10 +311,14 @@ async def recompute_holdings(
     client_id: int,
     portfolio_id: int,
 ) -> int:
-    """Recompute holdings from transactions and upsert to cpp_holdings."""
+    """Recompute holdings from transactions using FIFO and upsert to cpp_holdings.
+
+    Fetches ISIN from transactions so holdings are keyed by both symbol and ISIN,
+    enabling ISIN-based reconciliation against the backoffice holding report.
+    """
     result = await db.execute(
         text("""
-            SELECT symbol, txn_type, quantity, price, amount, asset_class, txn_date
+            SELECT symbol, isin, txn_type, quantity, price, amount, asset_class, txn_date
             FROM cpp_transactions
             WHERE client_id = :cid AND portfolio_id = :pid
             ORDER BY txn_date ASC
@@ -323,7 +330,7 @@ async def recompute_holdings(
         return 0
 
     txn_df = pd.DataFrame(rows, columns=[
-        "symbol", "txn_type", "quantity", "price", "amount", "asset_class", "date",
+        "symbol", "isin", "txn_type", "quantity", "price", "amount", "asset_class", "date",
     ])
     holdings_df = compute_holdings(txn_df)
     if holdings_df.empty:
@@ -349,19 +356,21 @@ async def recompute_holdings(
     count = 0
     for _, h in holdings_df.iterrows():
         symbol = h["symbol"]
+        isin_val = h.get("isin", "") or ""
         # Sector priority: known ETF/LIQUID mapping → existing DB sector → None
         sector = classify_sector(symbol) or existing_sectors.get(symbol) or None
         await db.execute(
             text("""
                 INSERT INTO cpp_holdings
-                    (client_id, portfolio_id, symbol, asset_class, sector, quantity,
+                    (client_id, portfolio_id, symbol, isin, asset_class, sector, quantity,
                      avg_cost, current_price, current_value, unrealized_pnl, weight_pct)
-                VALUES (:cid, :pid, :sym, :ac, :sec, :qty, :avgc, :cp, :cv, :pnl, :wt)
+                VALUES (:cid, :pid, :sym, :isin, :ac, :sec, :qty, :avgc, :cp, :cv, :pnl, :wt)
             """),
             {
                 "cid": client_id,
                 "pid": portfolio_id,
                 "sym": symbol,
+                "isin": isin_val if isin_val else None,
                 "ac": h["asset_class"],
                 "sec": sector,
                 "qty": h["quantity"],

@@ -3,19 +3,32 @@
 Uses openpyxl read_only mode for memory-efficient parsing of 35MB files.
 See FILE_FORMAT_SPEC.md for full format documentation.
 
+Column layout is AUTO-DETECTED from the header row — no hardcoded indices.
+
+Two formats are supported:
+
+  Old (20-col):  UCC | Script | Exch | Stno | Buy×8 | Sale×8
+  New (21-col):  UCC | ISIN | Script | Exch | Stno | Buy×8 | Sale×8
+
+The Buy and Sale blocks are always 8 columns wide:
+  +0 Quantity, +1 Net Rate, +2 GST, +3 Other Charges, +4 STT,
+  +5 Cost Rate, +6 Amount With Cost, +7 Amount Without STT
+
 Row types:
-  0. Sub-header row — skip
-  1. Client name header — "FULL NAME [CODE]"
-  2. Date separator — "     Date :DD/MM/YY"
-  3. Transaction data — UCC = client code, Script present
-  4. Daily subtotal — UCC is None, skip
-  5. Grand total — UCC is None, skip
+  0. Sub-header row 0 — format detection, then skip
+  1. Sub-header row 1 — skip
+  2. Client name header — "FULL NAME [CODE]"
+  3. Date separator — "     Date :DD/MM/YY"
+  4. Transaction data — UCC = client code, Script present
+  5. Daily subtotal — UCC is None, skip
+  6. Grand total — UCC is None, skip
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections import namedtuple
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -24,30 +37,14 @@ from openpyxl import load_workbook
 
 logger = logging.getLogger(__name__)
 
-# Column indices (0-based, 20 columns total)
-_COL_UCC = 0
-_COL_SCRIPT = 1
-_COL_EXCH = 2
-_COL_STNO = 3
-# Buy side: 4-11
-_COL_BUY_QTY = 4
-_COL_BUY_RATE = 5
-_COL_BUY_COST_RATE = 9
-_COL_BUY_AMOUNT = 10
-# Sale side: 12-19
-_COL_SALE_QTY = 12
-_COL_SALE_RATE = 13
-_COL_SALE_COST_RATE = 17
-_COL_SALE_AMOUNT = 18
-
 # Regex patterns
 _NAME_PATTERN = re.compile(r"^(.+?)\s*\[(\w+)\]$")
 _DATE_PATTERN = re.compile(r"Date\s*:\s*(\d{2}/\d{2}/\d{2})")
 
-# Sector mapping for instruments that can't be inferred from name alone.
-# Anything containing "LIQUID" (case-insensitive) → "Cash"
-# Gold/silver ETFs → "Metals"
-# ETF-style instruments → their underlying sector
+# Known instrument type suffixes — last token is instrument type when it matches
+_KNOWN_INSTRUMENT_TYPES = {"EQ", "BE", "BZ", "ETF", "MF", "NCD", "GS", "SG"}
+
+# Sector mapping for ETF/commodity instruments
 SYMBOL_SECTOR_MAP: dict[str, str] = {
     "GOLDBEES": "Metals",
     "GOLDCASE": "Metals",
@@ -68,6 +65,67 @@ SYMBOL_SECTOR_MAP: dict[str, str] = {
     "HNGSNGBEES": "Diversified",
 }
 
+# ── Column layout descriptor ─────────────────────────────────────────────────
+
+TxnColMap = namedtuple("TxnColMap", [
+    "has_isin",
+    "col_isin",       # None for old format
+    "col_script",
+    "col_exch",
+    "col_stno",
+    "col_buy_qty",    # start of Buy block (+0)
+    "col_sale_qty",   # start of Sale block (+0)
+])
+
+
+def _detect_col_map(header_row: tuple) -> TxnColMap:
+    """Detect column layout from the first header row.
+
+    The header row looks like one of:
+      Old:  ('UCC', 'Script', 'Exch', 'Stno', 'Buy', 'Buy', ...)   — 20 cols
+      New:  ('UCC', 'ISIN', 'Script', 'Exch', 'Stno', 'Buy', ...)  — 21 cols
+
+    Detection is purely name-based: if col 1 contains 'isin' (case-insensitive)
+    the new format is assumed, shifting all subsequent indices by 1.
+    """
+    has_isin = False
+    col_isin: int | None = None
+
+    if len(header_row) > 1 and header_row[1] is not None:
+        cell1 = str(header_row[1]).strip().lower()
+        if cell1 == "isin":
+            has_isin = True
+            col_isin = 1
+            logger.info("TXN parser: detected 21-col format with ISIN at col 1")
+        else:
+            logger.info("TXN parser: detected 20-col format (no ISIN column)")
+
+    offset = 1 if has_isin else 0
+
+    # Script, Exch, Stno follow immediately after UCC (+ ISIN if present)
+    col_script = 1 + offset
+    col_exch = 2 + offset
+    col_stno = 3 + offset
+
+    # Buy block starts right after Stno (8 cols wide)
+    col_buy_qty = 4 + offset
+
+    # Sale block starts 8 cols after Buy block
+    col_sale_qty = col_buy_qty + 8
+
+    return TxnColMap(
+        has_isin=has_isin,
+        col_isin=col_isin,
+        col_script=col_script,
+        col_exch=col_exch,
+        col_stno=col_stno,
+        col_buy_qty=col_buy_qty,
+        col_sale_qty=col_sale_qty,
+    )
+
+
+# ── Helper functions ─────────────────────────────────────────────────────────
+
 
 def classify_sector(symbol: str) -> str:
     """Determine sector from symbol name.
@@ -87,15 +145,11 @@ def _safe_decimal(value: object) -> Decimal:
         return Decimal("0")
     try:
         d = Decimal(str(value))
-        # openpyxl may yield NaN for blank cells in some edge cases
         if d.is_nan():
             return Decimal("0")
         return d
     except (InvalidOperation, ValueError):
         return Decimal("0")
-
-
-_KNOWN_INSTRUMENT_TYPES = {"EQ", "BE", "BZ", "ETF", "MF", "NCD", "GS", "SG"}
 
 
 def parse_script(script_raw: str) -> tuple[str, str]:
@@ -135,14 +189,20 @@ def _determine_txn_type_buy(stno: str) -> str:
 
 def _determine_txn_type_sell(stno: str) -> str:
     """Determine transaction type for sell-side entry."""
-    if stno.lower() == "corpus":
+    if stno.lower().strip() == "corpus":
         return "CORPUS_IN"
     return "SELL"
+
+
+# ── Main parser ──────────────────────────────────────────────────────────────
 
 
 def parse_transaction_file(filepath: str | Path) -> list[dict]:
     """
     Parse a PMS Transaction Report .xlsx file.
+
+    Auto-detects column layout (20-col or 21-col with ISIN) from the header row.
+    Uses net rate (not cost rate) for pricing — matches backoffice FIFO calculation.
 
     Args:
         filepath: Path to the .xlsx file.
@@ -151,7 +211,7 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
         List of dicts with keys:
             client_code, client_name, date, txn_type, symbol,
             instrument_type, exchange, settlement_no, quantity,
-            price, cost_rate, amount, asset_class
+            price, cost_rate, amount, asset_class, sector, isin
     """
     filepath = Path(filepath)
     if not filepath.exists():
@@ -168,21 +228,31 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
     current_client_name: str | None = None
     current_date: datetime | None = None
     row_count = 0
-    header_skipped = False
+    header_rows_seen = 0  # first 2 rows are headers
+    col_map: TxnColMap | None = None
     clients_seen: set[str] = set()
 
     for row in ws.iter_rows(values_only=True):
         row_count += 1
 
-        # Skip the first row (sub-header / column names)
-        if not header_skipped:
-            header_skipped = True
+        # ── First row: detect column layout ─────────────────────────────────
+        if header_rows_seen == 0:
+            col_map = _detect_col_map(row)
+            header_rows_seen += 1
             continue
 
-        # Pad row to 20 columns to avoid index errors
-        cells = list(row) + [None] * max(0, 20 - len(row))
+        # ── Second row: sub-header with column names — skip ──────────────────
+        if header_rows_seen == 1:
+            header_rows_seen += 1
+            continue
 
-        ucc_raw = cells[_COL_UCC]
+        assert col_map is not None  # always set after row 0
+
+        # Pad row to at least col_sale_qty + 8 columns to avoid index errors
+        min_cols = col_map.col_sale_qty + 8
+        cells = list(row) + [None] * max(0, min_cols - len(row))
+
+        ucc_raw = cells[0]  # col 0 is always UCC
 
         # Subtotal / grand total rows — UCC is None
         if ucc_raw is None:
@@ -197,7 +267,7 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
         if name_match:
             current_client_name = name_match.group(1).strip()
             current_client_code = name_match.group(2).strip()
-            current_date = None  # Reset date for new client
+            current_date = None
             if current_client_code not in clients_seen:
                 clients_seen.add(current_client_code)
                 logger.info(
@@ -217,13 +287,13 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
                 logger.warning("Unparseable date separator: %r", ucc)
             continue
 
-        # Type 3: Transaction data — UCC matches client code and Script is present
+        # Type 3: Transaction data row
         if current_client_code is None or current_date is None:
             continue
         if ucc.rstrip() != current_client_code:
             continue
 
-        script_raw = cells[_COL_SCRIPT]
+        script_raw = cells[col_map.col_script]
         if script_raw is None:
             continue
         script_str = str(script_raw).strip()
@@ -231,54 +301,72 @@ def parse_transaction_file(filepath: str | Path) -> list[dict]:
             continue
 
         symbol, inst_type = parse_script(script_str)
-        stno = str(cells[_COL_STNO]).strip() if cells[_COL_STNO] is not None else ""
-        exchange = str(cells[_COL_EXCH]).strip() if cells[_COL_EXCH] is not None else ""
+        stno_raw = cells[col_map.col_stno]
+        stno = str(stno_raw).strip() if stno_raw is not None else ""
+        exch_raw = cells[col_map.col_exch]
+        exchange = str(exch_raw).strip() if exch_raw is not None else ""
+
+        # Extract ISIN (None for old format files)
+        isin = ""
+        if col_map.has_isin and col_map.col_isin is not None:
+            isin_raw = cells[col_map.col_isin]
+            isin = str(isin_raw).strip() if isin_raw is not None else ""
+            if isin.lower() in ("none", "nan"):
+                isin = ""
+
         asset_class = "CASH" if "LIQUID" in symbol.upper() else "EQUITY"
         sector = classify_sector(symbol)
 
-        buy_qty = _safe_decimal(cells[_COL_BUY_QTY])
-        sale_qty = _safe_decimal(cells[_COL_SALE_QTY])
+        # Buy block: col_buy_qty + offsets
+        buy_qty = _safe_decimal(cells[col_map.col_buy_qty])
+        buy_rate = _safe_decimal(cells[col_map.col_buy_qty + 1])       # net rate
+        buy_cost_rate = _safe_decimal(cells[col_map.col_buy_qty + 5])  # all-in cost rate
+        buy_amount = _safe_decimal(cells[col_map.col_buy_qty + 6])     # amount with cost
+
+        # Sale block: col_sale_qty + offsets
+        sale_qty = _safe_decimal(cells[col_map.col_sale_qty])
+        sale_rate = _safe_decimal(cells[col_map.col_sale_qty + 1])       # net rate
+        sale_cost_rate = _safe_decimal(cells[col_map.col_sale_qty + 5])  # all-in cost rate
+        sale_amount = _safe_decimal(cells[col_map.col_sale_qty + 6])     # amount with cost
 
         # A single row can have BOTH buy and sell — check independently
         if buy_qty > 0:
-            records.append(
-                {
-                    "client_code": current_client_code,
-                    "client_name": current_client_name,
-                    "date": current_date,
-                    "txn_type": _determine_txn_type_buy(stno),
-                    "symbol": symbol,
-                    "instrument_type": inst_type,
-                    "exchange": exchange,
-                    "settlement_no": stno,
-                    "quantity": _safe_decimal(cells[_COL_BUY_QTY]),
-                    "price": _safe_decimal(cells[_COL_BUY_RATE]),
-                    "cost_rate": _safe_decimal(cells[_COL_BUY_COST_RATE]),
-                    "amount": _safe_decimal(cells[_COL_BUY_AMOUNT]),
-                    "asset_class": asset_class,
-                    "sector": sector,
-                }
-            )
+            records.append({
+                "client_code": current_client_code,
+                "client_name": current_client_name,
+                "date": current_date,
+                "txn_type": _determine_txn_type_buy(stno),
+                "symbol": symbol,
+                "instrument_type": inst_type,
+                "exchange": exchange,
+                "settlement_no": stno,
+                "quantity": buy_qty,
+                "price": buy_rate,
+                "cost_rate": buy_cost_rate,
+                "amount": buy_amount,
+                "asset_class": asset_class,
+                "sector": sector,
+                "isin": isin,
+            })
 
         if sale_qty > 0:
-            records.append(
-                {
-                    "client_code": current_client_code,
-                    "client_name": current_client_name,
-                    "date": current_date,
-                    "txn_type": _determine_txn_type_sell(stno),
-                    "symbol": symbol,
-                    "instrument_type": inst_type,
-                    "exchange": exchange,
-                    "settlement_no": stno,
-                    "quantity": _safe_decimal(cells[_COL_SALE_QTY]),
-                    "price": _safe_decimal(cells[_COL_SALE_RATE]),
-                    "cost_rate": _safe_decimal(cells[_COL_SALE_COST_RATE]),
-                    "amount": _safe_decimal(cells[_COL_SALE_AMOUNT]),
-                    "asset_class": asset_class,
-                    "sector": sector,
-                }
-            )
+            records.append({
+                "client_code": current_client_code,
+                "client_name": current_client_name,
+                "date": current_date,
+                "txn_type": _determine_txn_type_sell(stno),
+                "symbol": symbol,
+                "instrument_type": inst_type,
+                "exchange": exchange,
+                "settlement_no": stno,
+                "quantity": sale_qty,
+                "price": sale_rate,
+                "cost_rate": sale_cost_rate,
+                "amount": sale_amount,
+                "asset_class": asset_class,
+                "sector": sector,
+                "isin": isin,
+            })
 
     wb.close()
     logger.info(

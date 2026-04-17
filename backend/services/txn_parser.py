@@ -44,6 +44,16 @@ _DATE_PATTERN = re.compile(r"Date\s*:\s*(\d{2}/\d{2}/\d{2})")
 # Known instrument type suffixes — last token is instrument type when it matches
 _KNOWN_INSTRUMENT_TYPES = {"EQ", "BE", "BZ", "ETF", "MF", "NCD", "GS", "SG"}
 
+# Canonical NSE ticker overrides for securities with multi-word script names.
+# Key: concatenated uppercase script tokens (after stripping instrument suffix).
+# Value: correct NSE symbol.
+_SYMBOL_OVERRIDES: dict[str, str] = {
+    "ATHERENERGYLIMITED": "ATHERENERG",
+    "INDUSTOWERSLIMITED": "INDUSTOWER",
+    "PAYTM": "PAYTM",  # single-word, but alias kept for clarity
+    "GROWWAMC-GROWWDEFNC": "GROWWDEFNC",
+}
+
 # Sector mapping for ETF/commodity instruments
 SYMBOL_SECTOR_MAP: dict[str, str] = {
     "GOLDBEES": "Metals",
@@ -177,6 +187,8 @@ def parse_script(script_raw: str) -> tuple[str, str]:
     # For single-word symbols (99% of cases): "RELIANCE" → "RELIANCE"
     # For multi-word: "Mirae Smallcap" → "MIRAESMALLCAP" (concat, no spaces)
     symbol = "".join(p.strip() for p in name_parts).upper()
+    # Apply canonical NSE ticker override if known
+    symbol = _SYMBOL_OVERRIDES.get(symbol, symbol)
     return symbol, instrument
 
 

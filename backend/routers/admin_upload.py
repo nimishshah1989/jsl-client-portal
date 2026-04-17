@@ -158,6 +158,32 @@ async def upload_transactions(
     )
 
 
+@router.post("/upload-equity-holdings")
+@limiter.limit("5/minute")
+async def upload_equity_holdings(
+    request: Request,
+    file: UploadFile,
+    admin: dict = Depends(get_admin_user),
+) -> dict[str, Any]:
+    """Upload equity holding report — updates holding prices + runs reconciliation."""
+    return await _save_and_start_background(
+        file, "ingest_equity_holdings_file", "EQUITY_HOLDINGS", admin["client_id"],
+    )
+
+
+@router.post("/upload-etf-holdings")
+@limiter.limit("5/minute")
+async def upload_etf_holdings(
+    request: Request,
+    file: UploadFile,
+    admin: dict = Depends(get_admin_user),
+) -> dict[str, Any]:
+    """Upload ETF/MF holding report — updates ETF position prices in cpp_holdings."""
+    return await _save_and_start_background(
+        file, "ingest_etf_holdings_file", "ETF_HOLDINGS", admin["client_id"],
+    )
+
+
 @router.post("/upload-cashflows")
 @limiter.limit("5/minute")
 async def upload_cashflows(

@@ -110,6 +110,20 @@ export function useUploadTransactions() {
 }
 
 /**
+ * Hook for equity holding file upload — updates prices + runs reconciliation.
+ */
+export function useUploadEquityHoldings() {
+  return useBackgroundUpload('/admin/upload-equity-holdings');
+}
+
+/**
+ * Hook for ETF/MF holding file upload — updates ETF position prices.
+ */
+export function useUploadEtfHoldings() {
+  return useBackgroundUpload('/admin/upload-etf-holdings');
+}
+
+/**
  * Hook for client list.
  */
 export function useClients() {

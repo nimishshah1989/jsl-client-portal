@@ -1,9 +1,11 @@
 """
 Ingestion orchestrator — parses uploaded files, upserts data, triggers risk computation.
 
-Two entry points:
-  ingest_nav_file()         — Parse NAV .xlsx, upsert to DB, fetch benchmark, run risk engine
-  ingest_transaction_file() — Parse transaction .xlsx, upsert to DB, recompute holdings
+Entry points:
+  ingest_nav_file()              — Parse NAV .xlsx, upsert to DB, fetch benchmark, run risk engine
+  ingest_transaction_file()      — Parse transaction .xlsx, upsert to DB, recompute holdings
+  ingest_equity_holdings_file()  — Parse equity holding report, update prices, run reconciliation
+  ingest_etf_holdings_file()     — Parse ETF holding report, update ETF/MF prices in cpp_holdings
 
 DB helper functions live in ingestion_helpers.py.
 """
@@ -357,5 +359,194 @@ async def ingest_cashflow_file(
     logger.info(
         "Cash flow ingestion complete: %d rows processed, %d failed, %d clients",
         upload.rows_processed, upload.rows_failed, upload.clients_affected,
+    )
+    return upload
+
+
+async def _update_holdings_prices_from_report(
+    db: AsyncSession,
+    records: list[dict],
+) -> int:
+    """Update current_price, current_value, unrealized_pnl in cpp_holdings
+    from holding report records. Matches by ISIN first, symbol fallback.
+
+    Returns count of updated rows.
+    """
+    from sqlalchemy import text
+
+    updated = 0
+    for rec in records:
+        ucc = rec["ucc"]
+        isin = (rec.get("isin") or "").strip()
+        symbol = (rec.get("symbol") or "").strip()
+        market_price = rec.get("market_price")
+
+        if not market_price or not ucc:
+            continue
+
+        if isin:
+            r = await db.execute(text("""
+                UPDATE cpp_holdings h
+                SET current_price = :price,
+                    current_value = h.quantity * :price,
+                    unrealized_pnl = (h.quantity * :price) - (h.quantity * h.avg_cost),
+                    updated_at = NOW()
+                FROM cpp_clients c
+                WHERE c.id = h.client_id
+                  AND c.client_code = :ucc
+                  AND h.isin = :isin
+                  AND h.quantity > 0
+            """), {"price": market_price, "ucc": ucc, "isin": isin})
+        else:
+            r = await db.execute(text("""
+                UPDATE cpp_holdings h
+                SET current_price = :price,
+                    current_value = h.quantity * :price,
+                    unrealized_pnl = (h.quantity * :price) - (h.quantity * h.avg_cost),
+                    updated_at = NOW()
+                FROM cpp_clients c
+                WHERE c.id = h.client_id
+                  AND c.client_code = :ucc
+                  AND h.symbol = :sym
+                  AND h.quantity > 0
+            """), {"price": market_price, "ucc": ucc, "sym": symbol})
+
+        updated += r.rowcount
+
+    return updated
+
+
+async def ingest_equity_holdings_file(
+    filepath: str | Path,
+    uploaded_by: int,
+    db: AsyncSession,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> UploadResult:
+    """
+    Equity holding file ingestion pipeline:
+      1. Parse BO holding report (.xlsx)
+      2. Update current_price / current_value in cpp_holdings for all matched positions
+      3. Run 3-way reconciliation and persist results to DB
+      4. Log upload
+
+    The reconciliation result is saved so it's visible on the Reconciliation page
+    without needing a separate upload there.
+    """
+    filepath = Path(filepath)
+    upload = UploadResult(file_type="EQUITY_HOLDINGS", filename=filepath.name)
+
+    logger.info("Starting equity holdings ingestion: %s", filepath.name)
+    try:
+        from backend.services.holding_report_parser import (
+            holding_report_summary,
+            parse_holding_report,
+        )
+        records = parse_holding_report(filepath)
+    except Exception as exc:
+        upload.errors.append({"stage": "parse", "error": str(exc)})
+        logger.error("Equity holdings parse failed: %s", exc)
+        await _log(db, upload, uploaded_by)
+        return upload
+
+    if not records:
+        upload.errors.append({"stage": "parse", "error": "No holdings found in file"})
+        await _log(db, upload, uploaded_by)
+        return upload
+
+    uccs = list({r["ucc"] for r in records})
+    upload.clients_affected = len(uccs)
+    upload.client_codes = uccs
+
+    # Update holding prices
+    try:
+        updated = await _update_holdings_prices_from_report(db, records)
+        await db.commit()
+        upload.rows_processed = updated
+        logger.info("Updated %d holding prices from equity report", updated)
+    except Exception as exc:
+        upload.errors.append({"stage": "price_update", "error": str(exc)})
+        logger.error("Holdings price update failed: %s", exc, exc_info=True)
+        await db.rollback()
+
+    # Run reconciliation and persist so it's visible on the Reconciliation page
+    try:
+        from backend.services.holding_report_parser import holding_report_summary
+        from backend.services.reconciliation_service import reconcile
+        from backend.services.reconciliation_store import save_reconciliation
+
+        summary_info = holding_report_summary(records)
+        reco_result = await reconcile(records, db)
+        market_date = summary_info.get("market_date")
+        await save_reconciliation(db, reco_result, market_date, filepath.name)
+        logger.info(
+            "Reconciliation saved: %d/%d clients matched",
+            reco_result.total_clients_matched, reco_result.total_clients_bo,
+        )
+    except Exception as exc:
+        logger.warning("Reconciliation step failed (non-critical): %s", exc)
+        upload.errors.append({"stage": "reconciliation", "error": str(exc)})
+
+    await _log(db, upload, uploaded_by)
+    logger.info(
+        "Equity holdings ingestion complete: %d prices updated, %d clients",
+        upload.rows_processed, upload.clients_affected,
+    )
+    return upload
+
+
+async def ingest_etf_holdings_file(
+    filepath: str | Path,
+    uploaded_by: int,
+    db: AsyncSession,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> UploadResult:
+    """
+    ETF holding file ingestion pipeline:
+      1. Parse ETF/MF holding report (.xlsx)
+      2. Update current_price / current_value in cpp_holdings for all matched positions
+      3. Log upload
+
+    Uses the same holding_report_parser as equity holdings. The ETF holding file
+    from the backoffice lists Mutual Fund / ETF positions per client. Uploading it
+    populates prices for STRUCTURAL_ETF positions in the reconciliation view.
+    """
+    filepath = Path(filepath)
+    upload = UploadResult(file_type="ETF_HOLDINGS", filename=filepath.name)
+
+    logger.info("Starting ETF holdings ingestion: %s", filepath.name)
+    try:
+        from backend.services.holding_report_parser import parse_holding_report
+        records = parse_holding_report(filepath)
+    except Exception as exc:
+        upload.errors.append({"stage": "parse", "error": str(exc)})
+        logger.error("ETF holdings parse failed: %s", exc)
+        await _log(db, upload, uploaded_by)
+        return upload
+
+    if not records:
+        upload.errors.append({"stage": "parse", "error": "No ETF holdings found in file"})
+        await _log(db, upload, uploaded_by)
+        return upload
+
+    uccs = list({r["ucc"] for r in records})
+    upload.clients_affected = len(uccs)
+    upload.client_codes = uccs
+
+    try:
+        updated = await _update_holdings_prices_from_report(db, records)
+        await db.commit()
+        upload.rows_processed = updated
+        logger.info("Updated %d ETF holding prices", updated)
+    except Exception as exc:
+        upload.errors.append({"stage": "price_update", "error": str(exc)})
+        logger.error("ETF holdings price update failed: %s", exc, exc_info=True)
+        await db.rollback()
+
+    await _log(db, upload, uploaded_by)
+    logger.info(
+        "ETF holdings ingestion complete: %d prices updated, %d clients",
+        upload.rows_processed, upload.clients_affected,
     )
     return upload

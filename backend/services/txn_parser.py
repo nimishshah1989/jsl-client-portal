@@ -74,6 +74,9 @@ _SYMBOL_OVERRIDES: dict[str, str] = {
     "LTI": "LTIM",                    # LTI merged with Mindtree → LTI Mindtree
     "PVR": "PVRINOX",                 # PVR merged with INOX → PVR INOX
     "GMRINFRA": "GMRAIRPORT",         # GMR Infrastructure restructured into GMR Airports
+    "AMARAJABAT": "ARE&M",            # Amara Raja Batteries renamed to Amara Raja Energy & Mobility
+    "MINDAIND": "UNOMINDA",           # Minda Industries renamed to Uno Minda
+    "SUVENPHAR": "SUVENPHARMA",       # Suven Pharmaceuticals — ticker corrected
     # ETFs recorded under AMC product name instead of NSE ticker
     "ICICIPRUDENTIALBSESENSEXET": "SENSEXIETF",
 }

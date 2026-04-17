@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 # These are AMC names mistakenly recorded as instrument names in the backoffice.
 _UNRESOLVABLE_SYMBOLS: frozenset[str] = frozenset({
     "ICICIPRUDENTIALMUTUALFUND",
+    "GDL",          # Gateway Distriparks — delisted from NSE in June 2023 (Blackstone buyout)
+    "TINPLATE",     # The Tinplate Company of India — merged into Tata Steel, delisted
 })
 
 

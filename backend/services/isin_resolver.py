@@ -65,9 +65,11 @@ async def seed_cache_from_db(db: AsyncSession) -> int:
     same ISIN.
 
     Returns the number of ISINs successfully seeded.
-    Call once at startup (or at the start of price-update / recompute flows).
+    No-ops on subsequent calls within the same process (cache is already warm).
     """
     global _SEEDED
+    if _SEEDED:
+        return 0  # already seeded this process — avoid redundant DB query
     result = await db.execute(
         text("""
             SELECT isin, symbol

@@ -18,6 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.benchmark_service import align_benchmark, fetch_and_align
 from backend.services.holdings_service import compute_holdings
+from backend.services.isin_resolver import (
+    isin_to_symbol,
+    resolve_batch,
+    seed_cache_from_db,
+)
 from backend.services.txn_parser import classify_sector
 
 logger = logging.getLogger(__name__)
@@ -405,8 +410,15 @@ async def recompute_holdings(
 ) -> int:
     """Recompute holdings from transactions using FIFO and upsert to cpp_holdings.
 
-    Fetches ISIN from transactions so holdings are keyed by both symbol and ISIN,
-    enabling ISIN-based reconciliation against the backoffice holding report.
+    ISIN-normalisation step (before FIFO runs):
+      For every transaction that has an ISIN, the ISIN is resolved to the
+      canonical NSE ticker via isin_resolver. If the backoffice recorded a
+      different name (e.g. "ATHERENERGYLIMITED" instead of "ATHERENERG", or
+      "MIRAESMALLCAP" instead of the actual NSE ticker), the symbol is
+      replaced with the canonical one before the FIFO calculation runs.
+
+      This eliminates phantom duplicate positions caused by the same
+      instrument appearing under multiple script names.
     """
     result = await db.execute(
         text("""
@@ -425,21 +437,77 @@ async def recompute_holdings(
         "symbol", "isin", "txn_type", "quantity", "price", "amount", "asset_class", "date",
     ])
 
-    # Preserve existing prices and sectors before deleting holdings
-    existing_prices: dict[str, Decimal] = {}
-    existing_sectors: dict[str, str] = {}
+    # ── ISIN normalisation ─────────────────────────────────────────────────────
+    # Seed the resolver cache from the DB (uses transactions for the whole portfolio,
+    # not just this client, so the cache is warm for all clients in a batch run).
+    await seed_cache_from_db(db)
+
+    # Collect unique ISINs present in this portfolio's transactions
+    unique_isins = [
+        i for i in txn_df["isin"].dropna().unique()
+        if i and str(i).strip() and len(str(i).strip()) == 12
+    ]
+
+    if unique_isins:
+        # resolve_batch hits Yahoo Finance only for ISINs not already in cache
+        isin_ticker_map = await resolve_batch(unique_isins)  # {isin: "TICKER.NS"}
+
+        # Build ISIN → plain symbol (strip ".NS" / ".BO")
+        isin_symbol_map: dict[str, str] = {
+            isin: sym
+            for isin, ticker in isin_ticker_map.items()
+            if (sym := isin_to_symbol(ticker))
+        }
+
+        if isin_symbol_map:
+            # Replace symbols where the ISIN resolves to a different canonical name
+            original_symbols = txn_df["symbol"].copy()
+            txn_df["symbol"] = txn_df.apply(
+                lambda row: (
+                    isin_symbol_map.get(str(row["isin"]).strip(), row["symbol"])
+                    if row["isin"] and str(row["isin"]).strip()
+                    else row["symbol"]
+                ),
+                axis=1,
+            )
+            changed = (txn_df["symbol"] != original_symbols).sum()
+            if changed:
+                logger.info(
+                    "ISIN normalisation: %d transaction rows re-keyed for "
+                    "client_id=%d portfolio_id=%d",
+                    changed, client_id, portfolio_id,
+                )
+
+    # ── Preserve existing prices / sectors (keyed by both symbol and ISIN) ───
+    # After normalisation the symbol may differ from what's currently in holdings,
+    # so we also key by ISIN so prices transfer across renames.
+    existing_prices: dict[str, Decimal] = {}    # symbol → price
+    existing_prices_by_isin: dict[str, Decimal] = {}  # isin → price
+    existing_sectors: dict[str, str] = {}       # symbol → sector
+
     preserve_result = await db.execute(
         text("""
-            SELECT symbol, current_price, sector FROM cpp_holdings
+            SELECT symbol, current_price, sector, isin FROM cpp_holdings
             WHERE client_id = :cid AND portfolio_id = :pid
         """),
         {"cid": client_id, "pid": portfolio_id},
     )
     for row in preserve_result.fetchall():
-        if row[1] and Decimal(str(row[1])) > Decimal("0"):
-            existing_prices[row[0]] = Decimal(str(row[1]))
-        if row[2]:
-            existing_sectors[row[0]] = row[2]
+        sym, price_raw, sector, isin = row[0], row[1], row[2], row[3]
+        if price_raw and Decimal(str(price_raw)) > _ZERO:
+            existing_prices[sym] = Decimal(str(price_raw))
+            if isin and isin.strip():
+                existing_prices_by_isin[isin.strip()] = Decimal(str(price_raw))
+        if sector:
+            existing_sectors[sym] = sector
+
+    # Bridge prices across symbol renames: if the normalised symbol has no
+    # existing price but its ISIN does, carry the price forward.
+    for _, row in txn_df.drop_duplicates(subset=["symbol"]).iterrows():
+        sym = row["symbol"]
+        isin = str(row.get("isin", "") or "").strip()
+        if sym not in existing_prices and isin and isin in existing_prices_by_isin:
+            existing_prices[sym] = existing_prices_by_isin[isin]
 
     holdings_df = compute_holdings(txn_df, current_prices=existing_prices)
     if holdings_df.empty:
@@ -453,7 +521,7 @@ async def recompute_holdings(
     count = 0
     for _, h in holdings_df.iterrows():
         symbol = h["symbol"]
-        isin_val = h.get("isin", "") or ""
+        isin_val = str(h.get("isin", "") or "").strip()
         # Sector priority: known ETF/LIQUID mapping → existing DB sector → None
         sector = classify_sector(symbol) or existing_sectors.get(symbol) or None
         await db.execute(
@@ -467,7 +535,7 @@ async def recompute_holdings(
                 "cid": client_id,
                 "pid": portfolio_id,
                 "sym": symbol,
-                "isin": isin_val if isin_val else None,
+                "isin": isin_val or None,
                 "ac": h["asset_class"],
                 "sec": sector,
                 "qty": h["quantity"],

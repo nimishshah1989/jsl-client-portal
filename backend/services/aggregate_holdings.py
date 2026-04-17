@@ -165,7 +165,7 @@ def _r2(val: float) -> str:
 
 def _empty_monthly_stats() -> dict[str, Any]:
     return {
-        "hit_rate": 0.0, "best_month": 0.0, "worst_month": 0.0,
-        "avg_positive_month": 0.0, "avg_negative_month": 0.0,
+        "hit_rate": "0.00", "best_month": "0.00", "worst_month": "0.00",
+        "avg_positive_month": "0.00", "avg_negative_month": "0.00",
         "max_consecutive_loss": 0, "win_count": 0, "loss_count": 0,
     }

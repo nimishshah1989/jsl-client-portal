@@ -371,6 +371,60 @@ async def export_mismatches(
     )
 
 
+@router.post("/rerun", response_model=ReconciliationSummaryResponse)
+async def rerun_reconciliation(
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> ReconciliationSummaryResponse:
+    """Re-run reconciliation against current cpp_holdings without re-uploading a file.
+
+    Reconstructs the BO holdings list from the latest stored reconciliation run,
+    then calls reconcile() fresh so any holdings changes (e.g. after a FIFO fix)
+    are reflected immediately.
+    """
+    stored = await load_latest_reconciliation(db)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="No previous reconciliation to re-run. Upload a holding report first.")
+
+    # Reconstruct BO holdings from stored match data
+    clients_data = stored["summary"].get("clients", [])
+    backoffice_holdings: list[dict] = []
+    for c in clients_data:
+        ucc = c["client_code"]
+        family_group = c.get("family_group", "")
+        for m in c.get("matches", []):
+            # Only include positions that existed in BO (bo_quantity is set)
+            if m.get("bo_quantity") is None:
+                continue
+            backoffice_holdings.append({
+                "ucc": ucc,
+                "symbol": m["symbol"],
+                "isin": m.get("bo_isin") or "",
+                "quantity": m["bo_quantity"],
+                "avg_cost": m.get("bo_avg_cost"),
+                "total_cost": m.get("bo_total_cost"),
+                "market_price": m.get("bo_market_price"),
+                "market_value": m.get("bo_market_value"),
+                "notional_pnl": m.get("bo_pnl"),
+                "holding_market_pct": m.get("bo_weight_pct"),
+                "family_group": family_group,
+            })
+
+    if not backoffice_holdings:
+        raise HTTPException(status_code=400, detail="No BO holdings found in stored run — cannot re-run")
+
+    result = await reconcile(backoffice_holdings, db)
+
+    market_date = stored.get("market_date")
+    filename = f"rerun-of-{stored.get('filename', 'unknown')}"
+    await save_reconciliation(db, result, market_date, filename)
+
+    _cache["result"] = result
+    _cache["market_date"] = market_date
+
+    return _summary_to_response(result, market_date)
+
+
 @router.post("/sync-costs")
 async def sync_costs_from_backoffice(
     admin: dict = Depends(get_admin_user),

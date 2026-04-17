@@ -34,6 +34,13 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Lazy import to avoid circular-import risk at module load time.
+# _SYMBOL_OVERRIDES is only needed inside functions, not at import time.
+def _get_overrides() -> dict[str, str]:
+    from backend.services.txn_parser import _SYMBOL_OVERRIDES  # noqa: PLC0415
+    return _SYMBOL_OVERRIDES
+
+
 logger = logging.getLogger(__name__)
 
 # ISIN → yfinance-compatible ticker (e.g. "ATHERENERG.NS")
@@ -93,9 +100,13 @@ async def seed_cache_from_db(db: AsyncSession) -> int:
         if isin in _CACHE:
             continue  # already resolved (e.g. from a previous price update)
         # Pick the first symbol that matches the NSE ticker pattern
+        overrides = _get_overrides()
         for sym in symbols:
             if _NSE_TICKER_RE.match(sym):
-                _CACHE[isin] = f"{sym}.NS"
+                # Apply symbol overrides: DB may contain old tickers for merged companies
+                # (e.g. "LTI" stored before the LTI→LTIM rename was added to overrides)
+                canonical = overrides.get(sym, sym)
+                _CACHE[isin] = f"{canonical}.NS"
                 seeded += 1
                 break
         # If no symbol matched the pattern, the ISIN will be resolved via
@@ -236,7 +247,17 @@ async def _yahoo_search(
                 ns_ticker = sym
             elif sym.endswith(".BO") and bo_ticker is None:
                 bo_ticker = sym
-        return ns_ticker or bo_ticker
+
+        chosen = ns_ticker or bo_ticker
+        if chosen:
+            # Apply symbol overrides: Yahoo Finance may return stale tickers for
+            # merged/renamed companies (e.g. "LTI.NS" instead of "LTIM.NS").
+            overrides = _get_overrides()
+            plain = chosen.rsplit(".", 1)[0]
+            canonical = overrides.get(plain, plain)
+            exchange = chosen.rsplit(".", 1)[1]
+            chosen = f"{canonical}.{exchange}"
+        return chosen
 
     except Exception as exc:
         logger.debug("Yahoo Finance search failed for %s: %s", isin, exc)

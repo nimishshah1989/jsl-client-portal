@@ -72,13 +72,21 @@ def _client_to_response(c) -> ClientReconciliationResponse:
         extra_in_ours_count=c.extra_in_ours_count,
         match_pct=c.match_pct, has_issues=c.has_issues,
         matches=[_match_to_response(m) for m in c.matches],
-        # 3-way fields
+        # 4-component NAV breakdown
         nav_total=c.nav_total,
+        nav_equity_component=c.nav_equity_component,
+        etf_component_nav=c.etf_component_nav,
+        cash_component_nav=c.cash_component_nav,
+        nav_date=c.nav_date,
+        # Equity 3-way
         bo_holdings_total=c.bo_holdings_total,
         our_holdings_total=c.our_holdings_total,
-        nav_vs_bo_diff=c.nav_vs_bo_diff,
+        nav_equity_vs_bo_diff=c.nav_equity_vs_bo_diff,
         bo_vs_ours_diff=c.bo_vs_ours_diff,
-        nav_date=c.nav_date,
+        nav_vs_bo_diff=c.nav_vs_bo_diff,
+        # ETF reconciliation
+        our_etf_holdings_total=c.our_etf_holdings_total,
+        etf_vs_ours_diff=c.etf_vs_ours_diff,
     )
 
 
@@ -98,11 +106,18 @@ def _summary_to_response(result, market_date=None) -> ReconciliationSummaryRespo
         match_pct=result.match_pct,
         client_match_pct=result.client_match_pct,
         clients_fully_matched=result.clients_fully_matched,
+        # 4-component NAV aggregate breakdown
         total_nav_value=result.total_nav_value,
+        total_nav_equity_value=result.total_nav_equity_value,
+        total_etf_value=result.total_etf_value,
+        total_cash_value=result.total_cash_value,
         total_bo_holdings_value=result.total_bo_holdings_value,
         total_our_holdings_value=result.total_our_holdings_value,
+        total_our_etf_holdings_value=result.total_our_etf_holdings_value,
+        total_nav_equity_vs_bo_diff=result.total_nav_equity_vs_bo_diff,
         total_nav_vs_bo_diff=result.total_nav_vs_bo_diff,
         total_bo_vs_ours_diff=result.total_bo_vs_ours_diff,
+        total_etf_vs_ours_diff=result.total_etf_vs_ours_diff,
         clients_with_nav=result.clients_with_nav,
         market_date=market_date,
         commentary=result.commentary,
@@ -152,12 +167,21 @@ def _db_row_to_client_response(c: dict) -> ClientReconciliationResponse:
         match_pct=c.get("match_pct", 100.0),
         has_issues=c.get("has_issues", False),
         matches=matches,
+        # 4-component NAV breakdown
         nav_total=_dec_field("nav_total"),
+        nav_equity_component=_dec_field("nav_equity_component"),
+        etf_component_nav=_dec_field("etf_component_nav"),
+        cash_component_nav=_dec_field("cash_component_nav"),
+        nav_date=c.get("nav_date"),
+        # Equity 3-way
         bo_holdings_total=Decimal(str(c.get("bo_holdings_total", "0"))),
         our_holdings_total=Decimal(str(c.get("our_holdings_total", "0"))),
-        nav_vs_bo_diff=_dec_field("nav_vs_bo_diff"),
+        nav_equity_vs_bo_diff=_dec_field("nav_equity_vs_bo_diff"),
         bo_vs_ours_diff=Decimal(str(c.get("bo_vs_ours_diff", "0"))),
-        nav_date=c.get("nav_date"),
+        nav_vs_bo_diff=_dec_field("nav_vs_bo_diff"),
+        # ETF reconciliation
+        our_etf_holdings_total=Decimal(str(c.get("our_etf_holdings_total", "0"))),
+        etf_vs_ours_diff=_dec_field("etf_vs_ours_diff"),
     )
 
 
@@ -238,11 +262,18 @@ async def get_summary(
         match_pct=stats.get("match_pct", 0),
         client_match_pct=stats.get("client_match_pct", 0),
         clients_fully_matched=stats.get("clients_fully_matched", 0),
+        # 4-component NAV aggregate breakdown
         total_nav_value=Decimal(str(stats.get("total_nav_value", "0"))),
+        total_nav_equity_value=Decimal(str(stats.get("total_nav_equity_value", "0"))),
+        total_etf_value=Decimal(str(stats.get("total_etf_value", "0"))),
+        total_cash_value=Decimal(str(stats.get("total_cash_value", "0"))),
         total_bo_holdings_value=Decimal(str(stats.get("total_bo_holdings_value", "0"))),
         total_our_holdings_value=Decimal(str(stats.get("total_our_holdings_value", "0"))),
+        total_our_etf_holdings_value=Decimal(str(stats.get("total_our_etf_holdings_value", "0"))),
+        total_nav_equity_vs_bo_diff=Decimal(str(stats.get("total_nav_equity_vs_bo_diff", "0"))),
         total_nav_vs_bo_diff=Decimal(str(stats.get("total_nav_vs_bo_diff", "0"))),
         total_bo_vs_ours_diff=Decimal(str(stats.get("total_bo_vs_ours_diff", "0"))),
+        total_etf_vs_ours_diff=Decimal(str(stats.get("total_etf_vs_ours_diff", "0"))),
         clients_with_nav=stats.get("clients_with_nav", 0),
         market_date=stored.get("market_date"),
         commentary=stored.get("commentary", []),

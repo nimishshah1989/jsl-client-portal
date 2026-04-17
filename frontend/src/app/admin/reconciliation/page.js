@@ -102,12 +102,17 @@ export default function ReconciliationPage() {
 
   // 3-way value helpers
   const navTotal = Number(data?.total_nav_value || 0);
-  const boTotal = Number(data?.total_bo_holdings_value || 0);
-  const ourTotal = Number(data?.total_our_holdings_value || 0);
-  const navVsBo = Number(data?.total_nav_vs_bo_diff || 0);
-  const boVsOurs = Number(data?.total_bo_vs_ours_diff || 0);
-  const navVsBoPct = navTotal > 0 ? (navVsBo / navTotal * 100) : 0;
-  const boVsOursPct = boTotal > 0 ? (boVsOurs / boTotal * 100) : 0;
+  const navEquity = Number(data?.total_nav_equity_value || 0);
+  const navEtf    = Number(data?.total_etf_value || 0);
+  const navCash   = Number(data?.total_cash_value || 0);
+  const boTotal   = Number(data?.total_bo_holdings_value || 0);
+  const ourTotal  = Number(data?.total_our_holdings_value || 0);
+  // Use equity-only diff (nav minus ETF minus cash) vs BO — this is the correct check.
+  // total_nav_vs_bo_diff includes ETF+cash and will always look large; ignore it for display.
+  const navEquityVsBo    = Number(data?.total_nav_equity_vs_bo_diff || 0);
+  const boVsOurs         = Number(data?.total_bo_vs_ours_diff || 0);
+  const navEquityVsBoPct = navEquity > 0 ? (navEquityVsBo / navEquity * 100) : 0;
+  const boVsOursPct      = boTotal > 0 ? (boVsOurs / boTotal * 100) : 0;
 
   return (
     <div className="space-y-6">
@@ -170,28 +175,27 @@ export default function ReconciliationPage() {
         <>
           {/* 3-Way Value Comparison */}
           <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-4">3-Way Portfolio Value Comparison</h3>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-              <SummaryCard label="NAV Total" value={formatINRShort(navTotal)} subtext={`${data.clients_with_nav || 0} clients with NAV data`} />
-              <SummaryCard label="BO Holdings Total" value={formatINRShort(boTotal)} subtext="Sum of holding market values" />
-              <SummaryCard label="Our Holdings Total" value={formatINRShort(ourTotal)} subtext="Our qty × BO market price" />
+            <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1">3-Way Portfolio Value Comparison</h3>
+            <p className="text-xs text-slate-400 mb-4">
+              NAV = Equity + ETF + Cash. BO holding report only covers equity — so compare NAV equity component vs BO, not total NAV.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
+              <SummaryCard label="NAV Total" value={formatINRShort(navTotal)} subtext={`${data.clients_with_nav || 0} clients with NAV`} />
+              <SummaryCard label="NAV Equity" value={formatINRShort(navEquity)} subtext="NAV minus ETF minus cash" />
+              <SummaryCard label="NAV ETF" value={formatINRShort(navEtf)} subtext="ETF/liquid fund component" />
+              <SummaryCard label="NAV Cash" value={formatINRShort(navCash)} subtext="Cash + bank balance" />
+              <SummaryCard label="BO Holdings" value={formatINRShort(boTotal)} subtext="Equity holdings only" />
               <SummaryCard
-                label="NAV vs BO"
-                value={formatINRShort(navVsBo)}
-                subtext={`${navVsBoPct >= 0 ? '+' : ''}${navVsBoPct.toFixed(2)}% — should be ~0`}
-                color={pctColor(navVsBoPct)}
+                label="Equity vs BO ✓"
+                value={formatINRShort(navEquityVsBo)}
+                subtext={`${navEquityVsBoPct >= 0 ? '+' : ''}${navEquityVsBoPct.toFixed(3)}% — should be ~0`}
+                color={pctColor(navEquityVsBoPct, 0.1, 0.5)}
               />
               <SummaryCard
                 label="BO vs Ours"
                 value={formatINRShort(boVsOurs)}
-                subtext={`${boVsOursPct >= 0 ? '+' : ''}${boVsOursPct.toFixed(2)}% — position mismatch`}
+                subtext={`${boVsOursPct >= 0 ? '+' : ''}${boVsOursPct.toFixed(2)}% — FIFO gap`}
                 color={pctColor(boVsOursPct)}
-              />
-              <SummaryCard
-                label="Datapoint Accuracy"
-                value={`${data.match_pct}%`}
-                subtext={`${data.total_holdings_matched} of ${data.total_holdings_bo + (data.total_extra_in_ours || 0)} match`}
-                color={data.match_pct >= 95 ? 'text-emerald-600' : data.match_pct >= 80 ? 'text-amber-600' : 'text-red-600'}
               />
             </div>
           </div>

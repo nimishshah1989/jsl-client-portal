@@ -258,30 +258,79 @@ async def upsert_transactions(
     if not records:
         return 0
 
-    # Deduplicate by unique constraint key before batching.
-    # Prevents PostgreSQL "ON CONFLICT DO UPDATE command cannot affect row a
-    # second time" error if the source file ever contains duplicate rows.
+    # ── Pre-fetch existing ISIN keys from DB ─────────────────────────────────
+    # Two sets built from transactions already in the DB for this client:
+    #
+    #   existing_isin_keys  — (isin, date, type, qty, price, stno) for rows
+    #                         that have a non-empty ISIN.  Used to skip an
+    #                         incoming ISIN record that already exists (even if
+    #                         stored under a different symbol name).
+    #
+    #   isin_covered_coords — (date, type, qty, price, stno) for rows that
+    #                         already have an ISIN.  Used to skip an incoming
+    #                         no-ISIN record whose transaction is already
+    #                         covered by an ISIN-bearing row (prevents old-
+    #                         format re-uploads from creating ghost duplicates).
+    existing_isin_keys: set[tuple] = set()
+    isin_covered_coords: set[tuple] = set()
+    _isin_result = await db.execute(
+        text("""
+            SELECT isin, txn_date, txn_type, quantity, price, settlement_no
+            FROM cpp_transactions
+            WHERE client_id = :cid AND isin IS NOT NULL AND isin <> ''
+        """),
+        {"cid": client_id},
+    )
+    for _row in _isin_result.fetchall():
+        _isin, _date, _ttype, _qty, _price, _stno = _row
+        existing_isin_keys.add((_isin, _date, _ttype, _qty, _price, _stno or ""))
+        isin_covered_coords.add((_date, _ttype, _qty, _price, _stno or ""))
+
+    # ── Deduplicate incoming records ──────────────────────────────────────────
+    # Three-level dedup:
+    #   1. Within-batch symbol dedup (prevents ON CONFLICT DO UPDATE conflicts)
+    #   2. Cross-symbol ISIN dedup: new record has ISIN already in DB
+    #   3. No-ISIN ghost dedup: new record has no ISIN but same coords already
+    #      covered by an ISIN-bearing DB record (old-format re-upload guard)
     seen_keys: set[tuple] = set()
     deduped: list[dict] = []
     for rec in records:
         txn_date = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
-        key = (
-            txn_date,
-            rec["txn_type"],
-            rec["symbol"],
-            rec.get("quantity"),
-            rec.get("price"),
-            rec.get("settlement_no", ""),
-        )
-        if key in seen_keys:
+        isin = (rec.get("isin") or "").strip()
+        coord = (txn_date, rec["txn_type"], rec.get("quantity"), rec.get("price"), rec.get("settlement_no", ""))
+        sym_key = (txn_date, rec["txn_type"], rec["symbol"], rec.get("quantity"), rec.get("price"), rec.get("settlement_no", ""))
+
+        # Level 1: within-batch symbol dedup
+        if sym_key in seen_keys:
             logger.warning(
-                "Dedup: dropping duplicate txn client_id=%d %s %s %s qty=%s @ %s stno=%s",
-                client_id, txn_date, rec["txn_type"], rec["symbol"],
-                rec.get("quantity"), rec.get("price"), rec.get("settlement_no"),
+                "Dedup[sym]: dropping within-batch duplicate client_id=%d %s %s %s qty=%s",
+                client_id, txn_date, rec["txn_type"], rec["symbol"], rec.get("quantity"),
             )
-        else:
-            seen_keys.add(key)
-            deduped.append(rec)
+            continue
+
+        # Level 2: incoming has ISIN → skip if already in DB under any symbol
+        if isin and (isin, *coord) in existing_isin_keys:
+            logger.debug(
+                "Dedup[isin]: skipping already-stored ISIN %s for client_id=%d %s %s",
+                isin, client_id, txn_date, rec["symbol"],
+            )
+            continue
+
+        # Level 3: incoming has no ISIN → skip if coords already covered by ISIN record
+        if not isin and coord in isin_covered_coords:
+            logger.debug(
+                "Dedup[ghost]: skipping no-ISIN duplicate client_id=%d %s %s %s (ISIN version exists)",
+                client_id, txn_date, rec["symbol"], rec["txn_type"],
+            )
+            continue
+
+        seen_keys.add(sym_key)
+        # Track newly accepted ISIN records so later records in this batch can
+        # benefit from the same cross-symbol check without hitting the DB.
+        if isin:
+            existing_isin_keys.add((isin, *coord))
+            isin_covered_coords.add(coord)
+        deduped.append(rec)
     records = deduped
 
     count = 0

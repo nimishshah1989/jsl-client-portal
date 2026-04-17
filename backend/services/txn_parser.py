@@ -68,7 +68,6 @@ _SYMBOL_OVERRIDES: dict[str, str] = {
     "PRIVISPECIALITYCHEMICALSLIM": "PRIVISCL",
     "RAILTELCORPORATIONOFINDIAL": "RAILTEL",
     "SAMVARDHANAMOTHERSONINTERNAT": "MOTHERSON",
-    "ZOMATOLIMITED": "ZOMATO",
     # Delisted / merged → successor tickers
     "ADANITRANS": "ADANIENSOL",       # Adani Transmission merged into Adani Energy Solutions
     "LTI": "LTIM",                    # LTI merged with Mindtree → LTI Mindtree
@@ -76,7 +75,13 @@ _SYMBOL_OVERRIDES: dict[str, str] = {
     "GMRINFRA": "GMRAIRPORT",         # GMR Infrastructure restructured into GMR Airports
     "AMARAJABAT": "ARE&M",            # Amara Raja Batteries renamed to Amara Raja Energy & Mobility
     "MINDAIND": "UNOMINDA",           # Minda Industries renamed to Uno Minda
-    "SUVENPHAR": "SUVENPHARMA",       # Suven Pharmaceuticals — ticker corrected
+    "SUVENPHAR": "SUVEN",             # Suven Pharmaceuticals — NSE ticker is SUVEN
+    # Corporate name changes (effective 2026-04-16)
+    "TATAMOTORS": "TMPV",             # Tata Motors → Tata Motors Passenger Vehicles (TMPV)
+    "ZOMATO": "ETERNAL",              # Zomato → Eternal Limited (ETERNAL)
+    "ZOMATOLIMITED": "ETERNAL",       # Full company-name form → Eternal Limited
+    "HIL": "BIRLANU",                 # HIL Limited → BirlaNu Limited (BIRLANU)
+    "SWANENERGY": "SWANCORP",         # Swan Energy → Swan Corp Limited (SWANCORP)
     # ETFs recorded under AMC product name instead of NSE ticker
     "ICICIPRUDENTIALBSESENSEXET": "SENSEXIETF",
 }

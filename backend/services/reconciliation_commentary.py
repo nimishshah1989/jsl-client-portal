@@ -110,23 +110,7 @@ def generate_commentary(summary) -> list[dict]:
                     "symbol": sym,
                 })
 
-    # --- 3a. Structural ETF positions (expected — tracked in NAV ETF column) ---
-    structural = [m for m in all_matches if m.status == "STRUCTURAL_ETF"]
-    if structural:
-        structural_by_sym = Counter(m.symbol for m in structural)
-        top_etfs = structural_by_sym.most_common(5)
-        etf_names = ", ".join(f"{sym} ({cnt})" for sym, cnt in top_etfs)
-        insights.append({
-            "type": "STRUCTURAL_ETF",
-            "severity": "info",
-            "title": f"{len(structural_by_sym)} ETF/MF position(s) correctly excluded from BO comparison",
-            "detail": (
-                f"ETF and mutual fund holdings are tracked in the NAV file's "
-                f"'Investments in ETF' column — not in the BO equity holding report. "
-                f"These are expected structural positions, not discrepancies: {etf_names}."
-            ),
-            "affected_clients": len(set(m.client_code for m in structural)),
-        })
+    # Structural ETF positions are expected — no insight generated for them.
 
     # --- 3b. Symbols genuinely extra in ours (sold/removed in backoffice) ---
     extra = [m for m in all_matches if m.status == "EXTRA_IN_OURS"]
@@ -166,58 +150,48 @@ def generate_commentary(summary) -> list[dict]:
                     "symbol": sym,
                 })
 
-    # --- 5. Overall health commentary ---
+    # --- 5. Overall health commentary — only shown when there are actual issues ---
     if summary.total_holdings_bo > 0:
         match_rate = summary.total_holdings_matched / summary.total_holdings_bo * 100
-        if match_rate >= 95:
+        if match_rate < 95:
+            severity = "critical" if match_rate < 70 else "medium"
+            detail = (
+                "Most mismatches are likely from corporate actions (stock splits, "
+                "bonuses) that the backoffice applied but our system hasn't adjusted for. "
+                "See specific insights below."
+            ) if match_rate < 70 else "Review the insights below for systematic issues to fix."
             insights.insert(0, {
                 "type": "HEALTH",
-                "severity": "good",
-                "title": f"Excellent match rate: {match_rate:.1f}%",
-                "detail": "Holdings data is well-aligned with the backoffice.",
+                "severity": severity,
+                "title": f"{'Low' if match_rate < 70 else 'Moderate'} match rate: {match_rate:.1f}%",
+                "detail": detail,
                 "affected_clients": 0,
             })
-        elif match_rate >= 70:
-            insights.insert(0, {
-                "type": "HEALTH",
-                "severity": "medium",
-                "title": f"Moderate match rate: {match_rate:.1f}%",
-                "detail": "Review the insights below for systematic issues to fix.",
-                "affected_clients": 0,
-            })
-        else:
-            insights.insert(0, {
-                "type": "HEALTH",
-                "severity": "critical",
-                "title": f"Low match rate: {match_rate:.1f}% — systematic issues detected",
-                "detail": (
-                    "Most mismatches are likely from corporate actions (stock splits, "
-                    "bonuses) that the backoffice applied but our system hasn't adjusted for. "
-                    "See specific insights below."
-                ),
-                "affected_clients": 0,
-            })
+        # If match_rate >= 95 and no other insights: return empty list (no news = no insights)
 
-    # --- 6. NAV vs BO holding total discrepancy ---
+    # --- 6. NAV equity component vs BO holding total discrepancy ---
+    # Uses nav_equity_component (NAV minus ETF minus cash), which is the apples-to-apples
+    # figure comparable to bo_holdings_total. Using full nav_total would always fire
+    # because NAV includes ETF and cash that are not in the BO equity holding report.
     nav_diffs = []
     for c in summary.clients:
-        nav_total = getattr(c, "nav_total", None)
+        equity_component = getattr(c, "nav_equity_component", None)
         bo_total = getattr(c, "bo_holdings_total", _ZERO)
-        if nav_total is not None and nav_total > 0 and bo_total > 0:
-            pct_diff = abs(float(nav_total - bo_total)) / float(nav_total) * 100
+        if equity_component is not None and equity_component > 0 and bo_total > 0:
+            pct_diff = abs(float(equity_component - bo_total)) / float(equity_component) * 100
             if pct_diff > 2:
-                nav_diffs.append((c.client_code, pct_diff, nav_total - bo_total))
+                nav_diffs.append((c.client_code, pct_diff, equity_component - bo_total))
 
     if nav_diffs:
         insights.append({
             "type": "NAV_BO_DISCREPANCY",
             "severity": "high" if len(nav_diffs) > 3 else "medium",
-            "title": f"NAV vs BO holding total differs >2% for {len(nav_diffs)} clients",
+            "title": f"NAV equity component vs BO total differs >2% for {len(nav_diffs)} clients",
             "detail": (
-                "The total NAV value from the NAV file doesn't match the sum of "
-                "holding market values from the Holding Report for these clients. "
-                "This could indicate unlisted holdings, pending corporate actions, "
-                "or timing differences between the two reports."
+                "The equity component of the NAV file (NAV minus ETF minus cash) "
+                "doesn't match the BO equity holding total for these clients. "
+                "This may indicate unlisted holdings, pending corporate actions, "
+                "or a date mismatch between the two files."
             ),
             "affected_clients": len(nav_diffs),
         })

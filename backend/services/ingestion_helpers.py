@@ -258,6 +258,32 @@ async def upsert_transactions(
     if not records:
         return 0
 
+    # Deduplicate by unique constraint key before batching.
+    # Prevents PostgreSQL "ON CONFLICT DO UPDATE command cannot affect row a
+    # second time" error if the source file ever contains duplicate rows.
+    seen_keys: set[tuple] = set()
+    deduped: list[dict] = []
+    for rec in records:
+        txn_date = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
+        key = (
+            txn_date,
+            rec["txn_type"],
+            rec["symbol"],
+            rec.get("quantity"),
+            rec.get("price"),
+            rec.get("settlement_no", ""),
+        )
+        if key in seen_keys:
+            logger.warning(
+                "Dedup: dropping duplicate txn client_id=%d %s %s %s qty=%s @ %s stno=%s",
+                client_id, txn_date, rec["txn_type"], rec["symbol"],
+                rec.get("quantity"), rec.get("price"), rec.get("settlement_no"),
+            )
+        else:
+            seen_keys.add(key)
+            deduped.append(rec)
+    records = deduped
+
     count = 0
     for start in range(0, len(records), _BULK_BATCH_SIZE):
         batch = records[start : start + _BULK_BATCH_SIZE]
@@ -300,7 +326,24 @@ async def upsert_transactions(
             DO UPDATE SET
                 isin = COALESCE(EXCLUDED.isin, cpp_transactions.isin)
         """)
-        await db.execute(sql, params)
+        try:
+            await db.execute(sql, params)
+        except Exception as exc:
+            first = batch[0]
+            last = batch[-1]
+            first_date = first["date"].date() if isinstance(first["date"], datetime) else first["date"]
+            last_date = last["date"].date() if isinstance(last["date"], datetime) else last["date"]
+            logger.error(
+                "Batch execute failed: client_id=%d batch=%d/%d rows=%d dates=[%s..%s] error=%s",
+                client_id,
+                start // _BULK_BATCH_SIZE + 1,
+                (len(records) + _BULK_BATCH_SIZE - 1) // _BULK_BATCH_SIZE,
+                len(batch),
+                first_date,
+                last_date,
+                exc,
+            )
+            raise
         count += len(batch)
 
     return count

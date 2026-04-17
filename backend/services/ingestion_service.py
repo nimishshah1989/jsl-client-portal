@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.database import AsyncSessionLocal
 from backend.services.benchmark_service import fetch_nifty_data
 from backend.services.ingestion_helpers import (
     find_or_create_client,
@@ -60,17 +61,22 @@ def _group_by_client(records: list[dict]) -> dict[str, list[dict]]:
 
 
 async def _log(db: AsyncSession, upload: UploadResult, uploaded_by: int) -> None:
-    """Convenience wrapper around log_upload."""
-    await log_upload(
-        db,
-        file_type=upload.file_type,
-        filename=upload.filename,
-        rows_processed=upload.rows_processed,
-        rows_failed=upload.rows_failed,
-        clients_affected=upload.clients_affected,
-        errors=upload.errors,
-        uploaded_by=uploaded_by,
-    )
+    """Write upload log using a fresh session — guaranteed to succeed even if main session is dirty."""
+    try:
+        async with AsyncSessionLocal() as log_db:
+            await log_upload(
+                log_db,
+                file_type=upload.file_type,
+                filename=upload.filename,
+                rows_processed=upload.rows_processed,
+                rows_failed=upload.rows_failed,
+                clients_affected=upload.clients_affected,
+                errors=upload.errors,
+                uploaded_by=uploaded_by,
+            )
+            await log_db.commit()
+    except Exception as exc:
+        logger.error("Failed to write upload log: %s", exc, exc_info=True)
 
 
 async def ingest_nav_file(
@@ -175,7 +181,6 @@ async def ingest_nav_file(
 
     # Phase B: run risk engine in parallel (5 concurrent, skip up-to-date)
     if processed_clients:
-        from backend.database import AsyncSessionLocal
         logger.info("Phase B — running risk engine for %d clients (parallel)", len(processed_clients))
         batch_result = await run_risk_engine_batch(
             processed_clients, AsyncSessionLocal, concurrency=5, force=True,
@@ -184,9 +189,8 @@ async def ingest_nav_file(
             for err_msg in batch_result["errors"]:
                 upload.errors.append({"stage": "risk_engine", "error": err_msg})
 
-    # 5. Log upload
+    # 5. Log upload — uses its own session so it always succeeds
     await _log(db, upload, uploaded_by)
-    await db.commit()
 
     logger.info(
         "NAV ingestion complete: %d rows processed, %d failed, %d clients",
@@ -275,9 +279,8 @@ async def ingest_transaction_file(
         logger.warning("Price update failed (non-critical): %s", exc)
         await db.rollback()
 
-    # 6. Log upload
+    # 6. Log upload — uses its own session so it always succeeds
     await _log(db, upload, uploaded_by)
-    await db.commit()
 
     logger.info(
         "Transaction ingestion complete: %d rows, %d failed, %d clients",
@@ -349,8 +352,7 @@ async def ingest_cashflow_file(
             logger.error("Failed processing cash flows for %s: %s", client_code, exc, exc_info=True)
             await db.rollback()
 
-    await _log(db, upload, uploaded_by)
-    await db.commit()
+    await _log(db, upload, uploaded_by)  # uses its own session
 
     logger.info(
         "Cash flow ingestion complete: %d rows processed, %d failed, %d clients",

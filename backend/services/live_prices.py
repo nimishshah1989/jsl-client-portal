@@ -18,15 +18,31 @@ from tenacity import (
 )
 
 from backend.services.stock_reference import SECTOR_MAP
+from backend.services.txn_parser import _SYMBOL_OVERRIDES
 
 logger = logging.getLogger(__name__)
 
 _TWO = Decimal("0.01")
 
+# Symbols that have no exchange-listed price (MF units, NAV-only instruments).
+# These are expected to be unpriced and should not be retried.
+_MF_SYMBOLS: frozenset[str] = frozenset({
+    "MIRAESMALLCAP",
+    "ICICIPRUDENTIALMUTUALFUND",
+})
 
-def _nse_ticker(symbol: str) -> str:
-    """Convert NSE symbol to yfinance ticker (append .NS)."""
-    return f"{symbol}.NS"
+
+def _resolve_ticker(symbol: str) -> str | None:
+    """Resolve a DB symbol to its yfinance-compatible NSE ticker.
+
+    Returns None for MF units that have no exchange listing.
+    Applies _SYMBOL_OVERRIDES (same map used in txn_parser) so that
+    even old DB records with full company names get the right ticker.
+    """
+    if symbol in _MF_SYMBOLS:
+        return None
+    canonical = _SYMBOL_OVERRIDES.get(symbol, symbol)
+    return f"{canonical}.NS"
 
 
 @retry(
@@ -50,48 +66,112 @@ def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
     """
     Fetch latest close prices for a list of NSE symbols.
 
-    Returns dict of {symbol: price_decimal}. Symbols that fail are omitted.
-    On complete failure after retries, returns empty dict (does not crash).
+    Resolves each symbol to its canonical NSE ticker via _resolve_ticker
+    (handles company-name aliases, mergers, ETF overrides). MF units that
+    have no exchange listing are skipped silently.
+
+    Batch-downloads via yfinance. If the batch fails (e.g. due to a symbol
+    with special characters breaking the URL), falls back to fetching each
+    symbol individually so the rest of the batch is not lost.
+
+    Returns dict of {original_symbol: price_decimal}. Unresolvable or truly
+    unlisted symbols are omitted.
     """
     if not symbols:
         return {}
 
-    tickers = {sym: _nse_ticker(sym) for sym in symbols}
-    prices: dict[str, Decimal] = {}
+    # Resolve each symbol to its yfinance ticker, skipping MF units
+    tickers: dict[str, str] = {}  # original_symbol → yf_ticker
+    for sym in symbols:
+        yf_ticker = _resolve_ticker(sym)
+        if yf_ticker is not None:
+            tickers[sym] = yf_ticker
 
-    # Batch download — yfinance supports multiple tickers at once
+    prices: dict[str, Decimal] = {}
+    if not tickers:
+        return prices
+
+    def _extract_price(data, yf_ticker: str, n_symbols: int) -> float | None:
+        try:
+            close_col = data["Close"] if n_symbols == 1 else data["Close"][yf_ticker]
+            val = close_col.dropna().iloc[-1]
+            return float(val) if val > 0 else None
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    # Attempt batch download first
     ticker_str = " ".join(tickers.values())
+    batch_ok = False
     try:
         data = _download_prices(ticker_str)
-        if data.empty:
-            return prices
-
-        # yf.download returns MultiIndex columns when multiple tickers
-        for symbol, yf_ticker in tickers.items():
-            try:
-                if len(symbols) == 1:
-                    close_col = data["Close"]
-                else:
-                    close_col = data["Close"][yf_ticker]
-
-                last_price = close_col.dropna().iloc[-1]
-                if last_price > 0:
-                    prices[symbol] = Decimal(str(round(float(last_price), 4)))
-            except (KeyError, IndexError):
-                continue
+        if not data.empty:
+            batch_ok = True
+            for sym, yf_ticker in tickers.items():
+                price = _extract_price(data, yf_ticker, len(tickers))
+                if price is not None:
+                    prices[sym] = Decimal(str(round(price, 4)))
     except Exception as exc:
-        logger.warning(
-            "yfinance batch download failed after retries for %d symbols: %s",
-            len(symbols),
-            exc,
-        )
+        logger.warning("yfinance batch download failed (%d symbols): %s", len(tickers), exc)
 
+    # Fall back: fetch individually any that the batch missed
+    missed = {sym: ytk for sym, ytk in tickers.items() if sym not in prices}
+    if missed and (not batch_ok or missed):
+        for sym, yf_ticker in missed.items():
+            try:
+                data = _download_prices(yf_ticker)
+                if not data.empty:
+                    price = _extract_price(data, yf_ticker, 1)
+                    if price is not None:
+                        prices[sym] = Decimal(str(round(price, 4)))
+            except Exception:
+                continue  # truly not found — stays unpriced
+
+    return prices
+
+
+def fetch_prices_by_isin(isin_map: dict[str, str]) -> dict[str, Decimal]:
+    """
+    Fetch prices using ISINs as fallback for symbols that couldn't be priced by ticker.
+
+    yfinance accepts ISINs directly as Ticker identifiers for most NSE-listed securities.
+    This is robust against symbol name changes, mergers, and ETF renames.
+
+    Args:
+        isin_map: {symbol: isin} — only symbols still needing prices
+
+    Returns:
+        {symbol: price_decimal} for those successfully priced via ISIN
+    """
+    prices: dict[str, Decimal] = {}
+    for sym, isin in isin_map.items():
+        if not isin or len(isin) < 10:  # ISINs are 12 chars; skip empty/garbage
+            continue
+        try:
+            ticker_obj = yf.Ticker(isin)
+            hist = ticker_obj.history(period="5d")
+            if hist.empty:
+                logger.debug("ISIN fallback: empty history for %s (%s)", sym, isin)
+                continue
+            close_vals = hist["Close"].dropna()
+            if len(close_vals) == 0:
+                continue
+            val = float(close_vals.iloc[-1])
+            if val > 0:
+                prices[sym] = Decimal(str(round(val, 4)))
+                logger.info("ISIN fallback priced %s via %s: %.4f", sym, isin, val)
+        except Exception as exc:
+            logger.debug("ISIN fallback failed for %s (%s): %s", sym, isin, exc)
     return prices
 
 
 async def update_holdings_prices(db: AsyncSession) -> dict[str, int]:
     """
     Fetch live prices for all held symbols and update cpp_holdings.
+
+    Price resolution order:
+      1. Ticker-based batch download (fast, covers 95%+ of symbols)
+      2. Ticker-based individual retry (catches symbols that broke the batch)
+      3. ISIN-based lookup (fallback for renamed/merged/special-char symbols)
 
     Also fills in sector data from the stock reference mapping.
 
@@ -114,6 +194,38 @@ async def update_holdings_prices(db: AsyncSession) -> dict[str, int]:
         batch = symbols[i : i + batch_size]
         batch_prices = fetch_live_prices(batch)
         all_prices.update(batch_prices)
+
+    # ISIN-based fallback for symbols still unpriced after ticker lookup
+    still_unpriced = (set(symbols) - set(all_prices.keys())) - _MF_SYMBOLS
+    if still_unpriced:
+        logger.info(
+            "%d symbols still unpriced after ticker lookup — trying ISIN fallback",
+            len(still_unpriced),
+        )
+        isin_result = await db.execute(
+            text("""
+                SELECT DISTINCT ON (symbol) symbol, isin
+                FROM cpp_holdings
+                WHERE symbol = ANY(:syms)
+                  AND isin IS NOT NULL AND isin != ''
+                ORDER BY symbol, updated_at DESC NULLS LAST
+            """),
+            {"syms": list(still_unpriced)},
+        )
+        isin_map = {
+            row[0]: row[1]
+            for row in isin_result.fetchall()
+            if row[1] and row[1].strip()
+        }
+        if isin_map:
+            isin_prices = fetch_prices_by_isin(isin_map)
+            all_prices.update(isin_prices)
+            if isin_prices:
+                logger.info(
+                    "ISIN fallback resolved %d additional symbols: %s",
+                    len(isin_prices),
+                    sorted(isin_prices.keys()),
+                )
 
     # Update prices in DB
     price_count = 0

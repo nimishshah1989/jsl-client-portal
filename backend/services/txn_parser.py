@@ -48,10 +48,34 @@ _KNOWN_INSTRUMENT_TYPES = {"EQ", "BE", "BZ", "ETF", "MF", "NCD", "GS", "SG"}
 # Key: concatenated uppercase script tokens (after stripping instrument suffix).
 # Value: correct NSE symbol.
 _SYMBOL_OVERRIDES: dict[str, str] = {
+    # Previously known aliases
     "ATHERENERGYLIMITED": "ATHERENERG",
     "INDUSTOWERSLIMITED": "INDUSTOWER",
-    "PAYTM": "PAYTM",  # single-word, but alias kept for clarity
+    "PAYTM": "PAYTM",
     "GROWWAMC-GROWWDEFNC": "GROWWDEFNC",
+    # Full company names → NSE tickers (backoffice uses company names, not tickers)
+    "ADANITOTALGASLIMITED": "ATGL",
+    "AMARARAJAENERGY&MOBILITYL": "ARE&M",
+    "ANGELONELIMITED": "ANGELONE",
+    "BELRISEINDUSTRIESLIMITED": "BELRISE",
+    "COMPUTERAGEMANAGEMENTSERVICESLI": "CAMS",
+    "DATAPATTERNS(INDIA)LIMITED": "DATAPATTNS",
+    "GMRAIRPORTSLIMITED": "GMRAIRPORT",
+    "JUBILANTPHARMOVALIMITED": "JUBLPHARMA",
+    "JUPITERWAGONSLIMITED": "JWL",
+    "MANKINDPHARMALIMITED": "MANKIND",
+    "POONAWALLAFINCORPLIMITED": "POONAWALLA",
+    "PRIVISPECIALITYCHEMICALSLIM": "PRIVISCL",
+    "RAILTELCORPORATIONOFINDIAL": "RAILTEL",
+    "SAMVARDHANAMOTHERSONINTERNAT": "MOTHERSON",
+    "ZOMATOLIMITED": "ZOMATO",
+    # Delisted / merged → successor tickers
+    "ADANITRANS": "ADANIENSOL",       # Adani Transmission merged into Adani Energy Solutions
+    "LTI": "LTIM",                    # LTI merged with Mindtree → LTI Mindtree
+    "PVR": "PVRINOX",                 # PVR merged with INOX → PVR INOX
+    "GMRINFRA": "GMRAIRPORT",         # GMR Infrastructure restructured into GMR Airports
+    # ETFs recorded under AMC product name instead of NSE ticker
+    "ICICIPRUDENTIALBSESENSEXET": "SENSEXIETF",
 }
 
 # Sector mapping for ETF/commodity instruments

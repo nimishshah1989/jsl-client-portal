@@ -424,21 +424,26 @@ async def recompute_holdings(
     txn_df = pd.DataFrame(rows, columns=[
         "symbol", "isin", "txn_type", "quantity", "price", "amount", "asset_class", "date",
     ])
-    holdings_df = compute_holdings(txn_df)
-    if holdings_df.empty:
-        return 0
 
-    # Preserve existing sector mappings before deleting holdings
+    # Preserve existing prices and sectors before deleting holdings
+    existing_prices: dict[str, Decimal] = {}
     existing_sectors: dict[str, str] = {}
-    sector_result = await db.execute(
+    preserve_result = await db.execute(
         text("""
-            SELECT symbol, sector FROM cpp_holdings
-            WHERE client_id = :cid AND portfolio_id = :pid AND sector IS NOT NULL AND sector != ''
+            SELECT symbol, current_price, sector FROM cpp_holdings
+            WHERE client_id = :cid AND portfolio_id = :pid
         """),
         {"cid": client_id, "pid": portfolio_id},
     )
-    for row in sector_result.fetchall():
-        existing_sectors[row[0]] = row[1]
+    for row in preserve_result.fetchall():
+        if row[1] and Decimal(str(row[1])) > Decimal("0"):
+            existing_prices[row[0]] = Decimal(str(row[1]))
+        if row[2]:
+            existing_sectors[row[0]] = row[2]
+
+    holdings_df = compute_holdings(txn_df, current_prices=existing_prices)
+    if holdings_df.empty:
+        return 0
 
     await db.execute(
         text("DELETE FROM cpp_holdings WHERE client_id = :cid AND portfolio_id = :pid"),

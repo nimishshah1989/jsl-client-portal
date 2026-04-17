@@ -127,6 +127,103 @@ async def recompute_holdings_all(
     }
 
 
+@router.post("/deduplicate-symbols")
+async def deduplicate_symbols(
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Remove duplicate transactions caused by alias/canonical symbol pairs.
+
+    The backoffice sometimes records the same trade with both the NSE ticker
+    (e.g. ATHERENERG) and the full company name (ATHERENERGYLIMITED) on the
+    same row.  Both get ingested, creating phantom double positions.
+
+    This endpoint deletes the alias version of any transaction where an exact
+    match (same client, portfolio, date, txn_type, quantity, price) already
+    exists under the canonical symbol.  Then recomputes holdings for all
+    affected clients.
+
+    Alias → Canonical pairs are taken from the parser's _SYMBOL_OVERRIDES map.
+    """
+    from backend.services.txn_parser import _SYMBOL_OVERRIDES
+    from backend.services.ingestion_helpers import recompute_holdings
+
+    deleted_total = 0
+    affected_clients: set[tuple[int, int]] = set()
+
+    for alias, canonical in _SYMBOL_OVERRIDES.items():
+        if alias == canonical:
+            continue
+        # Find alias transactions that have an exact canonical counterpart
+        result = await db.execute(text("""
+            SELECT a.id, a.client_id, a.portfolio_id
+            FROM cpp_transactions a
+            WHERE a.symbol = :alias
+              AND EXISTS (
+                SELECT 1 FROM cpp_transactions b
+                WHERE b.client_id    = a.client_id
+                  AND b.portfolio_id = a.portfolio_id
+                  AND b.txn_date     = a.txn_date
+                  AND b.txn_type     = a.txn_type
+                  AND b.quantity     = a.quantity
+                  AND b.price        = a.price
+                  AND b.symbol       = :canonical
+              )
+        """), {"alias": alias, "canonical": canonical})
+        rows = result.fetchall()
+        if not rows:
+            continue
+
+        ids_to_delete = [r[0] for r in rows]
+        for r in rows:
+            affected_clients.add((r[1], r[2]))
+
+        await db.execute(
+            text("DELETE FROM cpp_transactions WHERE id = ANY(:ids)"),
+            {"ids": ids_to_delete},
+        )
+        deleted_total += len(ids_to_delete)
+        logger.info(
+            "Deleted %d duplicate '%s' transactions (canonical: %s)",
+            len(ids_to_delete), alias, canonical,
+        )
+
+    await db.commit()
+
+    # Recompute holdings for all affected clients
+    pairs_result = await db.execute(text("""
+        SELECT c.id, p.id, c.client_code
+        FROM cpp_clients c
+        JOIN cpp_portfolios p ON p.client_id = c.id
+        WHERE c.is_active = true
+        ORDER BY c.client_code
+    """))
+    all_pairs = {(r[0], r[1]): r[2] for r in pairs_result.fetchall()}
+
+    recomputed, failed, errors = 0, 0, []
+    for (cid, pid) in affected_clients:
+        code = all_pairs.get((cid, pid), f"client_{cid}")
+        try:
+            await recompute_holdings(db, cid, pid)
+            await db.commit()
+            recomputed += 1
+        except Exception as exc:
+            await db.rollback()
+            failed += 1
+            errors.append({"client": code, "error": str(exc)})
+
+    return {
+        "message": (
+            f"Deleted {deleted_total} duplicate alias transactions, "
+            f"recomputed {recomputed} clients ({failed} failed)"
+        ),
+        "deleted_transactions": deleted_total,
+        "clients_recomputed": recomputed,
+        "clients_failed": failed,
+        "errors": errors,
+    }
+
+
 @router.post("/update-prices")
 async def update_prices(
     admin: dict = Depends(get_admin_user),

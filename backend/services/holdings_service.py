@@ -173,11 +173,13 @@ def compute_holdings(
         total_qty_dec = _dec(total_qty)
         avg_cost = _fifo_avg_cost(lot_queue)
         cur_price = _dec(current_prices.get(symbol, _ZERO))
-        cur_value = (total_qty_dec * cur_price).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+        has_price = cur_price > _ZERO
+        cur_value = (total_qty_dec * cur_price).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP) if has_price else _ZERO
         cost_basis = (total_qty_dec * avg_cost).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
-        unrealized = cur_value - cost_basis
+        # Only compute P&L when we have a live price — without one, showing -cost_basis is misleading
+        unrealized = (cur_value - cost_basis) if has_price else _ZERO
         pnl_pct = _ZERO
-        if cost_basis > _ZERO:
+        if has_price and cost_basis > _ZERO:
             pnl_pct = ((cur_value / cost_basis - 1) * 100).quantize(
                 _TWO_PLACES, rounding=ROUND_HALF_UP
             )
@@ -188,7 +190,7 @@ def compute_holdings(
             "asset_class": asset_classes.get(symbol, "EQUITY"),
             "quantity": total_qty_dec,
             "avg_cost": avg_cost,
-            "current_price": cur_price,
+            "current_price": cur_price if has_price else _ZERO,
             "current_value": cur_value,
             "unrealized_pnl": unrealized,
             "unrealized_pnl_pct": pnl_pct,

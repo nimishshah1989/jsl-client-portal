@@ -129,38 +129,39 @@ def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
     return prices
 
 
-def fetch_prices_by_isin(isin_map: dict[str, str]) -> dict[str, Decimal]:
+def fetch_prices_by_isin(alt_ticker_map: dict[str, str]) -> dict[str, Decimal]:
     """
-    Fetch prices using ISINs as fallback for symbols that couldn't be priced by ticker.
+    Fetch prices using an alternative ticker map for symbols that failed ticker lookup.
 
-    yfinance accepts ISINs directly as Ticker identifiers for most NSE-listed securities.
-    This is robust against symbol name changes, mergers, and ETF renames.
+    Called with {db_symbol: alternate_nse_ticker} pairs resolved via ISIN cross-reference
+    in cpp_transactions. Useful when the same instrument is stored under two different
+    symbol names (e.g., company-name variant vs. canonical ticker) — the canonical
+    ticker fetches a price that we can attribute back to the unpriced DB symbol.
 
-    Args:
-        isin_map: {symbol: isin} — only symbols still needing prices
+    NOTE: yfinance does NOT support ISIN as a direct ticker — this function expects
+    resolved NSE ticker strings (e.g. "ARE&M.NS"), not ISINs themselves.
 
     Returns:
-        {symbol: price_decimal} for those successfully priced via ISIN
+        {db_symbol: price_decimal} for those successfully priced
     """
     prices: dict[str, Decimal] = {}
-    for sym, isin in isin_map.items():
-        if not isin or len(isin) < 10:  # ISINs are 12 chars; skip empty/garbage
+    for sym, alt_ticker in alt_ticker_map.items():
+        if not alt_ticker:
             continue
         try:
-            ticker_obj = yf.Ticker(isin)
-            hist = ticker_obj.history(period="5d")
-            if hist.empty:
-                logger.debug("ISIN fallback: empty history for %s (%s)", sym, isin)
-                continue
-            close_vals = hist["Close"].dropna()
-            if len(close_vals) == 0:
-                continue
-            val = float(close_vals.iloc[-1])
-            if val > 0:
-                prices[sym] = Decimal(str(round(val, 4)))
-                logger.info("ISIN fallback priced %s via %s: %.4f", sym, isin, val)
+            data = yf.download(alt_ticker, period="5d", progress=False, auto_adjust=True)
+            if not data.empty:
+                close_vals = data["Close"].dropna()
+                if len(close_vals) > 0:
+                    val = float(close_vals.iloc[-1])
+                    if val > 0:
+                        prices[sym] = Decimal(str(round(val, 4)))
+                        logger.info(
+                            "Alt-ticker fallback priced %s via %s: %.4f",
+                            sym, alt_ticker, val,
+                        )
         except Exception as exc:
-            logger.debug("ISIN fallback failed for %s (%s): %s", sym, isin, exc)
+            logger.debug("Alt-ticker fallback failed for %s (%s): %s", sym, alt_ticker, exc)
     return prices
 
 
@@ -195,37 +196,72 @@ async def update_holdings_prices(db: AsyncSession) -> dict[str, int]:
         batch_prices = fetch_live_prices(batch)
         all_prices.update(batch_prices)
 
-    # ISIN-based fallback for symbols still unpriced after ticker lookup
+    # ISIN cross-reference fallback: for symbols still unpriced, look up their ISIN
+    # in cpp_transactions, then find ANY other priced canonical symbol sharing that ISIN.
+    # This handles cases where cpp_holdings has an old company-name variant and a
+    # canonical-ticker variant of the same stock — we price the company-name entry
+    # using the ticker entry's price.
     still_unpriced = (set(symbols) - set(all_prices.keys())) - _MF_SYMBOLS
     if still_unpriced:
         logger.info(
-            "%d symbols still unpriced after ticker lookup — trying ISIN fallback",
+            "%d symbols still unpriced after ticker lookup — trying ISIN cross-reference",
             len(still_unpriced),
         )
+        # Step 1: get ISINs for unpriced holding symbols
         isin_result = await db.execute(
             text("""
-                SELECT DISTINCT ON (symbol) symbol, isin
-                FROM cpp_holdings
-                WHERE symbol = ANY(:syms)
-                  AND isin IS NOT NULL AND isin != ''
-                ORDER BY symbol, updated_at DESC NULLS LAST
+                SELECT DISTINCT ON (h.symbol) h.symbol, h.isin
+                FROM cpp_holdings h
+                WHERE h.symbol = ANY(:syms)
+                  AND h.isin IS NOT NULL AND h.isin != ''
+                ORDER BY h.symbol
             """),
             {"syms": list(still_unpriced)},
         )
-        isin_map = {
+        unpriced_isins: dict[str, str] = {
             row[0]: row[1]
             for row in isin_result.fetchall()
             if row[1] and row[1].strip()
         }
-        if isin_map:
-            isin_prices = fetch_prices_by_isin(isin_map)
-            all_prices.update(isin_prices)
-            if isin_prices:
-                logger.info(
-                    "ISIN fallback resolved %d additional symbols: %s",
-                    len(isin_prices),
-                    sorted(isin_prices.keys()),
+
+        if unpriced_isins:
+            # Step 2: for each ISIN, find other canonical symbols in cpp_transactions
+            # that share the same ISIN — those are our alternate tickers to try
+            alt_ticker_map: dict[str, str] = {}
+            for db_sym, isin in unpriced_isins.items():
+                alt_result = await db.execute(
+                    text("""
+                        SELECT DISTINCT symbol FROM cpp_transactions
+                        WHERE isin = :isin
+                          AND symbol != :sym
+                          AND symbol NOT IN (SELECT unnest(:mf_syms::text[]))
+                        LIMIT 1
+                    """),
+                    {
+                        "isin": isin,
+                        "sym": db_sym,
+                        "mf_syms": list(_MF_SYMBOLS),
+                    },
                 )
+                alt_row = alt_result.fetchone()
+                if alt_row:
+                    alt_ticker = _resolve_ticker(alt_row[0])
+                    if alt_ticker:
+                        alt_ticker_map[db_sym] = alt_ticker
+                        logger.debug(
+                            "ISIN cross-ref: %s (%s) → try alt ticker %s",
+                            db_sym, isin, alt_ticker,
+                        )
+
+            if alt_ticker_map:
+                isin_prices = fetch_prices_by_isin(alt_ticker_map)
+                all_prices.update(isin_prices)
+                if isin_prices:
+                    logger.info(
+                        "ISIN cross-reference resolved %d additional symbols: %s",
+                        len(isin_prices),
+                        sorted(isin_prices.keys()),
+                    )
 
     # Update prices in DB
     price_count = 0

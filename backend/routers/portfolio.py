@@ -189,7 +189,7 @@ async def get_allocation(
 
 @router.get("/holdings", response_model=list[HoldingResponse])
 async def get_holdings(
-    sort: str = Query("weight", regex="^(weight|pnl|value|name)$"),
+    sort: str = Query("weight", regex="^(weight|pnl|value|name|price|quantity|avg_cost|pnl_pct)$"),
     order: str = Query("desc", regex="^(asc|desc)$"),
     asset_class: str | None = Query(None),
     user: dict = Depends(get_current_user),
@@ -208,8 +208,12 @@ async def get_holdings(
     if asset_class:
         stmt = stmt.where(Holding.asset_class == asset_class.upper())
 
-    sort_col = {"weight": Holding.weight_pct, "pnl": Holding.unrealized_pnl,
-                "value": Holding.current_value, "name": Holding.symbol}.get(sort, Holding.weight_pct)
+    sort_col = {
+        "weight": Holding.weight_pct, "pnl": Holding.unrealized_pnl,
+        "value": Holding.current_value, "name": Holding.symbol,
+        "price": Holding.current_price, "quantity": Holding.quantity,
+        "avg_cost": Holding.avg_cost, "pnl_pct": Holding.unrealized_pnl,
+    }.get(sort, Holding.weight_pct)
     stmt = stmt.order_by(desc(sort_col) if order == "desc" else sort_col)
     holdings = list((await db.execute(stmt)).scalars().all())
 

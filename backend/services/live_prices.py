@@ -2,11 +2,23 @@
 Fetch live NSE stock prices via yfinance and update holdings.
 
 Also enriches holdings with sector data from the stock reference mapping.
+
+Price resolution chain (in order):
+  1. yfinance batch download  — fast, covers most NSE equities and ETFs
+  2. yfinance individual retry — catches symbols that break the batch URL
+  3. ISIN → NSE ticker (Yahoo Finance search) → yfinance
+     For symbols where the backoffice script name doesn't match the NSE
+     ticker (e.g. "Mirae Smallcap ETF" → stored as MIRAESMALLCAP, but
+     the actual ticker is something like MASMC250.NS). We use the ISIN
+     stored in cpp_holdings to look up the real NSE ticker via Yahoo
+     Finance's search endpoint, then fetch the price via yfinance.
+     Results are cached in-process so the search only runs once per symbol.
 """
 
 import logging
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
+import httpx
 import yfinance as yf
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,25 +36,83 @@ logger = logging.getLogger(__name__)
 
 _TWO = Decimal("0.01")
 
-# Symbols that have no exchange-listed price (MF units, NAV-only instruments).
-# These are expected to be unpriced and should not be retried.
-_MF_SYMBOLS: frozenset[str] = frozenset({
-    "MIRAESMALLCAP",
-    "ICICIPRUDENTIALMUTUALFUND",
+# ISIN → resolved NSE ticker cache (populated lazily, lives for process lifetime)
+_ISIN_TICKER_CACHE: dict[str, str | None] = {}
+
+# Symbols confirmed to have no exchange listing (AMC name used as symbol in backoffice,
+# not resolvable to any specific instrument without manual intervention).
+_UNRESOLVABLE_SYMBOLS: frozenset[str] = frozenset({
+    "ICICIPRUDENTIALMUTUALFUND",   # AMC name, not a specific fund/ETF
 })
 
 
 def _resolve_ticker(symbol: str) -> str | None:
     """Resolve a DB symbol to its yfinance-compatible NSE ticker.
 
-    Returns None for MF units that have no exchange listing.
-    Applies _SYMBOL_OVERRIDES (same map used in txn_parser) so that
-    even old DB records with full company names get the right ticker.
+    Returns None for confirmed-unresolvable symbols.
+    Applies _SYMBOL_OVERRIDES (same map used in txn_parser) so that even
+    old DB records with full company names get the right ticker.
     """
-    if symbol in _MF_SYMBOLS:
+    if symbol in _UNRESOLVABLE_SYMBOLS:
         return None
     canonical = _SYMBOL_OVERRIDES.get(symbol, symbol)
     return f"{canonical}.NS"
+
+
+def _isin_to_nse_ticker(isin: str) -> str | None:
+    """
+    Resolve an ISIN to an NSE-listed yfinance ticker via Yahoo Finance search API.
+
+    Yahoo Finance's /v1/finance/search endpoint accepts ISINs and returns matching
+    instruments with their exchange-qualified ticker (e.g. "MASMC250.NS"). This is
+    how we find the real NSE ticker when the backoffice records a script name that
+    doesn't match the NSE symbol (e.g. "Mirae Smallcap ETF" → "MASMC250").
+
+    Results are cached in _ISIN_TICKER_CACHE for the process lifetime so each ISIN
+    is searched at most once.
+
+    Returns e.g. "MASMC250.NS" or None if not found on NSE/BSE.
+    """
+    if isin in _ISIN_TICKER_CACHE:
+        return _ISIN_TICKER_CACHE[isin]
+
+    ticker: str | None = None
+    try:
+        resp = httpx.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={
+                "q": isin,
+                "quotesCount": 5,
+                "newsCount": 0,
+                "enableFuzzyQuery": "false",
+            },
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; portfolio-tracker/1.0)"},
+            follow_redirects=True,
+        )
+        if resp.status_code == 200:
+            quotes = resp.json().get("quotes", [])
+            # Prefer NSE (.NS) over BSE (.BO) — NSE has higher liquidity
+            for q in quotes:
+                sym = q.get("symbol", "")
+                if sym.endswith(".NS"):
+                    ticker = sym
+                    break
+            if ticker is None:
+                for q in quotes:
+                    sym = q.get("symbol", "")
+                    if sym.endswith(".BO"):
+                        ticker = sym
+                        break
+    except Exception as exc:
+        logger.debug("ISIN search failed for %s: %s", isin, exc)
+
+    _ISIN_TICKER_CACHE[isin] = ticker
+    if ticker:
+        logger.info("ISIN→ticker resolved: %s → %s", isin, ticker)
+    else:
+        logger.debug("ISIN→ticker: no NSE/BSE result for %s", isin)
+    return ticker
 
 
 @retry(
@@ -53,7 +123,7 @@ def _resolve_ticker(symbol: str) -> str | None:
 )
 def _download_prices(ticker_str: str) -> "pd.DataFrame":
     """Internal helper: yfinance download with retry (3 attempts, exponential backoff)."""
-    import pandas as pd  # noqa: F811 — local import to avoid circular at module level
+    import pandas as pd  # noqa: F811
 
     data = yf.download(
         ticker_str, period="5d", progress=False, auto_adjust=True,
@@ -62,26 +132,30 @@ def _download_prices(ticker_str: str) -> "pd.DataFrame":
     return data
 
 
+def _extract_close(data, yf_ticker: str, n_symbols: int) -> float | None:
+    try:
+        close_col = data["Close"] if n_symbols == 1 else data["Close"][yf_ticker]
+        val = close_col.dropna().iloc[-1]
+        return float(val) if val > 0 else None
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
     """
     Fetch latest close prices for a list of NSE symbols.
 
-    Resolves each symbol to its canonical NSE ticker via _resolve_ticker
-    (handles company-name aliases, mergers, ETF overrides). MF units that
-    have no exchange listing are skipped silently.
+    Resolves each symbol to its canonical NSE ticker via _resolve_ticker.
+    Batch-downloads via yfinance, with individual retry fallback for any
+    symbols the batch missed.
 
-    Batch-downloads via yfinance. If the batch fails (e.g. due to a symbol
-    with special characters breaking the URL), falls back to fetching each
-    symbol individually so the rest of the batch is not lost.
-
-    Returns dict of {original_symbol: price_decimal}. Unresolvable or truly
-    unlisted symbols are omitted.
+    Returns dict of {original_symbol: price_decimal}.
+    Unresolvable or unlisted symbols are omitted (caller tries ISIN fallback).
     """
     if not symbols:
         return {}
 
-    # Resolve each symbol to its yfinance ticker, skipping MF units
-    tickers: dict[str, str] = {}  # original_symbol → yf_ticker
+    tickers: dict[str, str] = {}
     for sym in symbols:
         yf_ticker = _resolve_ticker(sym)
         if yf_ticker is not None:
@@ -91,15 +165,7 @@ def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
     if not tickers:
         return prices
 
-    def _extract_price(data, yf_ticker: str, n_symbols: int) -> float | None:
-        try:
-            close_col = data["Close"] if n_symbols == 1 else data["Close"][yf_ticker]
-            val = close_col.dropna().iloc[-1]
-            return float(val) if val > 0 else None
-        except (KeyError, IndexError, TypeError):
-            return None
-
-    # Attempt batch download first
+    # Batch download
     ticker_str = " ".join(tickers.values())
     batch_ok = False
     try:
@@ -107,61 +173,25 @@ def fetch_live_prices(symbols: list[str]) -> dict[str, Decimal]:
         if not data.empty:
             batch_ok = True
             for sym, yf_ticker in tickers.items():
-                price = _extract_price(data, yf_ticker, len(tickers))
+                price = _extract_close(data, yf_ticker, len(tickers))
                 if price is not None:
                     prices[sym] = Decimal(str(round(price, 4)))
     except Exception as exc:
         logger.warning("yfinance batch download failed (%d symbols): %s", len(tickers), exc)
 
-    # Fall back: fetch individually any that the batch missed
+    # Individual retry for batch misses
     missed = {sym: ytk for sym, ytk in tickers.items() if sym not in prices}
     if missed and (not batch_ok or missed):
         for sym, yf_ticker in missed.items():
             try:
                 data = _download_prices(yf_ticker)
                 if not data.empty:
-                    price = _extract_price(data, yf_ticker, 1)
+                    price = _extract_close(data, yf_ticker, 1)
                     if price is not None:
                         prices[sym] = Decimal(str(round(price, 4)))
             except Exception:
-                continue  # truly not found — stays unpriced
+                continue
 
-    return prices
-
-
-def fetch_prices_by_isin(alt_ticker_map: dict[str, str]) -> dict[str, Decimal]:
-    """
-    Fetch prices using an alternative ticker map for symbols that failed ticker lookup.
-
-    Called with {db_symbol: alternate_nse_ticker} pairs resolved via ISIN cross-reference
-    in cpp_transactions. Useful when the same instrument is stored under two different
-    symbol names (e.g., company-name variant vs. canonical ticker) — the canonical
-    ticker fetches a price that we can attribute back to the unpriced DB symbol.
-
-    NOTE: yfinance does NOT support ISIN as a direct ticker — this function expects
-    resolved NSE ticker strings (e.g. "ARE&M.NS"), not ISINs themselves.
-
-    Returns:
-        {db_symbol: price_decimal} for those successfully priced
-    """
-    prices: dict[str, Decimal] = {}
-    for sym, alt_ticker in alt_ticker_map.items():
-        if not alt_ticker:
-            continue
-        try:
-            data = yf.download(alt_ticker, period="5d", progress=False, auto_adjust=True)
-            if not data.empty:
-                close_vals = data["Close"].dropna()
-                if len(close_vals) > 0:
-                    val = float(close_vals.iloc[-1])
-                    if val > 0:
-                        prices[sym] = Decimal(str(round(val, 4)))
-                        logger.info(
-                            "Alt-ticker fallback priced %s via %s: %.4f",
-                            sym, alt_ticker, val,
-                        )
-        except Exception as exc:
-            logger.debug("Alt-ticker fallback failed for %s (%s): %s", sym, alt_ticker, exc)
     return prices
 
 
@@ -170,15 +200,17 @@ async def update_holdings_prices(db: AsyncSession) -> dict[str, int]:
     Fetch live prices for all held symbols and update cpp_holdings.
 
     Price resolution order:
-      1. Ticker-based batch download (fast, covers 95%+ of symbols)
-      2. Ticker-based individual retry (catches symbols that broke the batch)
-      3. ISIN-based lookup (fallback for renamed/merged/special-char symbols)
+      1. yfinance ticker-based (batch + individual retry)
+         Covers NSE-listed equities and ETFs with known tickers.
+      2. ISIN → NSE ticker via Yahoo Finance search → yfinance
+         Handles ETFs recorded under script descriptions instead of NSE
+         tickers (e.g. "MIRAESMALLCAP" → resolved to "MASMC250.NS" via ISIN).
+         The resolved ticker is cached in-process and added to _SYMBOL_OVERRIDES
+         log for future manual confirmation.
 
     Also fills in sector data from the stock reference mapping.
-
     Returns summary dict with counts.
     """
-    # Get all distinct symbols with positive holdings
     result = await db.execute(
         text("SELECT DISTINCT symbol FROM cpp_holdings WHERE quantity > 0")
     )
@@ -188,82 +220,63 @@ async def update_holdings_prices(db: AsyncSession) -> dict[str, int]:
 
     logger.info("Fetching live prices for %d symbols", len(symbols))
 
-    # Fetch prices in batches of 50 (yfinance limit)
+    # ── Stage 1: yfinance (batch + individual retry) ──────────────────────────
     all_prices: dict[str, Decimal] = {}
     batch_size = 50
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i : i + batch_size]
-        batch_prices = fetch_live_prices(batch)
-        all_prices.update(batch_prices)
+        all_prices.update(fetch_live_prices(batch))
 
-    # ISIN cross-reference fallback: for symbols still unpriced, look up their ISIN
-    # in cpp_transactions, then find ANY other priced canonical symbol sharing that ISIN.
-    # This handles cases where cpp_holdings has an old company-name variant and a
-    # canonical-ticker variant of the same stock — we price the company-name entry
-    # using the ticker entry's price.
-    still_unpriced = (set(symbols) - set(all_prices.keys())) - _MF_SYMBOLS
+    # ── Stage 2: ISIN → NSE ticker via Yahoo Finance search → yfinance ───────
+    still_unpriced = set(symbols) - set(all_prices.keys()) - _UNRESOLVABLE_SYMBOLS
     if still_unpriced:
         logger.info(
-            "%d symbols still unpriced after ticker lookup — trying ISIN cross-reference",
+            "%d symbols still unpriced — trying ISIN→ticker resolution",
             len(still_unpriced),
         )
-        # Step 1: get ISINs for unpriced holding symbols
+        # Fetch ISINs for these symbols
         isin_result = await db.execute(
             text("""
-                SELECT DISTINCT ON (h.symbol) h.symbol, h.isin
-                FROM cpp_holdings h
-                WHERE h.symbol = ANY(:syms)
-                  AND h.isin IS NOT NULL AND h.isin != ''
-                ORDER BY h.symbol
+                SELECT DISTINCT ON (symbol) symbol, isin
+                FROM cpp_holdings
+                WHERE symbol = ANY(:syms)
+                  AND isin IS NOT NULL AND isin != ''
+                ORDER BY symbol
             """),
             {"syms": list(still_unpriced)},
         )
-        unpriced_isins: dict[str, str] = {
+        symbol_isin: dict[str, str] = {
             row[0]: row[1]
             for row in isin_result.fetchall()
             if row[1] and row[1].strip()
         }
 
-        if unpriced_isins:
-            # Step 2: for each ISIN, find other canonical symbols in cpp_transactions
-            # that share the same ISIN — those are our alternate tickers to try
-            alt_ticker_map: dict[str, str] = {}
-            for db_sym, isin in unpriced_isins.items():
-                alt_result = await db.execute(
-                    text("""
-                        SELECT DISTINCT symbol FROM cpp_transactions
-                        WHERE isin = :isin
-                          AND symbol != :sym
-                          AND symbol NOT IN (SELECT unnest(:mf_syms::text[]))
-                        LIMIT 1
-                    """),
-                    {
-                        "isin": isin,
-                        "sym": db_sym,
-                        "mf_syms": list(_MF_SYMBOLS),
-                    },
-                )
-                alt_row = alt_result.fetchone()
-                if alt_row:
-                    alt_ticker = _resolve_ticker(alt_row[0])
-                    if alt_ticker:
-                        alt_ticker_map[db_sym] = alt_ticker
-                        logger.debug(
-                            "ISIN cross-ref: %s (%s) → try alt ticker %s",
-                            db_sym, isin, alt_ticker,
-                        )
+        if symbol_isin:
+            # For each ISIN, resolve to an NSE ticker via Yahoo Finance search
+            resolved_tickers: dict[str, str] = {}  # db_symbol → yf_ticker
+            for sym, isin in symbol_isin.items():
+                yf_ticker = _isin_to_nse_ticker(isin)
+                if yf_ticker:
+                    resolved_tickers[sym] = yf_ticker
 
-            if alt_ticker_map:
-                isin_prices = fetch_prices_by_isin(alt_ticker_map)
-                all_prices.update(isin_prices)
-                if isin_prices:
-                    logger.info(
-                        "ISIN cross-reference resolved %d additional symbols: %s",
-                        len(isin_prices),
-                        sorted(isin_prices.keys()),
+            # Fetch prices for resolved tickers individually
+            for sym, yf_ticker in resolved_tickers.items():
+                try:
+                    data = _download_prices(yf_ticker)
+                    if not data.empty:
+                        price = _extract_close(data, yf_ticker, 1)
+                        if price is not None:
+                            all_prices[sym] = Decimal(str(round(price, 4)))
+                            logger.info(
+                                "ISIN fallback priced %s via %s: %.4f",
+                                sym, yf_ticker, float(all_prices[sym]),
+                            )
+                except Exception as exc:
+                    logger.debug(
+                        "ISIN fallback fetch failed for %s (%s): %s", sym, yf_ticker, exc
                     )
 
-    # Update prices in DB
+    # ── DB update: prices ─────────────────────────────────────────────────────
     price_count = 0
     for symbol, price in all_prices.items():
         await db.execute(
@@ -298,7 +311,7 @@ async def update_holdings_prices(db: AsyncSession) -> dict[str, int]:
           AND h.quantity > 0
     """))
 
-    # Update sector data from reference mapping
+    # ── DB update: sectors ────────────────────────────────────────────────────
     sector_count = 0
     for symbol in symbols:
         sector = SECTOR_MAP.get(symbol)

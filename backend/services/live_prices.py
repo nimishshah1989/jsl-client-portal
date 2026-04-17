@@ -166,13 +166,15 @@ async def update_holdings_prices(db: AsyncSession) -> dict[str, int]:
             sector_count += 1
 
     await db.commit()
+    not_found = sorted(set(symbols) - set(all_prices.keys()))
     logger.info(
-        "Updated %d prices, %d sectors for %d symbols",
-        price_count, sector_count, len(symbols),
+        "Updated %d prices, %d sectors for %d symbols; not found: %s",
+        price_count, sector_count, len(symbols), not_found,
     )
     return {
         "symbols": len(symbols),
         "prices_updated": price_count,
         "sectors_updated": sector_count,
-        "prices_not_found": len(symbols) - price_count,
+        "prices_not_found": len(not_found),
+        "unpriced_symbols": not_found,
     }

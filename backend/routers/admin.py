@@ -85,14 +85,22 @@ async def recompute_holdings_all(
     """
     from backend.services.ingestion_helpers import recompute_holdings
 
-    result = await db.execute(text("""
-        SELECT c.id, p.id, c.client_code
-        FROM cpp_clients c
-        JOIN cpp_portfolios p ON p.client_id = c.id
-        WHERE c.is_active = true
-        AND (:cid IS NULL OR c.id = :cid)
-        ORDER BY c.client_code
-    """), {"cid": client_id})
+    if client_id is not None:
+        result = await db.execute(text("""
+            SELECT c.id, p.id, c.client_code
+            FROM cpp_clients c
+            JOIN cpp_portfolios p ON p.client_id = c.id
+            WHERE c.is_active = true AND c.id = :cid
+            ORDER BY c.client_code
+        """), {"cid": client_id})
+    else:
+        result = await db.execute(text("""
+            SELECT c.id, p.id, c.client_code
+            FROM cpp_clients c
+            JOIN cpp_portfolios p ON p.client_id = c.id
+            WHERE c.is_active = true
+            ORDER BY c.client_code
+        """))
     pairs = [(r[0], r[1], r[2]) for r in result.fetchall()]
 
     if not pairs:

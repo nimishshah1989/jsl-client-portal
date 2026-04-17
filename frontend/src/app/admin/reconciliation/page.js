@@ -3,7 +3,7 @@
 import { useState, useCallback, useMemo } from 'react';
 import { apiFetch } from '@/lib/api';
 import { formatINRShort } from '@/lib/format';
-import { Upload, Download, Search, Filter } from 'lucide-react';
+import { Download, Search, Filter } from 'lucide-react';
 import ReconciliationClientRow from '@/components/admin/ReconciliationClientRow';
 
 /** Single metric card — label, big value, small subtitle */
@@ -58,7 +58,6 @@ function diffAmtColor(diff, base) {
 
 export default function ReconciliationPage() {
   const [data, setData]               = useState(null);
-  const [loading, setLoading]         = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError]             = useState(null);
   const [expandedClients, setExpandedClients] = useState(new Set());
@@ -75,23 +74,6 @@ export default function ReconciliationPage() {
       }
     })();
   });
-
-  const handleUpload = useCallback(async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    const formData = new FormData();
-    formData.append('file', file);
-    try {
-      const result = await apiFetch('/admin/reconciliation/upload', { method: 'POST', body: formData });
-      setData(result);
-    } catch (err) {
-      setError(err.message || 'Upload failed');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
   const handleExport = useCallback(async () => {
     try {
@@ -216,27 +198,6 @@ export default function ReconciliationPage() {
             </button>
           </div>
         )}
-      </div>
-
-      {/* Upload */}
-      <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <label className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${loading ? 'border-teal-300 bg-teal-50' : 'border-slate-300 hover:border-teal-400 hover:bg-teal-50/50'}`}>
-          <div className="flex flex-col items-center">
-            {loading ? (
-              <>
-                <div className="w-8 h-8 border-2 border-teal-500 border-t-transparent rounded-full animate-spin" />
-                <p className="text-sm text-teal-600 mt-2">Reconciling...</p>
-              </>
-            ) : (
-              <>
-                <Upload className="w-8 h-8 text-slate-400" />
-                <p className="text-sm text-slate-600 mt-2">Upload Holdings Data (.xlsx)</p>
-                <p className="text-xs text-slate-400">Equity holding report — click or drag file here</p>
-              </>
-            )}
-          </div>
-          <input type="file" accept=".xlsx,.xls" onChange={handleUpload} disabled={loading} className="hidden" />
-        </label>
       </div>
 
       {error && <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>}

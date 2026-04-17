@@ -96,12 +96,19 @@ def compute_holdings(
     asset_classes: dict[str, str] = {}   # symbol → asset_class
     isins: dict[str, str] = {}           # symbol → most recently seen ISIN
 
-    # Sort by date to process in chronological order
-    sorted_df = (
-        transactions_df.sort_values("date")
-        if "date" in transactions_df.columns
-        else transactions_df
-    )
+    # Sort by date then by txn_type priority so that inflows (CORPUS_IN, BUY, BONUS)
+    # are always processed before outflows (SELL) on the same date. Without this,
+    # a same-day BUY+SELL pair can end up processing the SELL first against an empty
+    # lot queue, leaving the BUY quantity as a phantom holding.
+    _TYPE_PRIORITY = {"CORPUS_IN": 0, "BUY": 1, "BONUS": 2, "SELL": 3}
+    if "date" in transactions_df.columns:
+        sorted_df = transactions_df.copy()
+        sorted_df["_order"] = (
+            sorted_df["txn_type"].str.upper().map(_TYPE_PRIORITY).fillna(4)
+        )
+        sorted_df = sorted_df.sort_values(["date", "_order"]).drop(columns=["_order"])
+    else:
+        sorted_df = transactions_df
 
     for _, txn in sorted_df.iterrows():
         symbol = str(txn["symbol"]).strip()

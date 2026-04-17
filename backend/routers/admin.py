@@ -72,6 +72,53 @@ async def recompute_risk(
     }
 
 
+@router.post("/recompute-holdings")
+async def recompute_holdings_all(
+    client_id: int | None = None,
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Recompute holdings from transactions for all (or one) client.
+
+    Needed after fixing same-day buy+sell ordering in the FIFO engine.
+    Rebuilds cpp_holdings from cpp_transactions for every active client.
+    """
+    from backend.services.ingestion_helpers import recompute_holdings
+
+    result = await db.execute(text("""
+        SELECT c.id, p.id, c.client_code
+        FROM cpp_clients c
+        JOIN cpp_portfolios p ON p.client_id = c.id
+        WHERE c.is_active = true
+        AND (:cid IS NULL OR c.id = :cid)
+        ORDER BY c.client_code
+    """), {"cid": client_id})
+    pairs = [(r[0], r[1], r[2]) for r in result.fetchall()]
+
+    if not pairs:
+        raise HTTPException(status_code=404, detail="No matching clients")
+
+    success, failed, errors = 0, 0, []
+    for cid, pid, code in pairs:
+        try:
+            count = await recompute_holdings(db, cid, pid)
+            await db.commit()
+            success += 1
+            logger.info("Holdings recomputed: %s → %d positions", code, count)
+        except Exception as exc:
+            await db.rollback()
+            failed += 1
+            errors.append({"client": code, "error": str(exc)})
+            logger.error("Holdings recompute failed for %s: %s", code, exc)
+
+    return {
+        "message": f"Holdings recomputed: {success} ok, {failed} failed",
+        "success": success,
+        "failed": failed,
+        "errors": errors[:20],
+    }
+
+
 @router.post("/update-prices")
 async def update_prices(
     admin: dict = Depends(get_admin_user),

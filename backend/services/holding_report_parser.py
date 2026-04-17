@@ -260,27 +260,31 @@ def parse_holding_report(filepath: str | Path) -> list[dict]:
     records: list[dict] = []
     row_count = 0
     skipped_count = 0
-    header_skipped = False
+    header_found = False
     ucc_row_counts: dict[str, int] = {}
 
-    # Column map is built from the first (header) row
+    # Column map built from the header row.
+    # Some files (e.g. ETF holding reports) have an empty first row before the
+    # actual header — scan up to _MAX_HEADER_SCAN_ROWS to find it.
     col_map: dict[str, int] = {}
+    _MAX_HEADER_SCAN_ROWS = 5
 
     for row in ws.iter_rows(values_only=True):
         row_count += 1
 
-        # ── First row: detect column layout from header ─────────────────────
-        if not header_skipped:
-            header_skipped = True
+        # ── Scan for header row (skip empty/non-header rows at the top) ──────
+        if not header_found:
             detected = _build_col_map(row)
             if detected and "ucc" in detected and "share" in detected:
                 col_map = detected
+                header_found = True
                 logger.info(
-                    "Holding parser: detected column map — %s",
+                    "Holding parser: header at row %d — %s",
+                    row_count,
                     {k: v for k, v in col_map.items()},
                 )
-            else:
-                # Fallback: use default 16-col (Family Group) indices
+            elif row_count >= _MAX_HEADER_SCAN_ROWS:
+                # Exhausted scan without finding header — use 16-col fallback
                 col_map = {
                     "ucc": _COL_UCC,
                     "family_group": _COL_FAMILY_GROUP,
@@ -297,9 +301,12 @@ def parse_holding_report(filepath: str | Path) -> list[dict]:
                     "roi_pct": _COL_ROI_PCT,
                     "holding_market_pct": _COL_HOLDING_MARKET_PCT,
                 }
+                header_found = True
                 logger.warning(
-                    "Holding parser: header detection failed, using default 16-col map"
+                    "Holding parser: header not found in first %d rows, using 16-col fallback",
+                    _MAX_HEADER_SCAN_ROWS,
                 )
+            # Always skip the header row itself (or pre-header rows)
             continue
 
         if not _is_data_row(row, col_map):

@@ -284,6 +284,16 @@ async def get_growth(
             # FD: each inflow/outflow compounds from its date to latest
             flow_days = (latest_date - flow_date).days
             flow_years = Decimal(str(flow_days)) / Decimal("365.25") if flow_days > 0 else Decimal("0")
+
+            # Warn if any single flow implies an unusually long compounding window —
+            # this helps catch bad date rows in the NAV file (e.g. misparse → 1990s).
+            if float(flow_years) > 20:
+                logger.warning(
+                    "Growth: client_id=%d flow_date=%s is %.1f years before latest (%s) — "
+                    "verify this date is correct in the NAV file.",
+                    client_id, flow_date, float(flow_years), latest_date,
+                )
+
             fd_value_total += Decimal(str(flow_amt)) * (
                 (Decimal("1") + fd_rate_dec) ** flow_years
             )

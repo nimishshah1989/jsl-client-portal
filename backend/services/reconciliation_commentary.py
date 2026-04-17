@@ -110,7 +110,25 @@ def generate_commentary(summary) -> list[dict]:
                     "symbol": sym,
                 })
 
-    # --- 3. Symbols extra in ours (sold/removed in backoffice) ---
+    # --- 3a. Structural ETF positions (expected — tracked in NAV ETF column) ---
+    structural = [m for m in all_matches if m.status == "STRUCTURAL_ETF"]
+    if structural:
+        structural_by_sym = Counter(m.symbol for m in structural)
+        top_etfs = structural_by_sym.most_common(5)
+        etf_names = ", ".join(f"{sym} ({cnt})" for sym, cnt in top_etfs)
+        insights.append({
+            "type": "STRUCTURAL_ETF",
+            "severity": "info",
+            "title": f"{len(structural_by_sym)} ETF/MF position(s) correctly excluded from BO comparison",
+            "detail": (
+                f"ETF and mutual fund holdings are tracked in the NAV file's "
+                f"'Investments in ETF' column — not in the BO equity holding report. "
+                f"These are expected structural positions, not discrepancies: {etf_names}."
+            ),
+            "affected_clients": len(set(m.client_code for m in structural)),
+        })
+
+    # --- 3b. Symbols genuinely extra in ours (sold/removed in backoffice) ---
     extra = [m for m in all_matches if m.status == "EXTRA_IN_OURS"]
     if extra:
         extra_by_sym = Counter(m.symbol for m in extra)
@@ -204,8 +222,8 @@ def generate_commentary(summary) -> list[dict]:
             "affected_clients": len(nav_diffs),
         })
 
-    # Sort: critical → high → medium → good
-    severity_order = {"critical": 0, "high": 1, "medium": 2, "good": 3}
+    # Sort: critical → high → medium → good → info
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "good": 3, "info": 4}
     insights.sort(key=lambda x: severity_order.get(x["severity"], 99))
 
     return insights

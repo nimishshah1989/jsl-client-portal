@@ -212,8 +212,12 @@ export default function ReconciliationPage() {
               color={data.total_cost_mismatches > 0 ? 'text-orange-600' : 'text-emerald-600'} />
             <SummaryCard label="Missing in Ours" value={data.total_missing_in_ours}
               color={data.total_missing_in_ours > 0 ? 'text-red-600' : 'text-emerald-600'} />
-            <SummaryCard label="Extra in Ours" value={data.total_extra_in_ours || 0}
+            <SummaryCard label="Extra (Genuine)" value={data.total_extra_in_ours || 0}
+              subtext="EQ positions not in BO"
               color={(data.total_extra_in_ours || 0) > 0 ? 'text-blue-600' : 'text-emerald-600'} />
+            <SummaryCard label="ETF/MF (Structural)" value={data.total_structural_etf || 0}
+              subtext="Expected — tracked via NAV ETF col"
+              color="text-slate-500" />
           </div>
 
           <div className="flex items-center gap-4 text-xs text-slate-400">
@@ -227,8 +231,8 @@ export default function ReconciliationPage() {
             <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
               <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider">Insights</h3>
               {data.commentary.map((c, i) => {
-                const styles = { critical: 'border-l-red-500 bg-red-50', high: 'border-l-amber-500 bg-amber-50', medium: 'border-l-yellow-400 bg-yellow-50', good: 'border-l-emerald-500 bg-emerald-50' };
-                const text = { critical: 'text-red-800', high: 'text-amber-800', medium: 'text-yellow-800', good: 'text-emerald-800' };
+                const styles = { critical: 'border-l-red-500 bg-red-50', high: 'border-l-amber-500 bg-amber-50', medium: 'border-l-yellow-400 bg-yellow-50', good: 'border-l-emerald-500 bg-emerald-50', info: 'border-l-blue-400 bg-blue-50' };
+                const text = { critical: 'text-red-800', high: 'text-amber-800', medium: 'text-yellow-800', good: 'text-emerald-800', info: 'text-blue-800' };
                 return (
                   <div key={i} className={`border-l-4 rounded-r-lg p-3 ${styles[c.severity] || 'bg-slate-50 border-l-slate-300'}`}>
                     <div className="flex items-start justify-between gap-2">

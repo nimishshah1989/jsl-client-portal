@@ -73,6 +73,7 @@ class ClientReconciliationResponse(BaseModel):
     value_mismatch_count: int = 0
     missing_in_ours_count: int = 0
     extra_in_ours_count: int = 0
+    structural_etf_count: int = 0
     match_pct: float = 100.0
     has_issues: bool = False
     matches: list[HoldingMatchResponse] = Field(default_factory=list)
@@ -109,6 +110,7 @@ class ReconciliationSummaryResponse(BaseModel):
     total_value_mismatches: int = 0
     total_missing_in_ours: int = 0
     total_extra_in_ours: int = 0
+    total_structural_etf: int = 0
     match_pct: float = 100.0
     client_match_pct: float = 100.0
     clients_fully_matched: int = 0

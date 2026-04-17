@@ -9,7 +9,8 @@ const STATUS_CONFIG = {
   COST_MISMATCH: { label: 'Cost Mismatch', color: 'bg-orange-100 text-orange-700', icon: AlertTriangle },
   VALUE_MISMATCH: { label: 'Value Mismatch', color: 'bg-yellow-100 text-yellow-700', icon: AlertTriangle },
   MISSING_IN_OURS: { label: 'Missing', color: 'bg-red-100 text-red-700', icon: XCircle },
-  EXTRA_IN_OURS: { label: 'Extra', color: 'bg-blue-100 text-blue-700', icon: AlertTriangle },
+  EXTRA_IN_OURS: { label: 'Extra (EQ)', color: 'bg-blue-100 text-blue-700', icon: AlertTriangle },
+  STRUCTURAL_ETF: { label: 'ETF/MF ✓', color: 'bg-slate-100 text-slate-500', icon: null },
 };
 
 function StatusBadge({ status }) {
@@ -37,6 +38,7 @@ function DiffCell({ value, threshold = 100 }) {
 }
 
 export default function ReconciliationClientRow({ client, expanded, onToggle }) {
+  // structural_etf_count excluded — those are expected, not discrepancies
   const issues = client.qty_mismatch_count + client.cost_mismatch_count +
     client.value_mismatch_count + client.missing_in_ours_count + client.extra_in_ours_count;
 
@@ -105,7 +107,7 @@ export default function ReconciliationClientRow({ client, expanded, onToggle }) 
                 </thead>
                 <tbody>
                   {sortedMatches.map((m, i) => (
-                    <tr key={i} className={`border-b border-slate-100 ${m.status !== 'MATCH' ? 'bg-amber-50/50' : ''}`}>
+                    <tr key={i} className={`border-b border-slate-100 ${m.status === 'STRUCTURAL_ETF' ? 'opacity-60' : m.status !== 'MATCH' ? 'bg-amber-50/50' : ''}`}>
                       <td className="px-3 py-2 font-mono font-medium text-slate-800">{m.symbol}</td>
                       <td className="px-3 py-2"><StatusBadge status={m.status} /></td>
                       <td className="px-3 py-2 text-right font-mono">{m.bo_quantity ?? '--'}</td>

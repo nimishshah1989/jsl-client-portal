@@ -65,6 +65,7 @@ async def save_reconciliation(
         "total_value_mismatches": result.total_value_mismatches,
         "total_missing_in_ours": result.total_missing_in_ours,
         "total_extra_in_ours": result.total_extra_in_ours,
+        "total_structural_etf": result.total_structural_etf,
         "match_pct": result.match_pct,
         "client_match_pct": result.client_match_pct,
         "clients_fully_matched": result.clients_fully_matched,
@@ -102,6 +103,7 @@ async def save_reconciliation(
             "value_mismatch_count": c.value_mismatch_count,
             "missing_in_ours_count": c.missing_in_ours_count,
             "extra_in_ours_count": c.extra_in_ours_count,
+            "structural_etf_count": c.structural_etf_count,
             "match_pct": c.match_pct,
             "has_issues": c.has_issues,
             # 4-component value totals

@@ -51,7 +51,7 @@ class HoldingMatch:
 
     client_code: str
     symbol: str
-    status: str  # MATCH | QTY_MISMATCH | COST_MISMATCH | MISSING_IN_OURS | EXTRA_IN_OURS
+    status: str  # MATCH | QTY_MISMATCH | COST_MISMATCH | MISSING_IN_OURS | EXTRA_IN_OURS | STRUCTURAL_ETF
 
     # How the match was made — "isin" (authoritative) or "symbol" (fallback)
     matched_by: str = "isin"
@@ -101,6 +101,7 @@ class ClientReconciliation:
     value_mismatch_count: int = 0
     missing_in_ours_count: int = 0
     extra_in_ours_count: int = 0
+    structural_etf_count: int = 0   # ETF/MF in our system, tracked via NAV ETF column — not a discrepancy
     client_found: bool = True
 
     # ── 4-component NAV breakdown (from NAV file) ────────────────────────────
@@ -140,6 +141,8 @@ class ClientReconciliation:
 
     @property
     def has_issues(self) -> bool:
+        # structural_etf_count is intentionally excluded — ETF/MF positions tracked
+        # via the NAV file's ETF column are expected to be absent from the BO equity report.
         return (
             self.qty_mismatch_count > 0
             or self.cost_mismatch_count > 0
@@ -166,6 +169,7 @@ class ReconciliationSummary:
     total_value_mismatches: int = 0
     total_missing_in_ours: int = 0
     total_extra_in_ours: int = 0
+    total_structural_etf: int = 0   # ETF/MF positions classified as structural (not discrepancies)
     clients: list[ClientReconciliation] = field(default_factory=list)
     commentary: list[dict] = field(default_factory=list)
 
@@ -233,18 +237,29 @@ async def _load_our_holdings(
     dict[str, dict[str, dict]],   # keyed by (client_code, isin) — where ISIN is known
     dict[str, str],               # client_code → client name
 ]:
-    """Load all holdings from cpp_holdings.
+    """Load all holdings from cpp_holdings, enriched with instrument_type from transactions.
 
     Returns two parallel lookup dicts so reconciliation can match by ISIN first
     (authoritative, stable) then fall back to symbol (for records without ISIN).
+
+    instrument_type is fetched from the most recent transaction for each (client, symbol)
+    pair so we can classify ETF/MF positions as STRUCTURAL_ETF rather than EXTRA_IN_OURS.
     """
     result = await db.execute(text("""
         SELECT
             c.client_code, c.name, h.symbol, h.isin, h.quantity,
             h.avg_cost, h.current_price, h.current_value,
-            h.unrealized_pnl, h.weight_pct, h.asset_class
+            h.unrealized_pnl, h.weight_pct, h.asset_class,
+            COALESCE(it.instrument_type, 'EQ') AS instrument_type
         FROM cpp_holdings h
         JOIN cpp_clients c ON c.id = h.client_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (client_id, symbol)
+                client_id, symbol, instrument_type
+            FROM cpp_transactions
+            WHERE instrument_type IS NOT NULL AND instrument_type <> ''
+            ORDER BY client_id, symbol, txn_date DESC
+        ) it ON it.client_id = h.client_id AND it.symbol = h.symbol
         WHERE h.quantity > 0
         ORDER BY c.client_code, h.symbol
     """))
@@ -265,6 +280,7 @@ async def _load_our_holdings(
             "unrealized_pnl": _safe_dec(row[8]),
             "weight_pct": _safe_dec(row[9]),
             "asset_class": row[10] or "EQUITY",
+            "instrument_type": row[11] or "EQ",
         }
 
         if code not in by_symbol:
@@ -485,9 +501,11 @@ async def reconcile(
             client_recon.matches.append(match)
 
         # ── Extra positions (in our holdings, not in BO equity report) ──────
-        # These are ETF/MF positions tracked in the NAV file's "Investments in ETF"
-        # column rather than the BO equity holding report. They are structural —
-        # not a data error — and reconcile against etf_component_nav.
+        # Classify by instrument_type:
+        #   ETF / MF → STRUCTURAL_ETF: these are tracked in the NAV file's
+        #              "Investments in ETF" column, not the equity BO report. Expected.
+        #   EQ / other → EXTRA_IN_OURS: a genuine discrepancy (sold/transferred in BO
+        #              but still present in our transaction-derived holdings).
         our_etf_total = _ZERO
         for symbol, our in our_sym.items():
             if symbol in our_symbols_seen:
@@ -499,8 +517,12 @@ async def reconcile(
             our_cv = _safe_dec(our.get("current_value"))
             our_etf_total += our_cv  # sum market value of extras (0 if prices not updated)
 
+            instrument_type = our.get("instrument_type", "EQ")
+            is_structural = instrument_type in ("ETF", "MF")
+            status = "STRUCTURAL_ETF" if is_structural else "EXTRA_IN_OURS"
+
             match = HoldingMatch(
-                client_code=ucc, symbol=symbol, status="EXTRA_IN_OURS",
+                client_code=ucc, symbol=symbol, status=status,
                 matched_by="isin" if our_isin else "symbol",
                 our_quantity=our["quantity"], our_avg_cost=our["avg_cost"],
                 our_total_cost=(our["quantity"] * our["avg_cost"]),
@@ -512,7 +534,10 @@ async def reconcile(
                 bo_isin=our_isin or None,
                 family_group=family_group,
             )
-            client_recon.extra_in_ours_count += 1
+            if is_structural:
+                client_recon.structural_etf_count += 1
+            else:
+                client_recon.extra_in_ours_count += 1
             client_recon.matches.append(match)
 
         # ── Populate all reconciliation totals for this client ───────────────
@@ -556,6 +581,7 @@ async def reconcile(
         summary.total_value_mismatches += client_recon.value_mismatch_count
         summary.total_missing_in_ours += client_recon.missing_in_ours_count
         summary.total_extra_in_ours += client_recon.extra_in_ours_count
+        summary.total_structural_etf += client_recon.structural_etf_count
 
     summary.total_clients_matched = sum(1 for c in summary.clients if c.client_found)
     summary.total_clients_missing = summary.total_clients_bo - summary.total_clients_matched
@@ -569,10 +595,12 @@ async def reconcile(
 
     logger.info(
         "4-component reconciliation: %d/%d clients, %d/%d holdings matched | "
+        "structural_etf=%d  extra=%d  missing=%d | "
         "NAV=%.0f  Equity=%.0f  ETF=%.0f  Cash=%.0f | "
         "BO=%.0f  Ours=%.0f  ETF_ours=%.0f",
         summary.total_clients_matched, summary.total_clients_bo,
         summary.total_holdings_matched, summary.total_holdings_bo,
+        summary.total_structural_etf, summary.total_extra_in_ours, summary.total_missing_in_ours,
         summary.total_nav_value, summary.total_nav_equity_value,
         summary.total_etf_value, summary.total_cash_value,
         summary.total_bo_holdings_value, summary.total_our_holdings_value,

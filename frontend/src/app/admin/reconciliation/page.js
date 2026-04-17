@@ -101,18 +101,21 @@ export default function ReconciliationPage() {
   }, [data, searchTerm, statusFilter]);
 
   // 3-way value helpers
-  const navTotal = Number(data?.total_nav_value || 0);
-  const navEquity = Number(data?.total_nav_equity_value || 0);
-  const navEtf    = Number(data?.total_etf_value || 0);
-  const navCash   = Number(data?.total_cash_value || 0);
-  const boTotal   = Number(data?.total_bo_holdings_value || 0);
-  const ourTotal  = Number(data?.total_our_holdings_value || 0);
+  const navTotal    = Number(data?.total_nav_value || 0);
+  const navEquity   = Number(data?.total_nav_equity_value || 0);
+  const navEtf      = Number(data?.total_etf_value || 0);
+  const navCash     = Number(data?.total_cash_value || 0);
+  const boTotal     = Number(data?.total_bo_holdings_value || 0);
+  const ourTotal    = Number(data?.total_our_holdings_value || 0);
+  const ourEtfTotal = Number(data?.total_our_etf_holdings_value || 0);
   // Use equity-only diff (nav minus ETF minus cash) vs BO — this is the correct check.
   // total_nav_vs_bo_diff includes ETF+cash and will always look large; ignore it for display.
   const navEquityVsBo    = Number(data?.total_nav_equity_vs_bo_diff || 0);
   const boVsOurs         = Number(data?.total_bo_vs_ours_diff || 0);
+  const etfVsOurs        = Number(data?.total_etf_vs_ours_diff || 0);
   const navEquityVsBoPct = navEquity > 0 ? (navEquityVsBo / navEquity * 100) : 0;
   const boVsOursPct      = boTotal > 0 ? (boVsOurs / boTotal * 100) : 0;
+  const etfVsOursPct     = navEtf > 0 ? (etfVsOurs / navEtf * 100) : 0;
 
   return (
     <div className="space-y-6">
@@ -174,30 +177,53 @@ export default function ReconciliationPage() {
       {data && (
         <>
           {/* 3-Way Value Comparison */}
-          <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-1">3-Way Portfolio Value Comparison</h3>
-            <p className="text-xs text-slate-400 mb-4">
-              NAV = Equity + ETF + Cash. BO holding report only covers equity — so compare NAV equity component vs BO, not total NAV.
-            </p>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
-              <SummaryCard label="NAV Total" value={formatINRShort(navTotal)} subtext={`${data.clients_with_nav || 0} clients with NAV`} />
-              <SummaryCard label="NAV Equity" value={formatINRShort(navEquity)} subtext="NAV minus ETF minus cash" />
-              <SummaryCard label="NAV ETF" value={formatINRShort(navEtf)} subtext="ETF/liquid fund component" />
-              <SummaryCard label="NAV Cash" value={formatINRShort(navCash)} subtext="Cash + bank balance" />
-              <SummaryCard label="BO Holdings" value={formatINRShort(boTotal)} subtext="Equity holdings only" />
-              <SummaryCard
-                label="Equity vs BO ✓"
-                value={formatINRShort(navEquityVsBo)}
-                subtext={`${navEquityVsBoPct >= 0 ? '+' : ''}${navEquityVsBoPct.toFixed(3)}% — should be ~0`}
-                color={pctColor(navEquityVsBoPct, 0.1, 0.5)}
-              />
-              <SummaryCard
-                label="BO vs Ours"
-                value={formatINRShort(boVsOurs)}
-                subtext={`${boVsOursPct >= 0 ? '+' : ''}${boVsOursPct.toFixed(2)}% — FIFO gap`}
-                color={pctColor(boVsOursPct)}
-              />
+          <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-0.5">4-Component NAV Breakdown</h3>
+              <p className="text-xs text-slate-400">NAV = Equity + ETF + Cash. Compare each component independently against its source.</p>
             </div>
+
+            {/* Row 1: NAV breakdown + equity reconciliation */}
+            <div>
+              <p className="text-xs font-medium text-slate-500 mb-2">Equity reconciliation (NAV equity ≈ BO ≈ Ours)</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <SummaryCard label="NAV Equity" value={formatINRShort(navEquity)} subtext="NAV minus ETF minus cash" />
+                <SummaryCard label="BO Holdings" value={formatINRShort(boTotal)} subtext="Equity holding report total" />
+                <SummaryCard
+                  label="NAV Equity vs BO"
+                  value={formatINRShort(navEquityVsBo)}
+                  subtext={`${navEquityVsBoPct >= 0 ? '+' : ''}${navEquityVsBoPct.toFixed(3)}% — should be 0`}
+                  color={pctColor(navEquityVsBoPct, 0.1, 0.5)}
+                />
+                <SummaryCard
+                  label="BO vs Ours (FIFO)"
+                  value={formatINRShort(boVsOurs)}
+                  subtext={`${boVsOursPct >= 0 ? '+' : ''}${boVsOursPct.toFixed(2)}% — transaction gap`}
+                  color={pctColor(boVsOursPct)}
+                />
+              </div>
+            </div>
+
+            {/* Row 2: ETF reconciliation */}
+            <div>
+              <p className="text-xs font-medium text-slate-500 mb-2">ETF reconciliation (NAV ETF ≈ Our ETF holdings — upload ETF Holding File to populate)</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <SummaryCard label="NAV ETF" value={formatINRShort(navEtf)} subtext="Investments in ETF column" />
+                <SummaryCard label="Our ETF Holdings" value={formatINRShort(ourEtfTotal)} subtext={ourEtfTotal > 0 ? `${data.total_structural_etf || 0} positions priced` : 'Upload ETF Holding File'} color={ourEtfTotal > 0 ? 'text-slate-800' : 'text-amber-600'} />
+                <SummaryCard
+                  label="ETF vs Ours"
+                  value={formatINRShort(etfVsOurs)}
+                  subtext={ourEtfTotal > 0 ? `${etfVsOursPct >= 0 ? '+' : ''}${etfVsOursPct.toFixed(2)}% — should be ~0` : 'No ETF prices yet'}
+                  color={ourEtfTotal > 0 ? pctColor(etfVsOursPct, 1, 3) : 'text-amber-600'}
+                />
+                <SummaryCard label="NAV Cash" value={formatINRShort(navCash)} subtext="Cash + bank balance" />
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              NAV Total: <span className="font-mono font-medium text-slate-600">{formatINRShort(navTotal)}</span>
+              {' '}({data.clients_with_nav || 0} clients)
+            </p>
           </div>
 
           {/* Issue count cards */}

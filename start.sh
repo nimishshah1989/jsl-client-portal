@@ -1,14 +1,16 @@
 #!/bin/bash
 # ============================================================
 # JSL Client Portfolio Portal — Process Startup
-# Runs Next.js (port 3000) and FastAPI (port 8000) in parallel.
-# Next.js proxies /api/* requests to FastAPI internally.
+# Runs migrations, then Next.js (port 3000) and FastAPI (port 8000).
 # ============================================================
 
 set -e
 
-echo "[CPP] Starting FastAPI on port 8000..."
+echo "[CPP] Running database migrations..."
 cd /app
+python -m backend.auto_migrate
+
+echo "[CPP] Starting FastAPI on port 8000..."
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 1 &
 FASTAPI_PID=$!
 

@@ -35,15 +35,19 @@ class Base(DeclarativeBase):
     metadata = metadata
 
 
-# ── SSL context for RDS (required by pg_hba.conf) ──
+# ── SSL context for RDS ──
 _ssl_context = ssl.create_default_context()
-_ssl_context.check_hostname = False
-_ssl_context.verify_mode = ssl.CERT_NONE
+if settings.APP_ENV == "production":
+    _ssl_context.check_hostname = True
+    _ssl_context.verify_mode = ssl.CERT_REQUIRED
+else:
+    _ssl_context.check_hostname = False
+    _ssl_context.verify_mode = ssl.CERT_NONE
 
 # ── Async engine (for FastAPI) ──
 async_engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=(settings.APP_ENV == "development"),
+    echo=False,
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,

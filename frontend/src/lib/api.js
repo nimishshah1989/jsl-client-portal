@@ -6,6 +6,12 @@
 
 const API_BASE = '/api';
 
+function getCsrfToken() {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 export class ApiError extends Error {
   constructor(message, status, data) {
     super(message);
@@ -18,10 +24,18 @@ export class ApiError extends Error {
 export async function apiFetch(url, options = {}) {
   const fullUrl = `${API_BASE}${url}`;
 
+  const csrfHeaders = {};
+  const method = (options.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+    const csrf = getCsrfToken();
+    if (csrf) csrfHeaders['X-CSRF-Token'] = csrf;
+  }
+
   const config = {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...csrfHeaders,
       ...options.headers,
     },
     ...options,

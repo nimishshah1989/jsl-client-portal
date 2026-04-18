@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Integer,
     String,
     func,
@@ -19,6 +20,7 @@ class Client(Base):
     """
     PMS/advisory client or admin user.
     Username is enforced lowercase via DB constraint.
+    Supports soft-delete for SEBI 7-year retention compliance.
     """
 
     __tablename__ = "cpp_clients"
@@ -32,10 +34,24 @@ class Client(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    role: Mapped[str] = mapped_column(
+        String(50), default="CLIENT", server_default="CLIENT",
+        comment="CLIENT | ADMIN_READONLY | ADMIN_DATA_ENTRY | ADMIN_FULL",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
     last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Soft delete
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_by: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("cpp_clients.id", ondelete="SET NULL"), nullable=True,
+    )
 
     # Relationships
     portfolios = relationship("Portfolio", back_populates="client", lazy="selectin")

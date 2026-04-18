@@ -12,6 +12,7 @@ import RiskScorecard from '@/components/dashboard/RiskScorecard';
 import MonthlyReturns from '@/components/dashboard/MonthlyReturns';
 import TransactionHistory from '@/components/dashboard/TransactionHistory';
 import MethodologyLink from '@/components/dashboard/MethodologyLink';
+import RegulatoryDisclaimer from '@/components/dashboard/RegulatoryDisclaimer';
 
 /**
  * Main dashboard page — single scrollable page with all sections.
@@ -76,6 +77,11 @@ export default function DashboardPage() {
       {/* 11. Methodology Link */}
       <section id="methodology-link">
         <MethodologyLink />
+      </section>
+
+      {/* 12. Regulatory Disclaimer (SEBI compliance) */}
+      <section id="disclaimer">
+        <RegulatoryDisclaimer />
       </section>
     </div>
   );

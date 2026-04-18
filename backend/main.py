@@ -70,6 +70,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Security Middleware (outermost = processed first on response) ──
+
+from backend.middleware.security import (  # noqa: E402
+    CSRFMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+)
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CSRFMiddleware)
+app.add_middleware(RequestIdMiddleware)
+
 # ── CORS ──
 
 app.add_middleware(
@@ -77,7 +89,8 @@ app.add_middleware(
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
 
 
@@ -139,9 +152,7 @@ app.include_router(admin_reconciliation_router)
 @app.get("/api/health")
 async def health() -> dict:
     """Health check endpoint for load balancer and monitoring."""
-    return {
-        "status": "healthy",
-        "service": "client-portfolio-portal",
-        "version": os.getenv("APP_VERSION", "1.0.0"),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    resp = {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    if settings.APP_ENV != "production":
+        resp["version"] = os.getenv("APP_VERSION", "1.0.0")
+    return resp

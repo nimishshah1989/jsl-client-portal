@@ -4,7 +4,7 @@ dashboard analytics, and client impersonation."""
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select, desc, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -179,12 +179,18 @@ async def deduplicate_symbols(
             affected_clients.add((r[1], r[2]))
 
         await db.execute(
-            text("DELETE FROM cpp_transactions WHERE id = ANY(:ids)"),
-            {"ids": ids_to_delete},
+            text("""
+                UPDATE cpp_transactions
+                SET is_deleted = true,
+                    deleted_at = NOW(),
+                    deleted_by = :admin_id
+                WHERE id = ANY(:ids)
+            """),
+            {"ids": ids_to_delete, "admin_id": admin["client_id"]},
         )
         deleted_total += len(ids_to_delete)
         logger.info(
-            "Deleted %d duplicate '%s' transactions (canonical: %s)",
+            "Soft-deleted %d duplicate '%s' transactions (canonical: %s)",
             len(ids_to_delete), alias, canonical,
         )
 
@@ -450,11 +456,12 @@ async def dashboard_analytics(
 @router.post("/impersonate/{client_id}")
 async def impersonate_client(
     client_id: int,
+    request: Request,
     response: Response,
     admin: dict = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Issue a JWT for viewing a client's dashboard. Admin only."""
+    """Issue a JWT for viewing a client's dashboard. Admin only. Audit-logged."""
     stmt = select(Client).where(Client.id == client_id)
     client = (await db.execute(stmt)).scalar_one_or_none()
     if client is None:
@@ -463,8 +470,8 @@ async def impersonate_client(
     token = create_access_token(client.id, is_admin=False)
 
     from backend.config import get_settings
-    settings = get_settings()
-    secure_cookie = "http://" not in settings.CORS_ORIGINS
+    _settings = get_settings()
+    secure_cookie = _settings.APP_ENV == "production"
 
     response.set_cookie(
         key="access_token",
@@ -473,7 +480,17 @@ async def impersonate_client(
         secure=secure_cookie,
         samesite="strict",
         path="/",
-        max_age=48 * 3600,
+        max_age=_settings.JWT_EXPIRY_HOURS * 3600,
+    )
+
+    from backend.services.audit_service import get_client_ip, get_request_id, log_audit
+    await log_audit(
+        db, user_id=admin["client_id"], action="IMPERSONATE",
+        resource_type="CLIENT", resource_id=client_id,
+        target_client_id=client_id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        details={"admin_id": admin["client_id"], "target_client": client.client_code},
     )
 
     return {"client_name": client.name, "client_id": client.id}

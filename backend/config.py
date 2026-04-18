@@ -26,7 +26,13 @@ class Settings(BaseSettings):
         ...,
         description="HS256 signing key — generate with: openssl rand -hex 32",
     )
-    JWT_EXPIRY_HOURS: int = Field(default=48, ge=1, le=720)
+    JWT_EXPIRY_HOURS: int = Field(default=24, ge=1, le=720)
+
+    # PII encryption
+    ENCRYPTION_KEY: str = Field(
+        default="",
+        description="Fernet key for PII encryption — generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"",
+    )
 
     # Application
     APP_NAME: str = Field(default="JSL Client Portfolio Portal")

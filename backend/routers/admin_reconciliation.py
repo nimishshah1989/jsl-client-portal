@@ -229,7 +229,7 @@ async def upload_holding_report(
         raise
     except Exception as exc:
         logger.error("Reconciliation failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Reconciliation failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Reconciliation processing failed. Please try again or contact support.") from exc
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 

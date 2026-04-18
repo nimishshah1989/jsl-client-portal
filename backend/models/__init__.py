@@ -9,6 +9,8 @@ from backend.models.risk_metric import RiskMetric
 from backend.models.drawdown import DrawdownSeries
 from backend.models.upload_log import UploadLog
 from backend.models.cash_flow import CashFlow
+from backend.models.audit_log import AuditLog
+from backend.models.consent import ClientConsent
 
 __all__ = [
     "Client",
@@ -20,4 +22,6 @@ __all__ = [
     "DrawdownSeries",
     "UploadLog",
     "CashFlow",
+    "AuditLog",
+    "ClientConsent",
 ]

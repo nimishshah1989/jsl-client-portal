@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 from backend.database import AsyncSessionLocal
 from backend.middleware.auth_middleware import get_admin_user
 from backend.schemas.admin import UploadPreviewResponse
+from backend.services.file_format_detector import (
+    FileFormatMismatch,
+    UploadSlot,
+    assert_format,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin-upload"])
 limiter = Limiter(key_func=get_remote_address)
@@ -91,10 +96,17 @@ async def _save_and_start_background(
     ingest_func_name: str,
     file_type: str,
     admin_id: int,
+    expected_slot: UploadSlot,
 ) -> dict[str, Any]:
     """Save upload to temp file and kick off background ingestion.
 
     Returns immediately with a job_id so the frontend can poll for status.
+
+    Before dispatching the background task, the file is sniffed against the
+    expected upload slot's fingerprint — wrong-slot uploads (e.g. a
+    Transaction file dropped into the Holdings slot) are rejected with a
+    400 so the admin sees the error immediately and no upsert runs against
+    a mis-shaped row set.
     """
     _validate_upload(file)
     content = await file.read()
@@ -106,6 +118,38 @@ async def _save_and_start_background(
     ) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
+
+    # Guard: fingerprint the header BEFORE kicking off ingestion.
+    # CSV uploads skip the sniff (openpyxl is xlsx-only); upstream slots
+    # are xlsx in practice, so CSV only hits the /upload-preview path.
+    if tmp_path.lower().endswith((".xlsx", ".xls")):
+        try:
+            detection = assert_format(tmp_path, expected_slot)
+            logger.info(
+                "Upload accepted for slot=%s: detected=%s confidence=%.2f filename=%s",
+                expected_slot,
+                detection.detected,
+                detection.confidence,
+                file.filename,
+            )
+        except FileFormatMismatch as exc:
+            # Clean up the temp file — no background task will claim it.
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            logger.warning(
+                "Rejected upload for slot=%s filename=%s: %s",
+                expected_slot,
+                file.filename,
+                exc.detail,
+            )
+            raise HTTPException(status_code=400, detail=exc.detail) from exc
+        except Exception as exc:
+            # Parsing/open failure is a separate problem — keep the temp file
+            # around in case the background task path can handle it gracefully.
+            logger.warning(
+                "File format sniff failed (passing through to ingestion): %s",
+                exc,
+            )
 
     job_id = f"{file_type}_{int(time.time() * 1000)}"
     _upload_jobs[job_id] = {
@@ -141,7 +185,7 @@ async def upload_nav(
 ) -> dict[str, Any]:
     """Upload NAV file — returns immediately, processes in background."""
     return await _save_and_start_background(
-        file, "ingest_nav_file", "NAV", admin["client_id"],
+        file, "ingest_nav_file", "NAV", admin["client_id"], expected_slot="NAV",
     )
 
 
@@ -155,6 +199,7 @@ async def upload_transactions(
     """Upload transaction file — returns immediately, processes in background."""
     return await _save_and_start_background(
         file, "ingest_transaction_file", "TRANSACTIONS", admin["client_id"],
+        expected_slot="TRANSACTIONS",
     )
 
 
@@ -168,6 +213,7 @@ async def upload_equity_holdings(
     """Upload equity holding report — updates holding prices + runs reconciliation."""
     return await _save_and_start_background(
         file, "ingest_equity_holdings_file", "EQUITY_HOLDINGS", admin["client_id"],
+        expected_slot="EQUITY_HOLDINGS",
     )
 
 
@@ -181,6 +227,7 @@ async def upload_etf_holdings(
     """Upload ETF/MF holding report — updates ETF position prices in cpp_holdings."""
     return await _save_and_start_background(
         file, "ingest_etf_holdings_file", "ETF_HOLDINGS", admin["client_id"],
+        expected_slot="ETF_HOLDINGS",
     )
 
 
@@ -194,6 +241,7 @@ async def upload_cashflows(
     """Upload cash flow file — returns immediately, processes in background."""
     return await _save_and_start_background(
         file, "ingest_cashflow_file", "CASHFLOWS", admin["client_id"],
+        expected_slot="CASHFLOWS",
     )
 
 

@@ -55,6 +55,15 @@ _STATEMENTS = [
     "ALTER TABLE cpp_transactions ADD COLUMN IF NOT EXISTS deleted_by INTEGER REFERENCES cpp_clients(id) ON DELETE SET NULL",
     "ALTER TABLE cpp_portfolios ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
     "ALTER TABLE cpp_holdings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+    """CREATE TABLE IF NOT EXISTS cpp_bo_holdings_snapshot (
+        id              SERIAL PRIMARY KEY,
+        snapshot_type   VARCHAR(20) NOT NULL,
+        market_date     DATE,
+        filename        TEXT,
+        uploaded_at     TIMESTAMP NOT NULL DEFAULT NOW(),
+        records         JSONB NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_cpp_bo_snapshot_type_uploaded ON cpp_bo_holdings_snapshot(snapshot_type, uploaded_at DESC)",
 ]
 
 

@@ -506,11 +506,27 @@ async def ingest_equity_holdings_file(
     try:
         from backend.services.holding_report_parser import holding_report_summary
         from backend.services.reconciliation_service import reconcile
-        from backend.services.reconciliation_store import save_reconciliation
+        from backend.services.reconciliation_store import (
+            load_latest_bo_holdings,
+            save_bo_holdings_snapshot,
+            save_reconciliation,
+        )
 
         summary_info = holding_report_summary(records)
-        reco_result = await reconcile(records, db)
         market_date = summary_info.get("market_date")
+
+        # Persist this equity snapshot, then union with the latest ETF snapshot
+        # (if any) so EXTRA_IN_OURS flags on ETF positions clear once the BO
+        # exports both files.
+        await save_bo_holdings_snapshot(db, "EQUITY", market_date, filepath.name, records)
+        etf_records = await load_latest_bo_holdings(db, "ETF")
+        combined = list(records) + list(etf_records)
+        logger.info(
+            "Reconciliation input: %d equity records + %d ETF records (from latest ETF snapshot)",
+            len(records), len(etf_records),
+        )
+
+        reco_result = await reconcile(combined, db)
         await save_reconciliation(db, reco_result, market_date, filepath.name)
         logger.info(
             "Reconciliation saved: %d/%d clients matched",
@@ -576,6 +592,43 @@ async def ingest_etf_holdings_file(
         upload.errors.append({"stage": "price_update", "error": str(exc)})
         logger.error("ETF holdings price update failed: %s", exc, exc_info=True)
         await db.rollback()
+
+    # Persist the ETF snapshot and re-run reconciliation against the latest
+    # EQUITY snapshot unioned with these ETF records, so the ETF positions
+    # stop flagging as EXTRA_IN_OURS on the reconciliation page.
+    try:
+        from backend.services.holding_report_parser import holding_report_summary
+        from backend.services.reconciliation_service import reconcile
+        from backend.services.reconciliation_store import (
+            load_latest_bo_holdings,
+            save_bo_holdings_snapshot,
+            save_reconciliation,
+        )
+
+        summary_info = holding_report_summary(records)
+        market_date = summary_info.get("market_date")
+
+        await save_bo_holdings_snapshot(db, "ETF", market_date, filepath.name, records)
+        equity_records = await load_latest_bo_holdings(db, "EQUITY")
+        if equity_records:
+            combined = list(equity_records) + list(records)
+            logger.info(
+                "Reconciliation input: %d ETF records + %d equity records (from latest EQUITY snapshot)",
+                len(records), len(equity_records),
+            )
+            reco_result = await reconcile(combined, db)
+            await save_reconciliation(db, reco_result, market_date, filepath.name)
+            logger.info(
+                "Reconciliation saved: %d/%d clients matched",
+                reco_result.total_clients_matched, reco_result.total_clients_bo,
+            )
+        else:
+            logger.info(
+                "ETF snapshot stored but reconciliation skipped — no EQUITY snapshot yet"
+            )
+    except Exception as exc:
+        logger.warning("Reconciliation step failed (non-critical): %s", exc)
+        upload.errors.append({"stage": "reconciliation", "error": str(exc)})
 
     await _log(db, upload, uploaded_by)
     logger.info(

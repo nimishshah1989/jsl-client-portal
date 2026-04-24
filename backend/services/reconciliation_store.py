@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -20,11 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 class _DecimalEncoder(json.JSONEncoder):
-    """JSON encoder that converts Decimal to string."""
+    """JSON encoder that converts Decimal to string and date to ISO string."""
 
     def default(self, o: object) -> Any:
         if isinstance(o, Decimal):
             return str(o)
+        if isinstance(o, (date, datetime)):
+            return o.isoformat()
         return super().default(o)
 
 
@@ -166,6 +168,125 @@ async def save_reconciliation(
     await db.commit()
     logger.info("Saved reconciliation run #%d", run_id)
     return run_id
+
+
+async def ensure_snapshot_table(db: AsyncSession) -> None:
+    """Create cpp_bo_holdings_snapshot table if it doesn't exist."""
+    await db.execute(text("""
+        CREATE TABLE IF NOT EXISTS cpp_bo_holdings_snapshot (
+            id              SERIAL PRIMARY KEY,
+            snapshot_type   VARCHAR(20) NOT NULL,
+            market_date     DATE,
+            filename        TEXT,
+            uploaded_at     TIMESTAMP NOT NULL DEFAULT NOW(),
+            records         JSONB NOT NULL
+        )
+    """))
+    await db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_cpp_bo_snapshot_type_uploaded "
+        "ON cpp_bo_holdings_snapshot(snapshot_type, uploaded_at DESC)"
+    ))
+    await db.commit()
+
+
+async def save_bo_holdings_snapshot(
+    db: AsyncSession,
+    snapshot_type: str,
+    market_date,
+    filename: str,
+    records: list[dict],
+) -> int:
+    """Persist a parsed BO holdings list (equity or ETF) for later reconciliation.
+
+    snapshot_type: "EQUITY" or "ETF".
+    The latest snapshot per type is used when reconciling — the reconciliation
+    run unions the latest EQUITY + ETF snapshots before matching.
+    """
+    await ensure_snapshot_table(db)
+    records_json = json.dumps(records, cls=_DecimalEncoder)
+    r = await db.execute(
+        text("""
+            INSERT INTO cpp_bo_holdings_snapshot
+                (snapshot_type, market_date, filename, uploaded_at, records)
+            VALUES (:st, :md, :fn, :ua, CAST(:rj AS jsonb))
+            RETURNING id
+        """),
+        {
+            "st": snapshot_type,
+            "md": market_date,
+            "fn": filename,
+            "ua": datetime.now(timezone.utc).replace(tzinfo=None),
+            "rj": records_json,
+        },
+    )
+    snapshot_id = r.scalar()
+    await db.commit()
+    logger.info(
+        "Saved %s BO holdings snapshot #%d (%d records, market_date=%s)",
+        snapshot_type, snapshot_id, len(records), market_date,
+    )
+    return snapshot_id
+
+
+def _rehydrate_snapshot_records(records: list[dict]) -> list[dict]:
+    """Convert stringified Decimals and ISO dates back to native types.
+
+    Mirror of the shape produced by holding_report_parser.parse_holding_report —
+    numeric columns become Decimal, market_date becomes date.
+    """
+    decimal_keys = (
+        "quantity", "avg_cost", "total_cost", "holding_cost_pct",
+        "market_price", "market_value", "notional_pnl",
+        "roi_pct", "holding_market_pct",
+    )
+    out: list[dict] = []
+    for rec in records:
+        r = dict(rec)
+        for k in decimal_keys:
+            v = r.get(k)
+            if v is None or isinstance(v, Decimal):
+                continue
+            try:
+                r[k] = Decimal(str(v))
+            except Exception:
+                r[k] = None
+        md = r.get("market_date")
+        if isinstance(md, str) and md:
+            try:
+                r["market_date"] = date.fromisoformat(md[:10])
+            except ValueError:
+                r["market_date"] = None
+        out.append(r)
+    return out
+
+
+async def load_latest_bo_holdings(
+    db: AsyncSession,
+    snapshot_type: str,
+) -> list[dict]:
+    """Load the most recent BO holdings snapshot of the given type.
+
+    Returns a list of holding-record dicts (same shape as parse_holding_report),
+    or an empty list if no snapshot of that type has been uploaded.
+    """
+    await ensure_snapshot_table(db)
+    r = await db.execute(
+        text("""
+            SELECT records
+            FROM cpp_bo_holdings_snapshot
+            WHERE snapshot_type = :st
+            ORDER BY uploaded_at DESC
+            LIMIT 1
+        """),
+        {"st": snapshot_type},
+    )
+    row = r.fetchone()
+    if row is None or row[0] is None:
+        return []
+    raw = row[0]  # asyncpg returns JSONB as list/dict already
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return _rehydrate_snapshot_records(raw)
 
 
 async def load_latest_reconciliation(db: AsyncSession) -> dict | None:

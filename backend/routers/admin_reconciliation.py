@@ -28,7 +28,9 @@ from backend.services.holding_report_parser import (
 )
 from backend.services.reconciliation_service import reconcile
 from backend.services.reconciliation_store import (
+    load_latest_bo_holdings,
     load_latest_reconciliation,
+    save_bo_holdings_snapshot,
     save_reconciliation,
 )
 
@@ -216,9 +218,20 @@ async def upload_holding_report(
             raise HTTPException(status_code=400, detail="No holdings found in file")
 
         summary_info = holding_report_summary(records)
-        result = await reconcile(records, db)
-
         market_date = summary_info.get("market_date")
+
+        # Treat a manual reconciliation upload as the EQUITY snapshot, union
+        # with the most recent ETF snapshot so ETF-only positions don't flag
+        # as EXTRA_IN_OURS.
+        await save_bo_holdings_snapshot(db, "EQUITY", market_date, file.filename, records)
+        etf_records = await load_latest_bo_holdings(db, "ETF")
+        combined = list(records) + list(etf_records)
+        logger.info(
+            "Reconciliation input: %d equity records + %d ETF records (from latest ETF snapshot)",
+            len(records), len(etf_records),
+        )
+
+        result = await reconcile(combined, db)
         await save_reconciliation(db, result, market_date, file.filename)
 
         _cache["result"] = result

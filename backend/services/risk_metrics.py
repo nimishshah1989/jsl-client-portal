@@ -55,10 +55,12 @@ def compute_twr_series(nav_df: pd.DataFrame) -> np.ndarray:
     nav_vals = nav_df["nav_value"].values.astype(float)
     corpus = nav_df["invested_amount"].values.astype(float)
 
-    # Day-0: if NAV != corpus, capture pre-inception gain/loss ratio.
-    # Matches FIE2 compute_twr_unit_nav(): unit_nav[0] = 100 * (NAV_0 / corpus_0)
-    initial_ratio = nav_vals[0] / corpus[0] if corpus[0] != 0 else 1.0
-    twr = np.ones(len(nav_vals)) * (100.0 * initial_ratio)
+    # TWR always starts at base 100 on day 0.  Pre-inception gain (NAV_0 > corpus_0)
+    # belongs to a prior tracking period and must NOT inflate the in-scope return —
+    # PMS's "Adjusted Return [Weighted] %" reports cumulative TWR from day 0, so we
+    # anchor there as well.  Chain-linking below captures the actual investment
+    # performance from inception onward.
+    twr = np.ones(len(nav_vals)) * 100.0
     for i in range(1, len(nav_vals)):
         prev_nav = nav_vals[i - 1]
         if prev_nav == 0:
@@ -226,6 +228,91 @@ def max_drawdown(nav_series: pd.Series) -> dict:
         "dd_end": trough_idx,
         "dd_recovery": recovery_idx,
     }
+
+
+def compute_weighted_avg_corpus(nav_df: pd.DataFrame) -> float:
+    """
+    Time-weighted average corpus over the holding period.
+
+    For each NAV row the invested_amount ("corpus") is held between that date
+    and the next.  We multiply the corpus level by the day-count it was
+    maintained and divide by the total day span:
+
+        weighted_avg_corpus = Σ (corpus_t × Δdays_t) / total_days
+
+    This is the denominator PMS uses for its "Adjusted Return [Weighted] %":
+    profit / time-weighted-average-corpus × 100 (Simple-Dietz style).
+    """
+    if len(nav_df) < 2:
+        return float(nav_df["invested_amount"].iloc[0]) if len(nav_df) else 0.0
+
+    dates = pd.to_datetime(nav_df["nav_date"]).values
+    corpus = nav_df["invested_amount"].astype(float).values
+
+    total_days = (dates[-1] - dates[0]).astype("timedelta64[D]").astype(int)
+    if total_days <= 0:
+        return float(corpus[-1])
+
+    weighted_sum = 0.0
+    for i in range(len(corpus) - 1):
+        segment_days = (dates[i + 1] - dates[i]).astype("timedelta64[D]").astype(int)
+        if segment_days <= 0:
+            continue
+        weighted_sum += float(corpus[i]) * segment_days
+
+    return weighted_sum / total_days if total_days > 0 else 0.0
+
+
+def compute_weighted_bench_return(nav_df: pd.DataFrame) -> float:
+    """
+    Cash-flow-weighted benchmark return using the virtual units method.
+
+    Matches PMS "Absolute Return S&P CNX Nifty [Weighted] %".
+
+    For each corpus change (inflow/outflow), we "buy" or "sell" Nifty units at
+    that date's benchmark price.  The total current value of those units versus
+    net contributions gives the cash-flow-adjusted benchmark return.
+
+    Formula:
+      - Each corpus delta d at date t: nifty_units += d / benchmark(t)
+      - net_corpus = sum of all deltas (inflows positive, outflows negative)
+      - weighted_return = (nifty_units * latest_benchmark - net_corpus) / net_corpus * 100
+
+    Returns 0.0 if benchmark data is unavailable or net corpus is zero.
+    """
+    bench_vals = nav_df["benchmark_value"].astype(float)
+    corpus_vals = nav_df["invested_amount"].astype(float)
+
+    if bench_vals.sum() == 0 or bench_vals.isna().all():
+        return 0.0
+
+    nifty_units = 0.0
+    net_corpus = 0.0
+    prev_corpus = 0.0
+
+    for i in range(len(nav_df)):
+        corpus = float(corpus_vals.iloc[i])
+        bench = float(bench_vals.iloc[i])
+
+        if bench <= 0:
+            prev_corpus = corpus
+            continue
+
+        if abs(corpus - prev_corpus) > 1e-4:
+            delta = corpus - prev_corpus
+            nifty_units += delta / bench
+            net_corpus += delta
+            prev_corpus = corpus
+
+    if net_corpus <= 0 or nifty_units <= 0:
+        return 0.0
+
+    latest_bench = float(bench_vals.iloc[-1])
+    if latest_bench <= 0:
+        return 0.0
+
+    nifty_value = nifty_units * latest_bench
+    return ((nifty_value - net_corpus) / net_corpus) * 100
 
 
 # ── Re-exports from risk_metrics_analysis for backward compatibility ──

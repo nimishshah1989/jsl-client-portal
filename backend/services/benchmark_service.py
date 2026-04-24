@@ -1,15 +1,20 @@
 """
-Benchmark data service — fetch Nifty 50 index data via yfinance.
+Benchmark data service — fetch Nifty 50 index history.
 
-Provides date-aligned benchmark values for portfolio comparison.
-Caches downloaded data to avoid redundant API calls within a session.
+Primary source: JIP data core (`fie_v3.public.index_prices`, index_name='NIFTY').
+The JIP OHLCV table is refreshed daily and covers full history back to 2020-09.
+
+Fallback: yfinance `^NSEI` — used only if the JIP source is unreachable or
+returns no rows for the requested range.
 """
 
 import logging
+import os
 from datetime import date, datetime, timedelta
 from typing import ClassVar
 
 import pandas as pd
+import psycopg2
 import yfinance as yf
 from tenacity import (
     retry,
@@ -20,8 +25,11 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
-# Nifty 50 ticker on Yahoo Finance
+# Nifty 50 ticker on Yahoo Finance (fallback only)
 _NIFTY_TICKER = "^NSEI"
+
+# JIP data core index_name for Nifty 50 spot
+_JIP_NIFTY_INDEX = "NIFTY"
 
 # Extra days to fetch before start_date to ensure we have data for alignment
 _BUFFER_DAYS = 10
@@ -68,6 +76,70 @@ class BenchmarkCache:
         cls._cache.clear()
 
 
+def _jip_db_dsn() -> str | None:
+    """
+    Derive a sync DSN for the JIP data core (`fie_v3`) from DATABASE_URL_SYNC
+    or DATABASE_URL. Returns None if no usable URL is configured.
+
+    The JIP data core lives on the SAME RDS instance as `client_portal`, so we
+    reuse the existing credentials and just swap the database name.
+    """
+    url = os.getenv("DATABASE_URL_SYNC") or os.getenv("DATABASE_URL", "")
+    if not url:
+        return None
+    # Strip async driver marker if present
+    dsn = url.replace("postgresql+asyncpg://", "postgresql://")
+    # Replace the path segment ("/client_portal") with "/fie_v3"
+    if "?" in dsn:
+        base, query = dsn.split("?", 1)
+        base = base.rsplit("/", 1)[0] + "/fie_v3"
+        dsn = f"{base}?{query}"
+    else:
+        dsn = dsn.rsplit("/", 1)[0] + "/fie_v3"
+    return dsn
+
+
+def _fetch_jip_index_history(
+    index_name: str, start: date, end: date
+) -> pd.DataFrame:
+    """
+    Query the JIP data core for a daily OHLCV series.
+
+    Returns a DataFrame with a tz-naive DatetimeIndex and a 'close' column.
+    Raises on connection error so the caller can decide to fall back.
+    """
+    dsn = _jip_db_dsn()
+    if not dsn:
+        raise RuntimeError("No DATABASE_URL configured for JIP data core lookup")
+
+    conn = psycopg2.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT date, close_price
+                FROM public.index_prices
+                WHERE index_name = %s
+                  AND date::date BETWEEN %s AND %s
+                ORDER BY date ASC
+                """,
+                (index_name, start.isoformat(), end.isoformat()),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return pd.DataFrame(columns=["close"])
+
+    df = pd.DataFrame(rows, columns=["date", "close"])
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date").sort_index()
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna()
+    return df
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=2, max=8),
@@ -76,10 +148,7 @@ class BenchmarkCache:
 )
 def _fetch_yfinance_history(fetch_start: date, fetch_end: date) -> pd.DataFrame:
     """
-    Internal helper that performs the actual yfinance API call with retry.
-
-    Retries up to 3 times with exponential backoff (2s, 4s, 8s).
-    Raises RuntimeError if yfinance returns empty data.
+    Fallback yfinance fetch with retry (used only if JIP core has no data).
     """
     ticker = yf.Ticker(_NIFTY_TICKER)
     hist = ticker.history(
@@ -98,7 +167,10 @@ def _fetch_yfinance_history(fetch_start: date, fetch_end: date) -> pd.DataFrame:
 
 def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
     """
-    Fetch Nifty 50 daily close prices from Yahoo Finance.
+    Fetch Nifty 50 daily close prices.
+
+    Primary: JIP data core (`fie_v3.public.index_prices`, NIFTY).
+    Fallback: yfinance `^NSEI` if JIP query returns empty.
 
     Args:
         start_date: First date needed (inclusive).
@@ -107,7 +179,7 @@ def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
     Returns:
         DataFrame with DatetimeIndex and a single column 'close'.
         Index name is 'date'. Sorted ascending by date.
-        Returns empty DataFrame if all retries fail (does not crash pipeline).
+        Returns empty DataFrame if both sources fail.
     """
     # Check cache first
     cached = BenchmarkCache.get(_NIFTY_TICKER, start_date, end_date)
@@ -120,42 +192,45 @@ def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
         )
         return cached
 
-    # Fetch with buffer to handle holidays near start_date
     fetch_start = start_date - timedelta(days=_BUFFER_DAYS)
-    # yfinance end date is exclusive, so add 1 day
-    fetch_end = end_date + timedelta(days=1)
+    fetch_end = end_date
 
-    logger.info(
-        "Fetching Nifty 50 data from %s to %s via yfinance",
-        fetch_start,
-        fetch_end,
-    )
-
+    # 1. Try JIP data core first.
     try:
-        hist = _fetch_yfinance_history(fetch_start, fetch_end)
+        jip_df = _fetch_jip_index_history(_JIP_NIFTY_INDEX, fetch_start, fetch_end)
+        if not jip_df.empty:
+            logger.info(
+                "JIP data core: fetched %d Nifty rows for %s to %s",
+                len(jip_df), fetch_start, fetch_end,
+            )
+            BenchmarkCache.put(_NIFTY_TICKER, jip_df)
+            mask = (jip_df.index.date >= start_date) & (jip_df.index.date <= end_date)
+            return jip_df.loc[mask].copy()
+        logger.warning(
+            "JIP data core returned 0 rows for NIFTY %s to %s; falling back to yfinance",
+            fetch_start, fetch_end,
+        )
+    except Exception as exc:
+        logger.warning("JIP data core query failed (%s); falling back to yfinance", exc)
+
+    # 2. Fallback to yfinance.
+    try:
+        hist = _fetch_yfinance_history(fetch_start, fetch_end + timedelta(days=1))
     except Exception as exc:
         logger.warning(
-            "Nifty 50 fetch failed after 3 retries (%s to %s): %s",
-            fetch_start,
-            fetch_end,
-            exc,
+            "Both JIP and yfinance failed for Nifty %s to %s: %s",
+            fetch_start, fetch_end, exc,
         )
         return pd.DataFrame(columns=["close"])
 
-    # Keep only the Close column, rename to 'close'
     df = hist[["Close"]].copy()
     df.columns = ["close"]
     df.index.name = "date"
     df = df.sort_index()
-
-    # Cache the full fetched range
     BenchmarkCache.put(_NIFTY_TICKER, df)
-
-    # Trim to requested range
     mask = (df.index.date >= start_date) & (df.index.date <= end_date)
     result = df.loc[mask].copy()
-
-    logger.info("Fetched %d Nifty 50 data points", len(result))
+    logger.info("yfinance fallback: %d Nifty points", len(result))
     return result
 
 

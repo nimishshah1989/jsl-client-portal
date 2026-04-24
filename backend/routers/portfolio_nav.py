@@ -34,41 +34,30 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 async def _build_flow_map(
     db: AsyncSession, client_id: int, portfolio_id: int,
 ) -> dict[dt.date, float]:
-    """Build cash flow map: try cpp_cash_flows first, fallback to corpus changes."""
-    cf_result = await db.execute(
-        sa_text("""
-            SELECT flow_date, flow_type, amount
-            FROM cpp_cash_flows
-            WHERE client_id = :cid AND portfolio_id = :pid
-            ORDER BY flow_date ASC
-        """),
-        {"cid": client_id, "pid": portfolio_id},
+    """Build cash flow map from corpus changes in cpp_nav_series.
+
+    Always derived from the NAV series — the authoritative source for invested
+    capital, and always current after a NAV upload.  The separate cashflow
+    ledger files (cpp_cash_flows) require their own upload step and can be
+    stale; using them as primary caused the Nifty benchmark line to stop
+    adjusting whenever a new NAV file was uploaded without a matching cashflow
+    file.  Corpus changes = actual client invested-capital movements, which is
+    exactly the right basis for the virtual-units Nifty comparison.
+    """
+    all_nav_stmt = (
+        select(NavSeries.nav_date, NavSeries.invested_amount)
+        .where(NavSeries.client_id == client_id)
+        .where(NavSeries.portfolio_id == portfolio_id)
+        .order_by(NavSeries.nav_date)
     )
-    cf_rows = cf_result.fetchall()
-
+    all_navs = (await db.execute(all_nav_stmt)).all()
     flow_map: dict[dt.date, float] = {}
-    if cf_rows:
-        for flow_date, flow_type, amount in cf_rows:
-            amt = float(amount)
-            if flow_type == "OUTFLOW":
-                amt = -amt
-            flow_map[flow_date] = flow_map.get(flow_date, 0.0) + amt
-    else:
-        # Fallback: infer from corpus changes in the full NAV data
-        all_nav_stmt = (
-            select(NavSeries.nav_date, NavSeries.invested_amount)
-            .where(NavSeries.client_id == client_id)
-            .where(NavSeries.portfolio_id == portfolio_id)
-            .order_by(NavSeries.nav_date)
-        )
-        all_navs = (await db.execute(all_nav_stmt)).all()
-        prev_corpus = Decimal("0")
-        for nav_date, invested in all_navs:
-            if invested is not None and invested != prev_corpus:
-                delta = float(invested - prev_corpus)
-                flow_map[nav_date] = flow_map.get(nav_date, 0.0) + delta
-                prev_corpus = invested
-
+    prev_corpus = Decimal("0")
+    for nav_date, invested in all_navs:
+        if invested is not None and invested != prev_corpus:
+            delta = float(invested - prev_corpus)
+            flow_map[nav_date] = flow_map.get(nav_date, 0.0) + delta
+            prev_corpus = invested
     return flow_map
 
 

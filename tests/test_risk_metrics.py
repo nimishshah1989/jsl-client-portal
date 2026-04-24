@@ -11,6 +11,8 @@ from backend.services.risk_metrics import (
     compute_daily_returns,
     compute_twr_index,
     compute_twr_series,
+    compute_weighted_avg_corpus,
+    compute_weighted_bench_return,
     max_drawdown,
     sharpe_ratio,
     sortino_ratio,
@@ -241,3 +243,53 @@ class TestMarketCorrelation:
 
     def test_short_series(self):
         assert market_correlation(pd.Series([0.01]), pd.Series([0.02])) == 0.0
+
+
+class TestWeightedAvgCorpus:
+    def test_constant_corpus(self):
+        # Corpus held at 1,000,000 for full period → weighted avg = 1,000,000
+        df = pd.DataFrame({
+            "nav_date": pd.date_range("2024-01-01", periods=100, freq="D"),
+            "invested_amount": [1_000_000.0] * 100,
+        })
+        result = compute_weighted_avg_corpus(df)
+        assert pytest.approx(result, rel=1e-6) == 1_000_000.0
+
+    def test_midway_doubling(self):
+        # 100 days at 1,000,000 then 100 days at 2,000,000 → weighted avg ≈ 1.5M
+        dates = pd.date_range("2024-01-01", periods=201, freq="D")
+        corpus = [1_000_000.0] * 100 + [2_000_000.0] * 101
+        df = pd.DataFrame({"nav_date": dates, "invested_amount": corpus})
+        result = compute_weighted_avg_corpus(df)
+        # 100 days at 1M + 100 days at 2M over 200-day span
+        assert pytest.approx(result, rel=1e-3) == 1_500_000.0
+
+    def test_single_row(self):
+        df = pd.DataFrame({
+            "nav_date": [pd.Timestamp("2024-01-01")],
+            "invested_amount": [500_000.0],
+        })
+        assert compute_weighted_avg_corpus(df) == 500_000.0
+
+
+class TestWeightedBenchReturn:
+    def test_no_corpus_changes_returns_zero(self):
+        # Single initial infusion, then no further events → our virtual-units
+        # path needs at least one delta to compute a return.
+        df = pd.DataFrame({
+            "nav_date": pd.date_range("2024-01-01", periods=3, freq="D"),
+            "benchmark_value": [10_000.0, 10_500.0, 11_000.0],
+            "invested_amount": [1_000_000.0, 1_000_000.0, 1_000_000.0],
+        })
+        # First row is the only corpus delta; single-flow case should still compute
+        # (delta=1M at bench=10000 → 100 units, terminal=11000 → 1.1M → 10% return).
+        result = compute_weighted_bench_return(df)
+        assert pytest.approx(result, rel=1e-2) == 10.0
+
+    def test_empty_benchmark(self):
+        df = pd.DataFrame({
+            "nav_date": pd.date_range("2024-01-01", periods=3, freq="D"),
+            "benchmark_value": [0.0, 0.0, 0.0],
+            "invested_amount": [1_000_000.0, 1_000_000.0, 1_000_000.0],
+        })
+        assert compute_weighted_bench_return(df) == 0.0

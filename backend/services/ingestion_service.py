@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -49,6 +50,31 @@ class UploadResult:
     clients_affected: int = 0
     errors: list[dict] = field(default_factory=list)
     client_codes: list[str] = field(default_factory=list)
+
+
+def _derive_cash_flows_from_nav(client_code: str, records: list[dict]) -> list[dict]:
+    """Derive INFLOW/OUTFLOW records from corpus changes in parsed NAV records.
+
+    Called during NAV ingestion so cpp_cash_flows stays current without needing
+    a separate cashflow file upload.  XIRR then always uses current corpus data.
+    """
+    sorted_recs = sorted(records, key=lambda r: r["date"])
+    prev_corpus = Decimal("0")
+    cf_records: list[dict] = []
+    for rec in sorted_recs:
+        corpus = Decimal(str(rec["corpus"])) if rec["corpus"] is not None else Decimal("0")
+        if corpus != prev_corpus:
+            delta = corpus - prev_corpus
+            nav_date = rec["date"].date() if isinstance(rec["date"], datetime) else rec["date"]
+            cf_records.append({
+                "date": nav_date,
+                "flow_type": "INFLOW" if delta > 0 else "OUTFLOW",
+                "amount": abs(delta),
+                "description": "Derived from corpus change in NAV file",
+                "client_code": client_code,
+            })
+            prev_corpus = corpus
+    return cf_records
 
 
 def _group_by_client(records: list[dict]) -> dict[str, list[dict]]:
@@ -160,6 +186,13 @@ async def ingest_nav_file(
 
             nav_count = await upsert_nav_rows(db, client_id, portfolio_id, client_records)
             upload.rows_processed += nav_count
+
+            # Derive cash flows from corpus changes and upsert — keeps cpp_cash_flows
+            # current after every NAV upload so XIRR is always accurate.
+            cf_records = _derive_cash_flows_from_nav(client_code, client_records)
+            if cf_records:
+                cf_count = await upsert_cash_flows(db, client_id, portfolio_id, cf_records)
+                logger.debug("Upserted %d corpus-derived cash flows for %s", cf_count, client_code)
 
             # Pass the pre-fetched nifty_df; falls back to per-client fetch if empty
             bench_data = nifty_df if not nifty_df.empty else None

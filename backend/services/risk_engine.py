@@ -28,6 +28,8 @@ from backend.services.risk_metrics import (
     compute_daily_returns,
     compute_drawdown_series,
     compute_twr_series,
+    compute_weighted_avg_corpus,
+    compute_weighted_bench_return,
     down_capture,
     information_ratio,
     market_correlation,
@@ -264,8 +266,31 @@ def compute_all_metrics(
             period_returns[f"sortino_{suffix}"] = row["port_sortino"]
             bench_period_returns[f"bench_sortino_{suffix}"] = row["bench_sortino"]
 
+    # PMS reports two inception-level return numbers side-by-side:
+    #   - "Absolute Return %"            = (current_value − net_contribution) / net_contribution
+    #   - "Adjusted Return [Weighted] %" = profit / time-weighted-average-corpus
+    #     (Simple-Dietz: normalises profit by the average capital actually at work)
+    # Our `absolute_return` field is the Simple-Dietz figure (matches PMS
+    # "Adjusted Return [Weighted]"); `absolute_return_simple` is the
+    # committed-capital ratio shown as PMS "Absolute Return %".
+    nav_raw = nav_df["nav_value"].astype(float)
+    corpus_raw = nav_df["invested_amount"].astype(float)
+    terminal_nav = float(nav_raw.iloc[-1])
+    terminal_corpus = float(corpus_raw.iloc[-1])
+    profit = terminal_nav - terminal_corpus
+    simple_abs_return = (
+        (profit / terminal_corpus) * 100.0 if terminal_corpus > 0 else 0.0
+    )
+    weighted_avg_corpus = compute_weighted_avg_corpus(nav_df)
+    adjusted_weighted_return = (
+        (profit / weighted_avg_corpus) * 100.0
+        if weighted_avg_corpus > 0
+        else 0.0
+    )
+
     result = {
-        "absolute_return": absolute_return(port_series),
+        "absolute_return": adjusted_weighted_return,
+        "absolute_return_simple": simple_abs_return,
         "cagr": port_cagr,
         "xirr": xirr_val,
         "volatility": port_vol,
@@ -401,6 +426,15 @@ async def run_risk_engine(
     metrics = compute_all_metrics(nav_df, risk_free_rate)
     if not metrics:
         return {}
+
+    # 3a. Override inception benchmark return with cash-flow-weighted virtual units
+    # method to match PMS "Absolute Return S&P CNX Nifty [Weighted] %".
+    # The simple ratio (bench_end/bench_start - 1) over-states Nifty returns when
+    # clients added corpus at higher Nifty prices; the weighted method accounts
+    # for the actual timing and size of each inflow/outflow.
+    weighted_bench_return = compute_weighted_bench_return(nav_df)
+    if weighted_bench_return != 0.0:
+        metrics["bench_return_inception"] = weighted_bench_return
 
     # 3b. Recompute XIRR using real cash flows if available
     cf_result = await db_session.execute(

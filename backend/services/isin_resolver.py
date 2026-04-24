@@ -99,13 +99,14 @@ async def seed_cache_from_db(db: AsyncSession) -> int:
     for isin, symbols in by_isin.items():
         if isin in _CACHE:
             continue  # already resolved (e.g. from a previous price update)
-        # Pick the first symbol that matches the NSE ticker pattern
+        # Pick the first symbol that matches the NSE ticker pattern.
+        # Apply overrides BEFORE the regex check so long parsed symbols like
+        # "MIRAESMALLCAP" (13 chars) can still seed via their short canonical
+        # ticker ("MASMC250") instead of falling through to Yahoo Finance search.
         overrides = _get_overrides()
         for sym in symbols:
-            if _NSE_TICKER_RE.match(sym):
-                # Apply symbol overrides: DB may contain old tickers for merged companies
-                # (e.g. "LTI" stored before the LTI→LTIM rename was added to overrides)
-                canonical = overrides.get(sym, sym)
+            canonical = overrides.get(sym, sym)
+            if _NSE_TICKER_RE.match(canonical):
                 _CACHE[isin] = f"{canonical}.NS"
                 seeded += 1
                 break

@@ -102,7 +102,7 @@ async def seed_cache_from_db(db: AsyncSession) -> int:
         # Pick the first symbol that matches the NSE ticker pattern.
         # Apply overrides BEFORE the regex check so long parsed symbols like
         # "MIRAESMALLCAP" (13 chars) can still seed via their short canonical
-        # ticker ("MASMC250") instead of falling through to Yahoo Finance search.
+        # ticker ("SMALLCAP") instead of falling through to Yahoo Finance search.
         overrides = _get_overrides()
         for sym in symbols:
             canonical = overrides.get(sym, sym)

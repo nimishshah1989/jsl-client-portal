@@ -84,7 +84,7 @@ _SYMBOL_OVERRIDES: dict[str, str] = {
     "SWANENERGY": "SWANCORP",         # Swan Energy → Swan Corp Limited (SWANCORP)
     # ETFs recorded under AMC product name instead of NSE ticker
     "ICICIPRUDENTIALBSESENSEXET": "SENSEXIETF",
-    "MIRAESMALLCAP": "MASMC250",   # Mirae Asset Nifty SmallCap 250 ETF (13 chars → bypasses 12-char ISIN cache regex)
+    "MIRAESMALLCAP": "SMALLCAP",   # Mirae Asset Nifty Smallcap 250 Momentum Quality 100 ETF — NSE ticker is SMALLCAP (ISIN INF769K01LC3)
 }
 
 # Sector mapping for ETF/commodity instruments

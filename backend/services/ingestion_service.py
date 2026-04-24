@@ -517,8 +517,11 @@ async def ingest_equity_holdings_file(
 
         # Persist this equity snapshot, then union with the latest ETF snapshot
         # (if any) so EXTRA_IN_OURS flags on ETF positions clear once the BO
-        # exports both files.
+        # exports both files. Tag records with source_bucket so reconcile()
+        # routes ETF rows against etf_component_nav (loader already tags ETFs).
         await save_bo_holdings_snapshot(db, "EQUITY", market_date, filepath.name, records)
+        for r in records:
+            r["source_bucket"] = "EQUITY"
         etf_records = await load_latest_bo_holdings(db, "ETF")
         combined = list(records) + list(etf_records)
         logger.info(
@@ -609,6 +612,8 @@ async def ingest_etf_holdings_file(
         market_date = summary_info.get("market_date")
 
         await save_bo_holdings_snapshot(db, "ETF", market_date, filepath.name, records)
+        for r in records:
+            r["source_bucket"] = "ETF"
         equity_records = await load_latest_bo_holdings(db, "EQUITY")
         if equity_records:
             combined = list(equity_records) + list(records)

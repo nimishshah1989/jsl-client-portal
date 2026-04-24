@@ -93,7 +93,8 @@ class ClientReconciliationResponse(BaseModel):
     nav_vs_bo_diff: Decimal | None = None         # structural gap (ETF+cash) — reference only
 
     # ── ETF reconciliation ────────────────────────────────────────────────────
-    our_etf_holdings_total: Decimal = Decimal("0")  # sum of EXTRA_IN_OURS current_value
+    our_etf_holdings_total: Decimal = Decimal("0")  # sum of ETF-bucket matches + structural extras
+    bo_etf_holdings_total: Decimal = Decimal("0")   # sum of BO ETF-file rows (source_bucket="ETF")
     etf_vs_ours_diff: Decimal | None = None          # ≈ 0 when ETF prices are current
 
 
@@ -123,6 +124,7 @@ class ReconciliationSummaryResponse(BaseModel):
     total_bo_holdings_value: Decimal = Decimal("0")
     total_our_holdings_value: Decimal = Decimal("0")
     total_our_etf_holdings_value: Decimal = Decimal("0")
+    total_bo_etf_holdings_value: Decimal = Decimal("0")
     total_nav_equity_vs_bo_diff: Decimal = Decimal("0")
     total_nav_vs_bo_diff: Decimal = Decimal("0")
     total_bo_vs_ours_diff: Decimal = Decimal("0")

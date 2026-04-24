@@ -79,6 +79,7 @@ async def save_reconciliation(
         "total_bo_holdings_value": str(result.total_bo_holdings_value),
         "total_our_holdings_value": str(result.total_our_holdings_value),
         "total_our_etf_holdings_value": str(result.total_our_etf_holdings_value),
+        "total_bo_etf_holdings_value": str(result.total_bo_etf_holdings_value),
         "total_nav_equity_vs_bo_diff": str(result.total_nav_equity_vs_bo_diff),
         "total_nav_vs_bo_diff": str(result.total_nav_vs_bo_diff),
         "total_bo_vs_ours_diff": str(result.total_bo_vs_ours_diff),
@@ -116,6 +117,7 @@ async def save_reconciliation(
             "bo_holdings_total": _s(c.bo_holdings_total),
             "our_holdings_total": _s(c.our_holdings_total),
             "our_etf_holdings_total": _s(c.our_etf_holdings_total),
+            "bo_etf_holdings_total": _s(c.bo_etf_holdings_total),
             "nav_equity_vs_bo_diff": _s(c.nav_equity_vs_bo_diff),
             "nav_vs_bo_diff": _s(c.nav_vs_bo_diff),
             "bo_vs_ours_diff": _s(c.bo_vs_ours_diff),
@@ -268,6 +270,10 @@ async def load_latest_bo_holdings(
 
     Returns a list of holding-record dicts (same shape as parse_holding_report),
     or an empty list if no snapshot of that type has been uploaded.
+
+    Each returned record is tagged with source_bucket = snapshot_type so
+    downstream reconcile() can route ETF-bucket rows against etf_component_nav
+    and equity-bucket rows against nav_equity_component.
     """
     await ensure_snapshot_table(db)
     r = await db.execute(
@@ -286,7 +292,10 @@ async def load_latest_bo_holdings(
     raw = row[0]  # asyncpg returns JSONB as list/dict already
     if isinstance(raw, str):
         raw = json.loads(raw)
-    return _rehydrate_snapshot_records(raw)
+    records = _rehydrate_snapshot_records(raw)
+    for rec in records:
+        rec["source_bucket"] = snapshot_type
+    return records
 
 
 async def load_latest_reconciliation(db: AsyncSession) -> dict | None:

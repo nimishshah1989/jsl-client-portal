@@ -125,11 +125,15 @@ class ClientReconciliation:
     nav_vs_bo_diff: Decimal | None = None
 
     # ── ETF reconciliation ────────────────────────────────────────────────────
-    # EXTRA_IN_OURS positions are the ETF/MF holdings tracked in nav's ETF column.
+    # Positions tracked in nav's ETF column (not the equity BO file).
     # Their total current_value (if prices are populated) should ≈ etf_component_nav.
-    # If current prices are zero (not yet backfilled), etf_vs_ours_diff will equal
-    # etf_component_nav — showing what's unpriced, not a real gap.
-    our_etf_holdings_total: Decimal = _ZERO     # Sum of current_value for EXTRA positions
+    # our_etf_holdings_total: sum of current_value for our ETF positions that
+    #   either (a) matched a BO row from the ETF-bucket file, or (b) had no BO
+    #   confirmation at all (STRUCTURAL_ETF).
+    # bo_etf_holdings_total: sum of market_value from BO ETF-bucket rows.
+    # When the ETF BO file is uploaded, bo_etf_holdings_total ≈ our_etf_holdings_total.
+    our_etf_holdings_total: Decimal = _ZERO
+    bo_etf_holdings_total: Decimal = _ZERO
     etf_vs_ours_diff: Decimal | None = None     # etf_component_nav - our_etf_holdings_total
 
     @property
@@ -181,6 +185,7 @@ class ReconciliationSummary:
     total_bo_holdings_value: Decimal = _ZERO
     total_our_holdings_value: Decimal = _ZERO
     total_our_etf_holdings_value: Decimal = _ZERO
+    total_bo_etf_holdings_value: Decimal = _ZERO
     # nav_equity_vs_bo ≈ 0 → all equity reconciled firm-wide
     total_nav_equity_vs_bo_diff: Decimal = _ZERO
     # nav_vs_bo includes ETF+cash structural gap (reference)
@@ -403,15 +408,26 @@ async def reconcile(
         # Track which of our symbols/ISINs were matched by BO entries
         our_isins_seen: set[str] = set()
         our_symbols_seen: set[str] = set()
+        # Equity bucket: BO rows from the equity holdings file (compared against nav_equity_component)
         bo_total = _ZERO
         our_total_at_bo_price = _ZERO
+        # ETF bucket: BO rows explicitly tagged source_bucket="ETF" (compared against etf_component_nav)
+        bo_etf_total = _ZERO
+        our_etf_total = _ZERO
 
         for bo in bo_holdings:
             bo_symbol = bo["symbol"]
             bo_isin = (bo.get("isin") or "").strip()
             bo_price = _safe_dec(bo["market_price"])
             bo_value = _safe_dec(bo["market_value"])
-            bo_total += bo_value
+            # Rows from the ETF Holdings file are tagged source_bucket="ETF" by
+            # callers; everything else (including standard exchange-listed ETFs
+            # that live in the equity Holdings file) is equity-bucket.
+            is_etf_bucket = bo.get("source_bucket") == "ETF"
+            if is_etf_bucket:
+                bo_etf_total += bo_value
+            else:
+                bo_total += bo_value
 
             # ── ISIN-first lookup ────────────────────────────────────────────
             our = None
@@ -461,7 +477,12 @@ async def reconcile(
                 # Use BO market price for our value — apples-to-apples comparison
                 # so value_diff reflects qty/cost differences only, not price feeds
                 our_value_at_bo_price = our_qty * bo_price
-                our_total_at_bo_price += our_value_at_bo_price
+                # Route the our-side contribution into the matching bucket so
+                # bo_vs_ours_diff stays a bucket-local comparison.
+                if is_etf_bucket:
+                    our_etf_total += our_value_at_bo_price
+                else:
+                    our_total_at_bo_price += our_value_at_bo_price
 
                 our_cost_basis = our_qty * our_avg
                 our_pnl_at_bo_price = our_value_at_bo_price - our_cost_basis
@@ -506,7 +527,8 @@ async def reconcile(
         #              "Investments in ETF" column, not the equity BO report. Expected.
         #   EQ / other → EXTRA_IN_OURS: a genuine discrepancy (sold/transferred in BO
         #              but still present in our transaction-derived holdings).
-        our_etf_total = _ZERO
+        # Note: matched ETF-bucket items already contributed to our_etf_total above;
+        # this loop adds unmatched structural ETF/MF extras at their current_value.
         for symbol, our in our_sym.items():
             if symbol in our_symbols_seen:
                 continue
@@ -515,11 +537,16 @@ async def reconcile(
                 continue  # Already matched via ISIN under a different symbol name
 
             our_cv = _safe_dec(our.get("current_value"))
-            our_etf_total += our_cv  # sum market value of extras (0 if prices not updated)
 
             instrument_type = our.get("instrument_type", "EQ")
             is_structural = instrument_type in ("ETF", "MF")
             status = "STRUCTURAL_ETF" if is_structural else "EXTRA_IN_OURS"
+
+            # Only structural ETF/MF extras belong in the ETF bucket comparison
+            # against etf_component_nav. Genuine EXTRA_IN_OURS (equity) items are
+            # true discrepancies and must not inflate our_etf_total.
+            if is_structural:
+                our_etf_total += our_cv
 
             match = HoldingMatch(
                 client_code=ucc, symbol=symbol, status=status,
@@ -545,6 +572,7 @@ async def reconcile(
         client_recon.our_holdings_total = our_total_at_bo_price
         client_recon.bo_vs_ours_diff = bo_total - our_total_at_bo_price
         client_recon.our_etf_holdings_total = our_etf_total
+        client_recon.bo_etf_holdings_total = bo_etf_total
 
         nav_data = latest_navs.get(ucc)
         if nav_data:
@@ -572,6 +600,7 @@ async def reconcile(
 
         summary.total_bo_holdings_value += bo_total
         summary.total_our_holdings_value += our_total_at_bo_price
+        summary.total_bo_etf_holdings_value += bo_etf_total
         summary.total_bo_vs_ours_diff += client_recon.bo_vs_ours_diff
 
         summary.clients.append(client_recon)
@@ -597,14 +626,14 @@ async def reconcile(
         "4-component reconciliation: %d/%d clients, %d/%d holdings matched | "
         "structural_etf=%d  extra=%d  missing=%d | "
         "NAV=%.0f  Equity=%.0f  ETF=%.0f  Cash=%.0f | "
-        "BO=%.0f  Ours=%.0f  ETF_ours=%.0f",
+        "BO_equity=%.0f  Ours_equity=%.0f  BO_etf=%.0f  Ours_etf=%.0f",
         summary.total_clients_matched, summary.total_clients_bo,
         summary.total_holdings_matched, summary.total_holdings_bo,
         summary.total_structural_etf, summary.total_extra_in_ours, summary.total_missing_in_ours,
         summary.total_nav_value, summary.total_nav_equity_value,
         summary.total_etf_value, summary.total_cash_value,
         summary.total_bo_holdings_value, summary.total_our_holdings_value,
-        summary.total_our_etf_holdings_value,
+        summary.total_bo_etf_holdings_value, summary.total_our_etf_holdings_value,
     )
 
     summary.commentary = generate_commentary(summary)

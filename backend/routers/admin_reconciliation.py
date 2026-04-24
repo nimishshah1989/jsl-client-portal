@@ -89,6 +89,7 @@ def _client_to_response(c) -> ClientReconciliationResponse:
         nav_vs_bo_diff=c.nav_vs_bo_diff,
         # ETF reconciliation
         our_etf_holdings_total=c.our_etf_holdings_total,
+        bo_etf_holdings_total=c.bo_etf_holdings_total,
         etf_vs_ours_diff=c.etf_vs_ours_diff,
     )
 
@@ -118,6 +119,7 @@ def _summary_to_response(result, market_date=None) -> ReconciliationSummaryRespo
         total_bo_holdings_value=result.total_bo_holdings_value,
         total_our_holdings_value=result.total_our_holdings_value,
         total_our_etf_holdings_value=result.total_our_etf_holdings_value,
+        total_bo_etf_holdings_value=result.total_bo_etf_holdings_value,
         total_nav_equity_vs_bo_diff=result.total_nav_equity_vs_bo_diff,
         total_nav_vs_bo_diff=result.total_nav_vs_bo_diff,
         total_bo_vs_ours_diff=result.total_bo_vs_ours_diff,
@@ -186,6 +188,7 @@ def _db_row_to_client_response(c: dict) -> ClientReconciliationResponse:
         nav_vs_bo_diff=_dec_field("nav_vs_bo_diff"),
         # ETF reconciliation
         our_etf_holdings_total=Decimal(str(c.get("our_etf_holdings_total", "0"))),
+        bo_etf_holdings_total=Decimal(str(c.get("bo_etf_holdings_total", "0"))),
         etf_vs_ours_diff=_dec_field("etf_vs_ours_diff"),
     )
 
@@ -222,8 +225,11 @@ async def upload_holding_report(
 
         # Treat a manual reconciliation upload as the EQUITY snapshot, union
         # with the most recent ETF snapshot so ETF-only positions don't flag
-        # as EXTRA_IN_OURS.
+        # as EXTRA_IN_OURS. Tag records with source_bucket so reconcile() can
+        # route ETF rows against etf_component_nav instead of nav_equity_component.
         await save_bo_holdings_snapshot(db, "EQUITY", market_date, file.filename, records)
+        for r in records:
+            r["source_bucket"] = "EQUITY"
         etf_records = await load_latest_bo_holdings(db, "ETF")
         combined = list(records) + list(etf_records)
         logger.info(
@@ -287,6 +293,7 @@ async def get_summary(
         total_bo_holdings_value=Decimal(str(stats.get("total_bo_holdings_value", "0"))),
         total_our_holdings_value=Decimal(str(stats.get("total_our_holdings_value", "0"))),
         total_our_etf_holdings_value=Decimal(str(stats.get("total_our_etf_holdings_value", "0"))),
+        total_bo_etf_holdings_value=Decimal(str(stats.get("total_bo_etf_holdings_value", "0"))),
         total_nav_equity_vs_bo_diff=Decimal(str(stats.get("total_nav_equity_vs_bo_diff", "0"))),
         total_nav_vs_bo_diff=Decimal(str(stats.get("total_nav_vs_bo_diff", "0"))),
         total_bo_vs_ours_diff=Decimal(str(stats.get("total_bo_vs_ours_diff", "0"))),
@@ -391,45 +398,63 @@ async def rerun_reconciliation(
 ) -> ReconciliationSummaryResponse:
     """Re-run reconciliation against current cpp_holdings without re-uploading a file.
 
-    Reconstructs the BO holdings list from the latest stored reconciliation run,
-    then calls reconcile() fresh so any holdings changes (e.g. after a FIFO fix)
-    are reflected immediately.
+    Uses the latest EQUITY + ETF snapshots from cpp_bo_holdings_snapshot so
+    source_bucket tagging is preserved. Falls back to reconstructing from the
+    last stored reconciliation run if no snapshots exist yet.
     """
-    stored = await load_latest_reconciliation(db)
-    if stored is None:
-        raise HTTPException(status_code=404, detail="No previous reconciliation to re-run. Upload a holding report first.")
+    equity_records = await load_latest_bo_holdings(db, "EQUITY")
+    etf_records = await load_latest_bo_holdings(db, "ETF")
 
-    # Reconstruct BO holdings from stored match data
-    clients_data = stored["summary"].get("clients", [])
-    backoffice_holdings: list[dict] = []
-    for c in clients_data:
-        ucc = c["client_code"]
-        family_group = c.get("family_group", "")
-        for m in c.get("matches", []):
-            # Only include positions that existed in BO (bo_quantity is set)
-            if m.get("bo_quantity") is None:
-                continue
-            backoffice_holdings.append({
-                "ucc": ucc,
-                "symbol": m["symbol"],
-                "isin": m.get("bo_isin") or "",
-                "quantity": m["bo_quantity"],
-                "avg_cost": m.get("bo_avg_cost"),
-                "total_cost": m.get("bo_total_cost"),
-                "market_price": m.get("bo_market_price"),
-                "market_value": m.get("bo_market_value"),
-                "notional_pnl": m.get("bo_pnl"),
-                "holding_market_pct": m.get("bo_weight_pct"),
-                "family_group": family_group,
-            })
-
-    if not backoffice_holdings:
-        raise HTTPException(status_code=400, detail="No BO holdings found in stored run — cannot re-run")
+    if not equity_records and not etf_records:
+        # No snapshots yet — reconstruct BO rows from the last persisted run
+        # and treat them all as equity bucket (pre-snapshot-era compatibility).
+        stored = await load_latest_reconciliation(db)
+        if stored is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No previous reconciliation to re-run. Upload a holding report first.",
+            )
+        clients_data = stored["summary"].get("clients", [])
+        backoffice_holdings: list[dict] = []
+        for c in clients_data:
+            ucc = c["client_code"]
+            family_group = c.get("family_group", "")
+            for m in c.get("matches", []):
+                if m.get("bo_quantity") is None:
+                    continue
+                backoffice_holdings.append({
+                    "ucc": ucc,
+                    "symbol": m["symbol"],
+                    "isin": m.get("bo_isin") or "",
+                    "quantity": m["bo_quantity"],
+                    "avg_cost": m.get("bo_avg_cost"),
+                    "total_cost": m.get("bo_total_cost"),
+                    "market_price": m.get("bo_market_price"),
+                    "market_value": m.get("bo_market_value"),
+                    "notional_pnl": m.get("bo_pnl"),
+                    "holding_market_pct": m.get("bo_weight_pct"),
+                    "family_group": family_group,
+                    "source_bucket": "EQUITY",
+                })
+        if not backoffice_holdings:
+            raise HTTPException(
+                status_code=400,
+                detail="No BO holdings found in stored run — cannot re-run",
+            )
+        market_date = stored.get("market_date")
+        filename = f"rerun-of-{stored.get('filename', 'unknown')}"
+    else:
+        # load_latest_bo_holdings already tags each record with source_bucket.
+        backoffice_holdings = list(equity_records) + list(etf_records)
+        logger.info(
+            "Rerun reconciliation input: %d equity + %d ETF records",
+            len(equity_records), len(etf_records),
+        )
+        stored = await load_latest_reconciliation(db)
+        market_date = stored.get("market_date") if stored else None
+        filename = f"rerun-of-{stored.get('filename', 'snapshot') if stored else 'snapshot'}"
 
     result = await reconcile(backoffice_holdings, db)
-
-    market_date = stored.get("market_date")
-    filename = f"rerun-of-{stored.get('filename', 'unknown')}"
     await save_reconciliation(db, result, market_date, filename)
 
     _cache["result"] = result

@@ -216,7 +216,7 @@ async def update_benchmark_values(
             benchmark = align_benchmark(nav_dates, benchmark_data)
         else:
             benchmark = fetch_and_align(nav_dates)
-    except RuntimeError as exc:
+    except (RuntimeError, TypeError, ValueError) as exc:
         logger.error("Failed to align benchmark data: %s", exc)
         return 0
 

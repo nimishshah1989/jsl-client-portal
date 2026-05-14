@@ -254,10 +254,16 @@ def align_benchmark(
     if isinstance(nav_dates, pd.Series):
         nav_dates = pd.DatetimeIndex(nav_dates)
 
-    # Ensure nifty_df index is tz-naive to match nav_dates
+    # Ensure both sides are tz-naive before reindex.
+    # tz_convert(None) is the correct pandas 2.x approach for stripping timezone;
+    # tz_localize(None) on a tz-aware index is deprecated and raises TypeError
+    # in some pandas 2.2 builds when the index has a non-UTC timezone.
     nifty = nifty_df["close"].copy()
     if nifty.index.tz is not None:
-        nifty.index = nifty.index.tz_localize(None)
+        nifty = nifty.tz_convert(None)
+
+    if nav_dates.tz is not None:
+        nav_dates = nav_dates.tz_convert(None)
 
     # Reindex to nav_dates with forward-fill for holidays
     aligned = nifty.reindex(nav_dates, method="ffill")

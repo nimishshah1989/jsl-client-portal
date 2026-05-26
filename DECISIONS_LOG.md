@@ -50,3 +50,11 @@
 ---
 
 <!-- Future decisions will be appended below by Claude during build sessions -->
+
+## ADR-006: Production Readiness Remediation Backlog
+**Date:** 2026-05-26
+**Status:** Accepted — In Progress
+**Context:** Pre-launch 4-agent audit (security under OWASP ASVS L2 + DPDP Act 2023, code/architecture, math accuracy, bug-hunt) identified 17 P0, 22 P1, 17+ P2, 13+ P3 issues. Verdict: not ready for 200-client launch.
+**Decision:** Adopt a 4-sprint remediation plan tracked in `PRODUCTION_READINESS.md` (single source of truth, read at every session start). Sprint 1 (safety net) and Sprint 2 (math + accuracy) are blocking; Sprints 3 (DPDP rights) and 4 (quality) are pre-launch but lower urgency. Auth/cookie/JWT changes run sequentially due to overlapping files; math/test/quality streams run in parallel via worktree-isolated sub-agents.
+**Consequences:** ~10–14 engineering days to defensible production. Each fix lands as its own PR gated by `/code-review` + `/security-review` + `/verify`. Pre-launch verification gate (12 manual checks against BJ53 reference data and Market Pulse) is non-negotiable.
+

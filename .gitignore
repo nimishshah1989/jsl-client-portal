@@ -20,6 +20,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code session state (agent worktrees, etc.)
+.claude/
+
 # QA
 qa_screenshots/
 QA_REPORT.md

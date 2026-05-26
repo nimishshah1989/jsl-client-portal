@@ -1,8 +1,14 @@
 """Application configuration loaded from environment variables."""
 
+import re
 from decimal import Decimal
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
+
+# M8: every entry in CORS_ORIGINS must match this regex. Wildcards are
+# rejected outright — multi-tenant client portal must not echo arbitrary
+# Origin headers when credentials (cookies) are sent.
+_CORS_ORIGIN_RE = re.compile(r"^https?://[a-z0-9.-]+(:\d+)?$")
 
 
 class Settings(BaseSettings):
@@ -99,8 +105,27 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        """Parse comma-separated CORS origins into a list."""
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+        """Parse comma-separated CORS origins into a strictly-validated list.
+
+        M8: each origin must match ``^https?://[a-z0-9.-]+(:\\d+)?$``. A
+        bare ``*`` is rejected. Any invalid origin causes startup to fail with
+        ``ValueError``, so misconfiguration is caught before serving traffic.
+        """
+        origins = [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+        for origin in origins:
+            if origin == "*":
+                raise ValueError(
+                    "CORS_ORIGINS may not contain '*' — wildcard origins are "
+                    "incompatible with credentialed requests and are forbidden "
+                    "by policy. List each allowed origin explicitly."
+                )
+            if not _CORS_ORIGIN_RE.match(origin):
+                raise ValueError(
+                    f"CORS_ORIGINS entry {origin!r} is not a valid origin. "
+                    f"Each origin must match {_CORS_ORIGIN_RE.pattern!r} "
+                    "(e.g. https://clients.jslwealth.in)."
+                )
+        return origins
 
     model_config = {
         "env_file": ".env",

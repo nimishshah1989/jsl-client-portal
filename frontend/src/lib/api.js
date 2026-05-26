@@ -21,13 +21,40 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Fetch a CSRF token from the backend so the cookie is set before the
+ * first state-changing request. Used by the login flow (H1: CSRF default-deny
+ * means /api/auth/login itself requires a CSRF token).
+ */
+export async function ensureCsrfToken() {
+  if (typeof document === 'undefined') return null;
+  if (getCsrfToken()) return getCsrfToken();
+  try {
+    const res = await fetch(`${API_BASE}/auth/csrf`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    return data?.csrf_token || getCsrfToken();
+  } catch {
+    return null;
+  }
+}
+
 export async function apiFetch(url, options = {}) {
   const fullUrl = `${API_BASE}${url}`;
 
   const csrfHeaders = {};
   const method = (options.method || 'GET').toUpperCase();
   if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-    const csrf = getCsrfToken();
+    // H1: CSRF default-deny — every unsafe-method request needs a token,
+    // including unauthenticated calls like /auth/login. If the cookie isn't
+    // present yet, fetch one transparently before sending the request.
+    let csrf = getCsrfToken();
+    if (!csrf) {
+      csrf = await ensureCsrfToken();
+    }
     if (csrf) csrfHeaders['X-CSRF-Token'] = csrf;
   }
 

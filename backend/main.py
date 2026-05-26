@@ -32,6 +32,16 @@ logger = logging.getLogger("cpp")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Verify database connectivity on startup, start scheduler, dispose on shutdown."""
+    # M3: APP_ENV must be explicitly set so we never fall through to a
+    # development-style default in prod. Settings supplies a default of
+    # "development", but an empty/unset value should still fail fast.
+    if not settings.APP_ENV or not settings.APP_ENV.strip():
+        raise RuntimeError(
+            "APP_ENV is not set. Set APP_ENV=development for local work, "
+            "or APP_ENV=production (or another non-development value) for "
+            "deployed environments — security headers (HSTS) depend on it."
+        )
+
     logger.info("Starting %s (env=%s)", settings.APP_NAME, settings.APP_ENV)
     try:
         async with async_engine.connect() as conn:
@@ -43,6 +53,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise RuntimeError(
             f"Cannot connect to database. Check DATABASE_URL. Error: {exc}"
         ) from exc
+
+    # M8: surface CORS posture at startup. The cors_origin_list property
+    # already raises ValueError on invalid entries, so by reaching this
+    # point we know every origin parsed cleanly.
+    _origins = settings.cors_origin_list
+    if settings.APP_ENV == "production" and len(_origins) > 1:
+        logger.warning(
+            "More than one CORS origin configured in production (%d): %s — "
+            "review CORS_ORIGINS to confirm this is intentional.",
+            len(_origins),
+            _origins,
+        )
 
     # Start background scheduler for periodic price refresh
     from backend.services.scheduler import start_scheduler, stop_scheduler

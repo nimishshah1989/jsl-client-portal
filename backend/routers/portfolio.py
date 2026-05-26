@@ -7,7 +7,7 @@ import datetime as dt
 import logging
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from backend.schemas.portfolio import (
     HoldingResponse,
     SummaryResponse,
 )
+from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 @router.get("/summary", response_model=SummaryResponse)
 async def get_summary(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SummaryResponse:
@@ -129,6 +131,13 @@ async def get_summary(
         cash_amount = current * cash_pct_clamped / Decimal("100") if current else Decimal("0")
         ledger_cash = cash_amount  # Best approximation before re-upload
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return SummaryResponse(
         invested=dec2(invested),
         current_value=dec2(current),
@@ -148,6 +157,7 @@ async def get_summary(
 
 @router.get("/allocation", response_model=AllocationResponse)
 async def get_allocation(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AllocationResponse:
@@ -184,11 +194,19 @@ async def get_allocation(
         for name, value in sorted(sector_map.items(), key=lambda x: x[1], reverse=True)
     ]
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return AllocationResponse(by_sector=by_sector)
 
 
 @router.get("/holdings", response_model=list[HoldingResponse])
 async def get_holdings(
+    request: Request,
     sort: str = Query("weight", regex="^(weight|pnl|value|name|price|quantity|avg_cost|pnl_pct)$"),
     order: str = Query("desc", regex="^(asc|desc)$"),
     asset_class: str | None = Query(None),
@@ -231,11 +249,19 @@ async def get_holdings(
             pnl_pct=pnl_pct,
             weight_pct=dec2(h.weight_pct) if h.weight_pct else None,
         ))
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="HOLDINGS", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return responses
 
 
 @router.get("/drawdown-series", response_model=list[DrawdownPoint])
 async def get_drawdown_series(
+    request: Request,
     time_range: str = Query("ALL", alias="range"),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -258,6 +284,13 @@ async def get_drawdown_series(
     if cutoff is not None:
         rows = [r for r in rows if r.dd_date >= cutoff]
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return [
         DrawdownPoint(
             date=r.dd_date, drawdown_pct=dec2(r.drawdown_pct),

@@ -93,24 +93,32 @@ def to_decimal(
     places: int = 4,
     max_abs: float = 99_999_999.0,
     *,
-    none_as_null: bool = False,
+    nullable: bool = False,
 ) -> Decimal | None:
     """Convert float to Decimal with specified precision for DB storage.
 
     Clamps extreme values to avoid PostgreSQL numeric overflow.
 
-    When ``none_as_null=True``, returns ``None`` for None / NaN / Inf inputs
-    so the DB column ends up NULL instead of 0. Used for period metrics
-    where "insufficient history" must be distinguishable from "zero return".
+    Args:
+        nullable: If True, ``None``/NaN/inf passes through as ``None`` so the
+            DB column stores NULL. Used both for XIRR non-convergence
+            (xirr_service.compute_xirr) and for period-bucketed metrics where
+            "insufficient history" must be distinguishable from "0%".
+            Defaults to False (None → Decimal("0")).
     """
     if value is None:
-        return None if none_as_null else Decimal("0")
+        return None if nullable else Decimal("0")
     if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
-        return None if none_as_null else Decimal("0")
+        return None if nullable else Decimal("0")
     # Clamp to avoid NUMERIC(12,4) overflow
     clamped = max(-max_abs, min(max_abs, float(value)))
     quantize_str = "0." + "0" * places
     return Decimal(str(clamped)).quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP)
+
+
+# Decimal fields where a None/NaN result must be preserved as DB NULL rather
+# than coerced to 0 (so "couldn't compute" is distinguishable from "0%").
+_NULLABLE_DECIMAL_FIELDS = frozenset({"xirr"})
 
 
 def to_date(value: object) -> date | None:
@@ -159,9 +167,11 @@ async def upsert_risk_metrics(
             field.startswith(_PERIOD_PREFIXES)
             and field not in ("sharpe_ratio", "sortino_ratio")
         )
-        if is_period_field:
-            # None / NaN → NULL in DB, distinguishable from real zero.
-            row[field] = to_decimal(metrics.get(field), none_as_null=True)
+        if is_period_field or field in _NULLABLE_DECIMAL_FIELDS:
+            # None / NaN → NULL in DB, distinguishable from a real zero.
+            # Covers XIRR non-convergence and period buckets with too little
+            # history (e.g. return_5y when only 2 years of data exist).
+            row[field] = to_decimal(metrics.get(field), nullable=True)
         else:
             row[field] = to_decimal(metrics.get(field, 0.0))
 

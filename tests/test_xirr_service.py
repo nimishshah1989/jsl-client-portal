@@ -221,3 +221,81 @@ class TestXIRRIntegration:
         flows = extract_cash_flows_from_corpus(nav_df)
         xirr = compute_xirr(flows)
         assert pytest.approx(xirr, rel=0.01) == 30.0
+
+
+# ── Regression tests for robustness fixes (Sprint 2) ──
+
+
+class TestXIRRRobustness:
+    """Three robustness fixes:
+      1. out-of-order cash flows are sorted internally
+      2. brentq bracket widened to handle >10x annualised rates (e.g. 4x in 3mo)
+      3. non-convergence returns None (not 0.0) so callers can distinguish
+         "couldn't compute" from a real 0% return.
+    """
+
+    def test_out_of_order_cash_flows_match_in_order(self):
+        """Permuting input order must not change the XIRR result.
+
+        Previously, an unsorted input made d0 = first-element-as-given,
+        which produced negative day offsets and bracket failure.
+        """
+        in_order = [
+            (datetime(2024, 1, 1), 100.0),
+            (datetime(2024, 7, 1), 50.0),
+            (datetime(2025, 1, 1), -180.0),
+        ]
+        # Same flows, reversed
+        reversed_order = list(reversed(in_order))
+        # Same flows, arbitrary permutation
+        shuffled = [in_order[2], in_order[0], in_order[1]]
+
+        r_in = compute_xirr(in_order)
+        r_rev = compute_xirr(reversed_order)
+        r_shuf = compute_xirr(shuffled)
+
+        assert r_in is not None
+        assert r_rev is not None
+        assert r_shuf is not None
+        assert pytest.approx(r_in, rel=1e-6) == r_rev
+        assert pytest.approx(r_in, rel=1e-6) == r_shuf
+
+    def test_high_short_window_return_no_longer_zero(self):
+        """A 2x return in ~3 months annualises to (1+r) = 2^(365/91) ≈ 16,
+        so rate ≈ 15 — beyond the old upper bracket of 10. Previously this
+        fell through to the narrow fallback bracket [-0.5, 5.0] and was
+        reported as 0.0 (indistinguishable from a flat portfolio). With the
+        widened [-0.99, 50.0] bracket it must now resolve to a large
+        positive XIRR.
+        """
+        flows = [
+            (datetime(2024, 1, 1), 100.0),    # Invest ₹100
+            (datetime(2024, 4, 1), -200.0),   # Worth ₹200 ~91 days later
+        ]
+        result = compute_xirr(flows)
+        assert result is not None, "Should converge, not return None"
+        # Annualised should be well above 1000% — definitely not 0.
+        assert result > 1000.0, (
+            f"Expected a >1000% XIRR for a 2x quarterly return; got {result}. "
+            f"Bracket likely still too narrow."
+        )
+
+    def test_unconvergeable_input_returns_none(self):
+        """When brentq genuinely cannot find a root, compute_xirr must
+        return None — NOT 0.0 — so callers can render "N/A" instead of
+        silently showing a misleading "+0.00% XIRR".
+
+        Construct cash flows whose NPV(rate) has the same sign across the
+        entire search bracket: a huge near-instant gain that compounds
+        faster than rate=50 across the whole [-0.99, 50.0] window.
+        """
+        flows = [
+            (datetime(2024, 1, 1), 1.0),                 # Invest ₹1
+            (datetime(2024, 1, 2), -1_000_000_000.0),    # Worth ₹1bn the next day
+        ]
+        result = compute_xirr(flows)
+        # The hallmark of the fix: non-convergence must NOT collapse to 0.
+        assert result is None, (
+            f"Expected None for unconvergeable input; got {result!r}. "
+            f"Previously this was indistinguishable from a genuine 0% XIRR."
+        )

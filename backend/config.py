@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     APP_VERSION: str = Field(default="1.0.0")
     CORS_ORIGINS: str = Field(default="http://localhost:3000")
 
+    # TLS — RDS CA bundle
+    RDS_CA_BUNDLE: str = Field(
+        default="/app/rds-combined-ca-bundle.pem",
+        description="Path to AWS RDS CA bundle for TLS verification",
+    )
+
     # Risk computation
     RISK_FREE_RATE: Decimal = Field(
         default=Decimal("6.50"),
@@ -67,6 +73,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "JWT_SECRET must be at least 32 characters. "
                 "Generate with: openssl rand -hex 32"
+            )
+        return v
+
+    @field_validator("ENCRYPTION_KEY", mode="after")
+    @classmethod
+    def require_encryption_key_in_prod(cls, v: str, info) -> str:
+        app_env = info.data.get("APP_ENV", "development")
+        if app_env == "production" and not v:
+            raise ValueError(
+                "ENCRYPTION_KEY is required in production. "
+                "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
             )
         return v
 

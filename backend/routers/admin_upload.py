@@ -5,9 +5,10 @@ import logging
 import os
 import tempfile
 import time
+import zipfile
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -27,6 +28,41 @@ limiter = Limiter(key_func=get_remote_address)
 
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+
+# Upload directory — non-tmp, writable by appuser (C16)
+UPLOAD_DIR: str = os.environ.get("UPLOAD_DIR", "/app/data/uploads")
+
+# Zip-bomb guard: reject xlsx files whose uncompressed content exceeds this (C16)
+_MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB
+
+
+def _check_xlsx_zip_bomb(path: str) -> None:
+    """Raise HTTP 400 if the xlsx zip entries exceed the uncompressed size cap.
+
+    An xlsx file is a ZIP archive. A malicious file can have tiny compressed
+    content that expands to gigabytes (zip bomb). We iterate the central
+    directory — which is O(number of entries), not O(file size) — and sum
+    the declared uncompressed sizes before touching any data.
+    """
+    total = 0
+    try:
+        with zipfile.ZipFile(path) as zf:
+            for info in zf.infolist():
+                total += info.file_size
+                if total > _MAX_UNCOMPRESSED_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"File rejected: uncompressed content exceeds "
+                            f"{_MAX_UNCOMPRESSED_BYTES // 1024 // 1024} MB "
+                            "(possible zip bomb)"
+                        ),
+                    )
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File is not a valid xlsx (bad zip structure)",
+        ) from exc
 
 # In-memory upload job tracker for background processing status
 _upload_jobs: dict[str, dict[str, Any]] = {}
@@ -113,11 +149,23 @@ async def _save_and_start_background(
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 50MB limit")
 
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        delete=False, suffix=os.path.splitext(file.filename or "upload")[1]
+        delete=False,
+        suffix=os.path.splitext(file.filename or "upload")[1],
+        dir=UPLOAD_DIR,
     ) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
+
+    # Zip-bomb guard: check before opening with openpyxl (C16)
+    if tmp_path.lower().endswith((".xlsx", ".xls")):
+        try:
+            _check_xlsx_zip_bomb(tmp_path)
+        except HTTPException:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     # Guard: fingerprint the header BEFORE kicking off ingestion.
     # CSV uploads skip the sniff (openpyxl is xlsx-only); upstream slots
@@ -313,7 +361,8 @@ def _parse_xlsx_preview(
     """Read first 10 data rows from xlsx file."""
     import openpyxl
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext, dir=UPLOAD_DIR) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 

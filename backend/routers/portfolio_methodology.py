@@ -4,7 +4,7 @@ import datetime as dt
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.nav_series import NavSeries
 from backend.routers.helpers import dec2, get_default_portfolio, get_latest_risk, opt2
+from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 from backend.schemas.portfolio import (
     MethodologyMetric,
     MethodologyResponse,
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 @router.get("/xirr", response_model=XIRRResponse)
 async def get_xirr(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> XIRRResponse:
@@ -86,22 +88,45 @@ async def get_xirr(
 
         cash_flows.append((navs[-1].nav_date, navs[-1].current_value))
 
-    xirr_val = _compute_xirr(cash_flows) if len(cash_flows) >= 2 else Decimal("0")
+    xirr_val: Decimal | None = (
+        _compute_xirr(cash_flows) if len(cash_flows) >= 2 else Decimal("0")
+    )
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
+    # opt2 yields None → JSON null when XIRR did not converge; otherwise
+    # returns a fixed-2dp string. Avoids mis-displaying non-convergence as 0.
     return XIRRResponse(
-        xirr=dec2(xirr_val), cash_flows_count=len(cash_flows),
+        xirr=opt2(xirr_val),
+        cash_flows_count=len(cash_flows),
         first_investment_date=navs[0].nav_date,
         total_invested=dec2(navs[-1].invested_amount),
         cash_flow_source=cash_flow_source,
     )
 
 
-def _compute_xirr(cash_flows: list[tuple[dt.date, Decimal]]) -> Decimal:
-    """Compute XIRR using scipy brentq. Returns percentage."""
+def _compute_xirr(cash_flows: list[tuple[dt.date, Decimal]]) -> Decimal | None:
+    """Compute XIRR using scipy brentq. Returns percentage as Decimal, or
+    None on non-convergence so the API can emit JSON ``null`` and the
+    frontend can render "--" rather than a spurious "+0.00%".
+
+    Cash flows are sorted ascending by date first — out-of-order rows
+    would otherwise produce negative day offsets and force the bracket
+    across the rate=-1 singularity.
+
+    Search bracket widened to [-0.99, 50.0] so e.g. a 4x return in 3
+    months (≈ rate 14) is still solvable.
+    """
     from scipy.optimize import brentq
 
-    dates = [cf[0] for cf in cash_flows]
-    amounts = [float(cf[1]) for cf in cash_flows]
+    sorted_flows = sorted(cash_flows, key=lambda cf: cf[0])
+    dates = [cf[0] for cf in sorted_flows]
+    amounts = [float(cf[1]) for cf in sorted_flows]
     d0 = dates[0]
     day_offsets = [(d - d0).days / 365.0 for d in dates]
 
@@ -109,14 +134,22 @@ def _compute_xirr(cash_flows: list[tuple[dt.date, Decimal]]) -> Decimal:
         return sum(amt / (1 + rate) ** t for amt, t in zip(amounts, day_offsets))
 
     try:
-        rate = brentq(npv, -0.99, 10.0)
+        rate = brentq(npv, -0.99, 50.0)
         return Decimal(str(rate * 100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except (ValueError, RuntimeError):
-        return Decimal("0")
+        date_lo = dates[0].isoformat() if dates else "n/a"
+        date_hi = dates[-1].isoformat() if dates else "n/a"
+        logger.warning(
+            "XIRR did not converge — no root in bracket [-0.99, 50.0]; "
+            "n_flows=%d, date_range=%s..%s, returning None",
+            len(cash_flows), date_lo, date_hi,
+        )
+        return None
 
 
 @router.get("/methodology", response_model=MethodologyResponse)
 async def get_methodology(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> MethodologyResponse:
@@ -148,6 +181,13 @@ async def get_methodology(
     rf = risk.risk_free_rate
     metrics = _build_methodology_metrics(risk, rf, first_nav, last_nav)
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return MethodologyResponse(
         as_of_date=risk.computed_date, risk_free_rate=dec2(rf),
         trading_days_per_year=252, benchmark_name="NIFTY 50", metrics=metrics,

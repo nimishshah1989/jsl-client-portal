@@ -4,7 +4,7 @@ import datetime as dt
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select, func as sqlfunc, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from backend.middleware.auth_middleware import get_current_user
 from backend.models.nav_series import NavSeries
 from backend.models.transaction import Transaction
 from backend.routers.helpers import dec2, dec4, get_default_portfolio, get_latest_risk, opt2
+from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 from backend.schemas.portfolio import (
     PaginatedTransactions,
     PerformanceRow,
@@ -33,6 +34,7 @@ PERIODS = [
 
 @router.get("/performance-table", response_model=list[PerformanceRow])
 async def get_performance_table(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[PerformanceRow]:
@@ -67,11 +69,19 @@ async def get_performance_table(
             bench_sortino=opt2(getattr(risk, f"bench_sortino_{suffix}", None)),
         )
         rows.append(row)
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return rows
 
 
 @router.get("/risk-scorecard", response_model=RiskScorecardResponse)
 async def get_risk_scorecard(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> RiskScorecardResponse:
@@ -85,6 +95,13 @@ async def get_risk_scorecard(
     # Compute monthly returns from NAV series for heatmap
     monthly_returns = await _compute_monthly_returns(db, client_id, portfolio.id)
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return RiskScorecardResponse(
         alpha=opt2(risk.alpha), beta=opt2(risk.beta),
         information_ratio=opt2(risk.information_ratio),
@@ -172,6 +189,7 @@ async def _compute_monthly_returns(
 
 @router.get("/transactions", response_model=PaginatedTransactions)
 async def get_transactions(
+    request: Request,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     type: str | None = Query(None, alias="type"),
@@ -217,6 +235,13 @@ async def get_transactions(
         )
         for t in txns
     ]
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="TRANSACTIONS", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return PaginatedTransactions(
         items=items, total=total, page=page, per_page=per_page, total_pages=total_pages,
     )

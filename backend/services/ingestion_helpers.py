@@ -232,7 +232,9 @@ async def update_benchmark_values(
         if val is None or pd.isna(val):
             continue
         nav_date = dt.date() if hasattr(dt, "date") else dt
-        pairs.append((nav_date, Decimal(str(float(val)))))
+        # Decimal(str(val)) captures the string form directly; the prior
+        # float() round-trip was lossy and is removed.
+        pairs.append((nav_date, Decimal(str(val))))
 
     if not pairs:
         return 0

@@ -147,6 +147,22 @@ def compute_xirr(
         logger.warning("XIRR requires at least 2 cash flows, got %d", len(cash_flows))
         return 0.0
 
+    # Normalize every date to datetime.date BEFORE sorting. Mixed
+    # date/datetime/Timestamp inputs were tripping Python's comparison
+    # (`TypeError: can't compare datetime.datetime to datetime.date`) inside
+    # the sort key, which broke recompute for the majority of clients in
+    # production on 2026-05-26. Doing the conversion up front means every
+    # downstream step (sort, day-offset arithmetic, logging) sees a uniform
+    # type.
+    def _to_date(d):
+        if isinstance(d, pd.Timestamp):
+            return d.date()
+        if isinstance(d, datetime):
+            return d.date()
+        return d
+
+    cash_flows = [(_to_date(d), amt) for d, amt in cash_flows]
+
     # Sort ascending by date so the earliest flow is the reference point.
     # Without this, an out-of-order input produces negative day offsets and
     # makes the NPV singular near rate = -1, causing brentq's bracket to
@@ -167,15 +183,7 @@ def compute_xirr(
         )
         return 0.0
 
-    # Normalize all dates to date objects (avoid datetime vs date subtraction errors)
-    def to_date(d):
-        if isinstance(d, datetime):
-            return d.date()
-        if isinstance(d, pd.Timestamp):
-            return d.date()
-        return d
-
-    dates = [to_date(d) for d in dates]
+    # All dates are already normalized to datetime.date above.
     d0 = dates[0]
     day_offsets = [(d - d0).days / 365.0 for d in dates]
 

@@ -280,6 +280,32 @@ class TestXIRRRobustness:
             f"Bracket likely still too narrow."
         )
 
+    def test_xirr_handles_mixed_date_and_datetime(self):
+        """Production hot-fix 2026-05-26: cash_flows arriving as a MIX of
+        ``datetime.date`` and ``datetime.datetime`` (and pandas Timestamp)
+        used to raise ``TypeError: can't compare datetime.datetime to
+        datetime.date`` inside the sort key, which broke recompute for
+        356/363 PMS clients.
+
+        The list must be normalized to ``datetime.date`` BEFORE the sort,
+        not after, so this test exercises the exact mixed-type pattern that
+        hit production.
+        """
+        import datetime as _dt
+        flows = [
+            (_dt.date(2020, 1, 1), -100_000),
+            (_dt.datetime(2024, 6, 15, 9, 30), -50_000),
+            (_dt.date(2026, 5, 25), 175_000),
+        ]
+        # Must not raise. Result may be a positive rate or None (no root),
+        # but it MUST be a "couldn't-explode" pass.
+        result = compute_xirr(flows)
+        # Spec from PR description: must not raise; should return a
+        # reasonable rate (or None if non-convergent).
+        assert result is None or (-1 < result < 5), (
+            f"Mixed date/datetime input must produce a sane rate; got {result}"
+        )
+
     def test_unconvergeable_input_returns_none(self):
         """When brentq genuinely cannot find a root, compute_xirr must
         return None — NOT 0.0 — so callers can render "N/A" instead of

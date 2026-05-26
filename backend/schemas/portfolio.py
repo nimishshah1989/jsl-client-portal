@@ -170,7 +170,12 @@ class PaginatedTransactions(BaseModel):
 
 class XIRRResponse(BaseModel):
     """GET /api/portfolio/xirr."""
-    xirr: str
+
+    # ``xirr`` is None when the underlying solver could not converge.
+    # Callers must render this as "N/A" / "--" rather than "+0.00%" —
+    # a numeric zero would silently misrepresent an unconvergeable XIRR
+    # as a genuine 0% return.
+    xirr: str | None
     cash_flows_count: int
     first_investment_date: dt.date | None = None
     total_invested: str

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import String
+from sqlalchemy.types import TypeDecorator
 
 from backend.config import get_settings
 
@@ -50,3 +52,19 @@ def decrypt_pii(value: str | None) -> str | None:
 
 def is_encryption_enabled() -> bool:
     return _get_fernet() is not None
+
+
+class EncryptedString(TypeDecorator):
+    """
+    SQLAlchemy TypeDecorator that transparently encrypts on write and decrypts on read.
+    Falls back to plaintext when ENCRYPTION_KEY is not set (dev convenience).
+    """
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return encrypt_pii(value)
+
+    def process_result_value(self, value, dialect):
+        return decrypt_pii(value)

@@ -43,6 +43,32 @@ _LOCKOUT_THRESHOLD = 10
 _LOCKOUT_MINUTES = 30
 
 
+@router.get("/csrf")
+async def issue_csrf_token(response: Response) -> dict[str, str]:
+    """Issue a CSRF token cookie for unauthenticated callers.
+
+    H1: with CSRF default-deny enabled, the login form must obtain a token
+    before it can POST /api/auth/login. This endpoint sets the same
+    ``csrf_token`` cookie that POST /login sets after a successful login,
+    so the frontend can simply read ``document.cookie`` and echo the value
+    in the X-CSRF-Token header.
+
+    Returns the token in the JSON body as well so non-cookie clients (e.g.
+    server-rendered pages, native apps) can also use it.
+    """
+    csrf_token = generate_csrf_token()
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,
+        secure=_SECURE_COOKIE,
+        samesite="strict",
+        path="/",
+        max_age=COOKIE_MAX_AGE,
+    )
+    return {"csrf_token": csrf_token}
+
+
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit("5/minute")
 async def login(

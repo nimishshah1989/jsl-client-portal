@@ -111,7 +111,7 @@ def extract_cash_flows_from_corpus(nav_df: pd.DataFrame) -> list[tuple[datetime,
 def compute_xirr(
     cash_flows: list[tuple[datetime, float]],
     guess: float = 0.1,
-) -> float:
+) -> float | None:
     """
     Compute XIRR — the rate r that makes NPV of all cash flows = 0.
 
@@ -121,18 +121,39 @@ def compute_xirr(
     Args:
         cash_flows: List of (date, amount) tuples. Must have at least 2 entries.
                     Should contain both positive and negative amounts.
-        guess: Initial guess for the rate (default 0.1 = 10%).
+                    Order is irrelevant — flows are sorted ascending by date
+                    internally before computing day offsets.
+        guess: Initial guess for the rate (kept for API back-compat; unused).
 
     Returns:
         XIRR as a percentage (e.g., 25.5 means 25.5% annual return).
-        Returns 0.0 if no solution can be found.
+
+        - Returns ``0.0`` for INPUT-VALIDATION failures (fewer than two flows,
+          or no sign variation in amounts). These are degenerate inputs, not
+          convergence failures, and 0.0 is the historical contract.
+        - Returns ``None`` when ``brentq`` cannot find a root within the
+          search bracket ``[-0.99, 50.0]`` (true non-convergence). Callers
+          MUST distinguish this from a genuine 0% return — previously the
+          two cases were collapsed to ``0.0``, silently mis-displaying
+          unconvergeable portfolios as "+0.00% XIRR".
+
+    Notes:
+        Search bracket is capped at rate=50.0 (i.e. 5000% annualised).
+        Returns beyond that band are rare in practice (only achievable on
+        very short, very leveraged windows) and are reported as
+        non-convergence rather than risking a misleading number.
     """
     if len(cash_flows) < 2:
         logger.warning("XIRR requires at least 2 cash flows, got %d", len(cash_flows))
         return 0.0
 
-    dates = [cf[0] for cf in cash_flows]
-    amounts = [cf[1] for cf in cash_flows]
+    # Sort ascending by date so the earliest flow is the reference point.
+    # Without this, an out-of-order input produces negative day offsets and
+    # makes the NPV singular near rate = -1, causing brentq's bracket to
+    # bracket the singularity instead of a root.
+    sorted_flows = sorted(cash_flows, key=lambda cf: cf[0])
+    dates = [cf[0] for cf in sorted_flows]
+    amounts = [cf[1] for cf in sorted_flows]
 
     # Verify we have both positive and negative cash flows
     has_positive = any(a > 0 for a in amounts)
@@ -168,19 +189,19 @@ def compute_xirr(
             total += amt / denominator
         return total
 
-    # Try brentq with a wide bracket
+    # Widened bracket — a 4x return in 3 months exceeds rate 10, so the old
+    # upper bound rejected legitimate (if extreme) short-window XIRRs.
     try:
-        rate = brentq(npv, -0.99, 10.0, maxiter=1000)
+        rate = brentq(npv, -0.99, 50.0, maxiter=1000)
         result = rate * 100
         logger.debug("XIRR computed: %.4f%%", result)
         return result
     except ValueError:
-        logger.debug("brentq failed with bracket [-0.99, 10.0], trying narrower range")
-
-    # Fallback: try a narrower bracket
-    try:
-        rate = brentq(npv, -0.50, 5.0, maxiter=1000)
-        return rate * 100
-    except ValueError:
-        logger.warning("XIRR computation failed — no root found in any bracket")
-        return 0.0
+        date_lo = dates[0].isoformat() if dates else "n/a"
+        date_hi = dates[-1].isoformat() if dates else "n/a"
+        logger.warning(
+            "XIRR did not converge — no root in bracket [-0.99, 50.0]; "
+            "n_flows=%d, date_range=%s..%s, returning None",
+            len(cash_flows), date_lo, date_hi,
+        )
+        return None

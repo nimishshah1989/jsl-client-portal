@@ -86,22 +86,38 @@ async def get_xirr(
 
         cash_flows.append((navs[-1].nav_date, navs[-1].current_value))
 
-    xirr_val = _compute_xirr(cash_flows) if len(cash_flows) >= 2 else Decimal("0")
+    xirr_val: Decimal | None = (
+        _compute_xirr(cash_flows) if len(cash_flows) >= 2 else Decimal("0")
+    )
 
+    # opt2 yields None → JSON null when XIRR did not converge; otherwise
+    # returns a fixed-2dp string. Avoids mis-displaying non-convergence as 0.
     return XIRRResponse(
-        xirr=dec2(xirr_val), cash_flows_count=len(cash_flows),
+        xirr=opt2(xirr_val),
+        cash_flows_count=len(cash_flows),
         first_investment_date=navs[0].nav_date,
         total_invested=dec2(navs[-1].invested_amount),
         cash_flow_source=cash_flow_source,
     )
 
 
-def _compute_xirr(cash_flows: list[tuple[dt.date, Decimal]]) -> Decimal:
-    """Compute XIRR using scipy brentq. Returns percentage."""
+def _compute_xirr(cash_flows: list[tuple[dt.date, Decimal]]) -> Decimal | None:
+    """Compute XIRR using scipy brentq. Returns percentage as Decimal, or
+    None on non-convergence so the API can emit JSON ``null`` and the
+    frontend can render "--" rather than a spurious "+0.00%".
+
+    Cash flows are sorted ascending by date first — out-of-order rows
+    would otherwise produce negative day offsets and force the bracket
+    across the rate=-1 singularity.
+
+    Search bracket widened to [-0.99, 50.0] so e.g. a 4x return in 3
+    months (≈ rate 14) is still solvable.
+    """
     from scipy.optimize import brentq
 
-    dates = [cf[0] for cf in cash_flows]
-    amounts = [float(cf[1]) for cf in cash_flows]
+    sorted_flows = sorted(cash_flows, key=lambda cf: cf[0])
+    dates = [cf[0] for cf in sorted_flows]
+    amounts = [float(cf[1]) for cf in sorted_flows]
     d0 = dates[0]
     day_offsets = [(d - d0).days / 365.0 for d in dates]
 
@@ -109,10 +125,17 @@ def _compute_xirr(cash_flows: list[tuple[dt.date, Decimal]]) -> Decimal:
         return sum(amt / (1 + rate) ** t for amt, t in zip(amounts, day_offsets))
 
     try:
-        rate = brentq(npv, -0.99, 10.0)
+        rate = brentq(npv, -0.99, 50.0)
         return Decimal(str(rate * 100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except (ValueError, RuntimeError):
-        return Decimal("0")
+        date_lo = dates[0].isoformat() if dates else "n/a"
+        date_hi = dates[-1].isoformat() if dates else "n/a"
+        logger.warning(
+            "XIRR did not converge — no root in bracket [-0.99, 50.0]; "
+            "n_flows=%d, date_range=%s..%s, returning None",
+            len(cash_flows), date_lo, date_hi,
+        )
+        return None
 
 
 @router.get("/methodology", response_model=MethodologyResponse)

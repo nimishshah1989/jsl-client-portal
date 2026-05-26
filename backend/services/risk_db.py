@@ -88,19 +88,37 @@ _UPSERT_SQL = (
 )
 
 
-def to_decimal(value: float, places: int = 4, max_abs: float = 99_999_999.0) -> Decimal:
+def to_decimal(
+    value: float | None,
+    places: int = 4,
+    max_abs: float = 99_999_999.0,
+    *,
+    nullable: bool = False,
+) -> Decimal | None:
     """Convert float to Decimal with specified precision for DB storage.
 
     Clamps extreme values to avoid PostgreSQL numeric overflow.
+
+    Args:
+        nullable: If True, ``None``/NaN/inf passes through as ``None`` so the
+            DB column stores NULL. Used for metrics where a sentinel
+            "couldn't compute" value must be distinguished from a real zero
+            (e.g. XIRR non-convergence — see xirr_service.compute_xirr).
+            Defaults to False for backwards compatibility (None → 0).
     """
     if value is None:
-        return Decimal("0")
+        return None if nullable else Decimal("0")
     if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
-        return Decimal("0")
+        return None if nullable else Decimal("0")
     # Clamp to avoid NUMERIC(12,4) overflow
     clamped = max(-max_abs, min(max_abs, float(value)))
     quantize_str = "0." + "0" * places
     return Decimal(str(clamped)).quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP)
+
+
+# Decimal fields where a None/NaN result must be preserved as DB NULL rather
+# than coerced to 0 (so "couldn't compute" is distinguishable from "0%").
+_NULLABLE_DECIMAL_FIELDS = frozenset({"xirr"})
 
 
 def to_date(value: object) -> date | None:
@@ -128,7 +146,12 @@ async def upsert_risk_metrics(
         "computed_date": computed_date,
     }
     for field in DECIMAL_FIELDS:
-        row[field] = to_decimal(metrics.get(field, 0.0))
+        if field in _NULLABLE_DECIMAL_FIELDS:
+            # Preserve None — the column is nullable and a NULL distinguishes
+            # "couldn't compute" from a genuine 0.
+            row[field] = to_decimal(metrics.get(field), nullable=True)
+        else:
+            row[field] = to_decimal(metrics.get(field, 0.0))
 
     row["max_dd_start"] = to_date(metrics.get("max_dd_start"))
     row["max_dd_end"] = to_date(metrics.get("max_dd_end"))

@@ -82,7 +82,10 @@ def _jip_db_dsn() -> str | None:
     or DATABASE_URL. Returns None if no usable URL is configured.
 
     The JIP data core lives on the SAME RDS instance as `client_portal`, so we
-    reuse the existing credentials and just swap the database name.
+    reuse the existing credentials and just swap the database name. We also
+    layer in the same TLS posture the main app uses (see backend/database.py):
+    when the RDS CA bundle is present on disk and we're connecting to RDS,
+    require sslmode=verify-full with the bundle pinned as sslrootcert.
     """
     url = os.getenv("DATABASE_URL_SYNC") or os.getenv("DATABASE_URL", "")
     if not url:
@@ -96,6 +99,29 @@ def _jip_db_dsn() -> str | None:
         dsn = f"{base}?{query}"
     else:
         dsn = dsn.rsplit("/", 1)[0] + "/fie_v3"
+        query = ""
+
+    # Layer SSL params for psycopg2. psycopg2 doesn't accept an ssl.SSLContext
+    # directly (unlike asyncpg), so we mirror database.py's policy via libpq
+    # connection parameters.
+    ca_bundle = os.getenv("RDS_CA_BUNDLE", "/app/rds-combined-ca-bundle.pem")
+    is_rds = "rds.amazonaws.com" in dsn
+    has_bundle = ca_bundle and os.path.exists(ca_bundle)
+
+    existing_lower = query.lower() if query else ""
+    extra_params: list[str] = []
+    if "sslmode=" not in existing_lower:
+        if is_rds and has_bundle:
+            extra_params.append("sslmode=verify-full")
+        else:
+            # Encrypt the wire even in dev; skip CA verification when no bundle.
+            extra_params.append("sslmode=require")
+    if is_rds and has_bundle and "sslrootcert=" not in existing_lower:
+        extra_params.append(f"sslrootcert={ca_bundle}")
+
+    if extra_params:
+        sep = "&" if "?" in dsn else "?"
+        dsn = f"{dsn}{sep}{'&'.join(extra_params)}"
     return dsn
 
 

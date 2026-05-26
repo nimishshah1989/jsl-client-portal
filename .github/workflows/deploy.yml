@@ -44,11 +44,13 @@ jobs:
             sleep 2
 
             echo "[4/4] Starting new container..."
+            # Only publish Next.js (3000); FastAPI is bound to 127.0.0.1 inside
+            # the container (C16 hardening). All /api/* traffic goes through
+            # Next.js's rewrite to localhost:8000 inside the container.
             docker run -d \
               --name client-portal \
               --env-file .env \
               -p 8007:3000 \
-              -p 8008:8000 \
               --restart unless-stopped \
               client-portal
             echo "Container started"
@@ -67,15 +69,16 @@ jobs:
             set -e
 
             echo "=== Health Check ==="
+            # /api/health goes through Next.js (8007) → FastAPI (loopback in container)
             for i in 1 2 3 4 5 6; do
-              if curl -sf http://localhost:8008/api/health > /dev/null 2>&1; then
-                echo "FastAPI health check PASSED (attempt $i)"
+              if curl -sf http://localhost:8007/api/health > /dev/null 2>&1; then
+                echo "Health check PASSED via Next.js proxy (attempt $i)"
                 break
               fi
-              echo "Attempt $i: FastAPI not ready, waiting 10s..."
+              echo "Attempt $i: portal not ready, waiting 10s..."
               sleep 10
             done
-            curl -sf http://localhost:8008/api/health || { echo "FAILED: FastAPI not responding"; docker logs client-portal --tail 30; exit 1; }
+            curl -sf http://localhost:8007/api/health || { echo "FAILED: /api/health not responding"; docker logs client-portal --tail 30; exit 1; }
 
             echo "=== Nginx Config ==="
             CONF="/etc/nginx/sites-available/clients.jslwealth.in"
@@ -86,11 +89,15 @@ jobs:
 
             # Always rewrite to ensure /api/ routing is present
             sudo cp "$CONF" "$CONF.bak.$(date +%s)"
-            printf 'server {\n    server_name clients.jslwealth.in;\n    client_max_body_size 60m;\n\n    location /api/ {\n        proxy_pass http://127.0.0.1:8008;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 600s;\n        proxy_send_timeout 600s;\n        proxy_request_buffering off;\n    }\n\n    location / {\n        proxy_pass http://127.0.0.1:8007;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 120s;\n        proxy_send_timeout 120s;\n    }\n\n    listen 443 ssl;\n    ssl_certificate /etc/letsencrypt/live/clients.jslwealth.in/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/clients.jslwealth.in/privkey.pem;\n    include /etc/letsencrypt/options-ssl-nginx.conf;\n    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;\n}\nserver {\n    if ($host = clients.jslwealth.in) {\n        return 301 https://$host$request_uri;\n    }\n    listen 80;\n    server_name clients.jslwealth.in;\n    return 404;\n}\n' | sudo tee "$CONF" > /dev/null
+            # Single upstream for everything: Next.js on host:8007 serves the
+            # frontend AND proxies /api/* to FastAPI on the container loopback.
+            # Upload tuning (no request buffering, long timeouts) stays on
+            # /api/ since /api/admin/upload-* streams 35-MB CSV bodies.
+            printf 'server {\n    server_name clients.jslwealth.in;\n    client_max_body_size 60m;\n\n    location /api/ {\n        proxy_pass http://127.0.0.1:8007;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 600s;\n        proxy_send_timeout 600s;\n        proxy_request_buffering off;\n    }\n\n    location / {\n        proxy_pass http://127.0.0.1:8007;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_read_timeout 120s;\n        proxy_send_timeout 120s;\n    }\n\n    listen 443 ssl;\n    ssl_certificate /etc/letsencrypt/live/clients.jslwealth.in/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/clients.jslwealth.in/privkey.pem;\n    include /etc/letsencrypt/options-ssl-nginx.conf;\n    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;\n}\nserver {\n    if ($host = clients.jslwealth.in) {\n        return 301 https://$host$request_uri;\n    }\n    listen 80;\n    server_name clients.jslwealth.in;\n    return 404;\n}\n' | sudo tee "$CONF" > /dev/null
             sudo nginx -t && sudo systemctl reload nginx
-            echo "Nginx configured: /api/ -> FastAPI:8008, / -> Next.js:8007"
+            echo "Nginx configured: all traffic -> Next.js:8007 (which proxies /api/* internally to FastAPI)"
 
             echo "=== Final verification ==="
-            curl -sf http://localhost:8008/api/health
+            curl -sf http://localhost:8007/api/health
             echo ""
             echo "=== Deploy complete ==="

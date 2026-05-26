@@ -461,7 +461,13 @@ async def impersonate_client(
     admin: dict = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Issue a JWT for viewing a client's dashboard. Admin only. Audit-logged."""
+    """Issue a JWT for viewing a client's dashboard. Admin only. Audit-logged.
+
+    Writes a SEPARATE ``impersonation_token`` cookie so the admin's
+    ``access_token`` is never overwritten. Portfolio routes prefer the
+    impersonation cookie; admin routes ignore it. See
+    ``backend.middleware.auth_middleware`` for the read-side invariant.
+    """
     stmt = select(Client).where(Client.id == client_id)
     client = (await db.execute(stmt)).scalar_one_or_none()
     if client is None:
@@ -474,7 +480,7 @@ async def impersonate_client(
     secure_cookie = _settings.APP_ENV == "production"
 
     response.set_cookie(
-        key="access_token",
+        key="impersonation_token",
         value=token,
         httponly=True,
         secure=secure_cookie,
@@ -494,3 +500,40 @@ async def impersonate_client(
     )
 
     return {"client_name": client.name, "client_id": client.id}
+
+
+@router.post("/stop-impersonate")
+async def stop_impersonate(
+    request: Request,
+    response: Response,
+    admin: dict = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """End an impersonation session.
+
+    Deletes ONLY the ``impersonation_token`` cookie — the admin's
+    ``access_token`` remains untouched so the admin returns to a clean admin
+    session. Audit-logged.
+    """
+    from backend.config import get_settings
+    _settings = get_settings()
+    secure_cookie = _settings.APP_ENV == "production"
+
+    response.delete_cookie(
+        key="impersonation_token",
+        httponly=True,
+        secure=secure_cookie,
+        samesite="strict",
+        path="/",
+    )
+
+    from backend.services.audit_service import get_client_ip, get_request_id, log_audit
+    await log_audit(
+        db, user_id=admin["client_id"], action="IMPERSONATE_END",
+        resource_type="CLIENT",
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        details={"admin_id": admin["client_id"]},
+    )
+
+    return {"success": True}

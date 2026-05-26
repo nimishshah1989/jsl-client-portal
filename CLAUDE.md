@@ -21,7 +21,8 @@ Before starting any work on this project:
 | **SECURITY** | `~/.claude/agents/SECURITY.md` | Always active — JWT auth, client_id scoping, SQL injection prevention |
 
 ### Project-Specific Standards (supplement global standards)
-- `DECISIONS_LOG.md` — Append-only architectural decisions for this project
+- **`PRODUCTION_READINESS.md` — READ FIRST.** Active remediation backlog (17 P0 / 22 P1) from 2026-05-26 audit. Single source of truth for launch-blocking work. Status is tracked there, not in chat.
+- `DECISIONS_LOG.md` — Append-only architectural decisions (see ADR-006 for remediation context)
 - `LEARNINGS.md` — Claude's self-improvement log for this project
 - `FILE_FORMAT_SPEC.md` — PMS backoffice file parsing (critical for ingestion)
 - Global `~/.claude/standards/CODING_STANDARDS.md` applies PLUS the financial-specific rules below

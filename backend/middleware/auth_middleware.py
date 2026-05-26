@@ -72,6 +72,30 @@ def _decode_token(token: str) -> dict:
     }
 
 
+def _extract_token(request: Request, prefer_impersonation: bool) -> str:
+    """
+    Read the JWT cookie from the request.
+
+    When ``prefer_impersonation`` is True (portfolio routes), use the
+    ``impersonation_token`` cookie if present so an admin can view-as-client
+    without losing admin context, falling back to ``access_token``.
+
+    When False (admin routes), only the ``access_token`` cookie is honored —
+    admin powers must never be derived from the impersonation cookie.
+    """
+    if prefer_impersonation:
+        token = request.cookies.get("impersonation_token")
+        if token:
+            return token
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated — no access token cookie",
+        )
+    return token
+
+
 async def _validate_client_from_db(
     decoded: dict, db: AsyncSession
 ) -> dict:
@@ -106,19 +130,20 @@ async def get_current_user(
 ) -> dict:
     """
     FastAPI dependency: extract and validate JWT from httpOnly cookie.
-    Supports impersonation_token override (C17 behaviour preserved).
+
+    Prefers ``impersonation_token`` over ``access_token`` so admins viewing as
+    a client see the client's data while their admin session stays intact (C17).
+    Re-validates against DB on every request to honour token_version revocation
+    and live is_admin / is_active / is_deleted changes (C5).
+
     Returns dict with keys: client_id (int), is_admin (bool), token_version (int),
     via_impersonation (bool).
     """
-    token = request.cookies.get("impersonation_token") or request.cookies.get("access_token")
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated — no access token cookie",
-        )
+    impersonation = request.cookies.get("impersonation_token")
+    token = _extract_token(request, prefer_impersonation=True)
     decoded = _decode_token(token)
     decoded = await _validate_client_from_db(decoded, db)
-    decoded["via_impersonation"] = "impersonation_token" in request.cookies
+    decoded["via_impersonation"] = bool(impersonation) and impersonation == token
     return decoded
 
 
@@ -126,15 +151,12 @@ async def get_admin_user(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> dict:
     """
-    FastAPI dependency: same as get_current_user but reads ONLY access_token
-    (never impersonation_token) and 403s if not admin.
+    FastAPI dependency: 403 if not admin. Admin routes only consult the
+    ``access_token`` cookie — ``impersonation_token`` is intentionally ignored
+    so admin powers cannot be exercised through an impersonation session (C17).
+    Re-validates is_admin from DB so role downgrades take effect immediately (C5).
     """
-    token = request.cookies.get("access_token")
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
+    token = _extract_token(request, prefer_impersonation=False)
     decoded = _decode_token(token)
     decoded = await _validate_client_from_db(decoded, db)
     if not decoded["is_admin"]:

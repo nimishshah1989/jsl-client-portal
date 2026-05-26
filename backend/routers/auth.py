@@ -203,6 +203,10 @@ async def me(
         phone=client.phone,
         is_admin=client.is_admin,
         last_login=client.last_login,
+        # C11: reconciliation status — drives the yellow banner on the dashboard
+        is_recon_clean=client.is_recon_clean,
+        recon_last_run_at=client.recon_last_run_at,
+        recon_notes=client.recon_notes,
     )
 
 

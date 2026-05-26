@@ -3,6 +3,7 @@
 export const dynamic = 'force-dynamic';
 
 import ClientHeader from '@/components/dashboard/ClientHeader';
+import ReconStatusBanner from '@/components/dashboard/ReconStatusBanner';
 import SummaryCards from '@/components/dashboard/SummaryCards';
 import NavChart from '@/components/dashboard/NavChart';
 import PerformanceTable from '@/components/dashboard/PerformanceTable';
@@ -26,6 +27,13 @@ export default function DashboardPage() {
       {/* 1. Client Header */}
       <section id="header">
         <ClientHeader />
+      </section>
+
+      {/* C11: Reconciliation status banner — soft gate (only renders when
+          /auth/me returns is_recon_clean === false). Placed above SummaryCards
+          so clients see it before any numbers that may be revised. */}
+      <section id="recon-status" aria-live="polite">
+        <ReconStatusBanner />
       </section>
 
       {/* 2. Summary Cards */}

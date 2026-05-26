@@ -637,4 +637,83 @@ async def reconcile(
     )
 
     summary.commentary = generate_commentary(summary)
+
+    # C11: write per-client reconciliation status back to cpp_clients so the
+    # dashboard can surface a soft-gate banner via /api/auth/me.
+    await _writeback_client_recon_status(summary, db)
+
     return summary
+
+
+async def _writeback_client_recon_status(
+    summary: ReconciliationSummary,
+    db: AsyncSession,
+) -> None:
+    """C11: persist per-client recon status to cpp_clients.
+
+    For each reconciled client:
+      - is_recon_clean: False if QTY_MISMATCH / MISSING_IN_OURS / EXTRA_IN_OURS
+        is observed; True otherwise. STRUCTURAL_ETF and COST_MISMATCH are
+        intentionally excluded — they don't materially distort the displayed
+        quantities the client sees on the dashboard.
+      - recon_last_run_at: NOW().
+      - recon_notes: short human-readable summary when not clean, else NULL.
+
+    Uses the active AsyncSession so the writeback participates in the same
+    transaction as the rest of the reconciliation flow.
+    """
+    if not summary.clients:
+        return
+
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+    for client_recon in summary.clients:
+        qty = client_recon.qty_mismatch_count
+        missing = client_recon.missing_in_ours_count
+        extra = client_recon.extra_in_ours_count
+        is_clean = (qty == 0 and missing == 0 and extra == 0)
+
+        if is_clean:
+            notes: str | None = None
+        else:
+            parts: list[str] = []
+            if qty:
+                parts.append(
+                    f"{qty} holding{'s' if qty != 1 else ''} with quantity mismatch"
+                )
+            if missing:
+                parts.append(
+                    f"{missing} holding{'s' if missing != 1 else ''} missing in our records"
+                )
+            if extra:
+                parts.append(
+                    f"{extra} extra holding{'s' if extra != 1 else ''} in our records"
+                )
+            notes = "; ".join(parts) if parts else None
+
+        try:
+            await db.execute(
+                text(
+                    "UPDATE cpp_clients "
+                    "SET is_recon_clean = :clean, "
+                    "    recon_last_run_at = :run_at, "
+                    "    recon_notes = :notes "
+                    "WHERE client_code = :code"
+                ),
+                {
+                    "clean": is_clean,
+                    "run_at": now,
+                    "notes": notes,
+                    "code": client_recon.client_code,
+                },
+            )
+        except Exception:  # pragma: no cover — defensive: never fail recon over writeback
+            logger.exception(
+                "C11 writeback failed for client %s — recon result still returned",
+                client_recon.client_code,
+            )
+
+    logger.info(
+        "C11: wrote recon status to cpp_clients for %d clients",
+        len(summary.clients),
+    )

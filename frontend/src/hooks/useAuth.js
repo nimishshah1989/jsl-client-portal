@@ -89,6 +89,11 @@ export function useAuth() {
     error,
     isAuthenticated: !!user,
     isAdmin: user?.is_admin || false,
+    // C11: surface reconciliation status. `false` means show the soft-gate
+    // banner; null/undefined/true means do not show it.
+    isReconClean: user?.is_recon_clean ?? null,
+    reconLastRunAt: user?.recon_last_run_at ?? null,
+    reconNotes: user?.recon_notes ?? null,
     login,
     logout,
     checkAuth,

@@ -181,10 +181,10 @@ async def _compute_monthly_returns(
 async def get_transactions(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
-    type: str | None = Query(None, alias="type"),
+    txn_type: str | None = Query(None),
     asset_class: str | None = Query(None),
-    start_date: dt.date | None = Query(None),
-    end_date: dt.date | None = Query(None),
+    date_from: dt.date | None = Query(None),
+    date_to: dt.date | None = Query(None),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedTransactions:
@@ -197,14 +197,14 @@ async def get_transactions(
         .where(Transaction.client_id == client_id)
         .where(Transaction.portfolio_id == portfolio.id)
     )
-    if type:
-        base = base.where(Transaction.txn_type == type.upper())
+    if txn_type:
+        base = base.where(Transaction.txn_type == txn_type.upper())
     if asset_class:
         base = base.where(Transaction.asset_class == asset_class.upper())
-    if start_date:
-        base = base.where(Transaction.txn_date >= start_date)
-    if end_date:
-        base = base.where(Transaction.txn_date <= end_date)
+    if date_from:
+        base = base.where(Transaction.txn_date >= date_from)
+    if date_to:
+        base = base.where(Transaction.txn_date <= date_to)
 
     total = (await db.execute(
         select(sqlfunc.count()).select_from(base.subquery())

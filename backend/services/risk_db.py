@@ -101,10 +101,10 @@ def to_decimal(
 
     Args:
         nullable: If True, ``None``/NaN/inf passes through as ``None`` so the
-            DB column stores NULL. Used for metrics where a sentinel
-            "couldn't compute" value must be distinguished from a real zero
-            (e.g. XIRR non-convergence — see xirr_service.compute_xirr).
-            Defaults to False for backwards compatibility (None → 0).
+            DB column stores NULL. Used both for XIRR non-convergence
+            (xirr_service.compute_xirr) and for period-bucketed metrics where
+            "insufficient history" must be distinguishable from "0%".
+            Defaults to False (None → Decimal("0")).
     """
     if value is None:
         return None if nullable else Decimal("0")
@@ -139,16 +139,38 @@ async def upsert_risk_metrics(
     computed_date: date,
     metrics: dict,
 ) -> None:
-    """Upsert a single row of computed metrics into cpp_risk_metrics."""
+    """Upsert a single row of computed metrics into cpp_risk_metrics.
+
+    Period metric fields (return_1y, vol_3y, …) are written as NULL when the
+    computation returned None, so the UI can distinguish "insufficient history"
+    from "zero return". Top-level metrics still default to 0 on missing.
+    """
+    # Field name prefixes that indicate a period-bucketed metric. For these,
+    # None must round-trip as SQL NULL (NOT Decimal("0")) so the UI shows
+    # "N/A — insufficient history" instead of "+0.00%".
+    _PERIOD_PREFIXES = (
+        "return_", "bench_return_",
+        "cagr_", "bench_cagr_",
+        "vol_", "bench_vol_",
+        "dd_", "bench_dd_",
+        "sharpe_", "bench_sharpe_",
+        "sortino_", "bench_sortino_",
+    )
+
     row: dict = {
         "client_id": client_id,
         "portfolio_id": portfolio_id,
         "computed_date": computed_date,
     }
     for field in DECIMAL_FIELDS:
-        if field in _NULLABLE_DECIMAL_FIELDS:
-            # Preserve None — the column is nullable and a NULL distinguishes
-            # "couldn't compute" from a genuine 0.
+        is_period_field = (
+            field.startswith(_PERIOD_PREFIXES)
+            and field not in ("sharpe_ratio", "sortino_ratio")
+        )
+        if is_period_field or field in _NULLABLE_DECIMAL_FIELDS:
+            # None / NaN → NULL in DB, distinguishable from a real zero.
+            # Covers XIRR non-convergence and period buckets with too little
+            # history (e.g. return_5y when only 2 years of data exist).
             row[field] = to_decimal(metrics.get(field), nullable=True)
         else:
             row[field] = to_decimal(metrics.get(field, 0.0))

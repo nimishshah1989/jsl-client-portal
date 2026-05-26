@@ -45,21 +45,14 @@ async def get_performance_table(
     if risk is None:
         return []
 
-    # Determine data range to skip periods beyond available data
-    from sqlalchemy import func as sqlfunc
-    date_range = await db.execute(
-        select(sqlfunc.min(NavSeries.nav_date), sqlfunc.max(NavSeries.nav_date))
-        .where(NavSeries.client_id == client_id)
-        .where(NavSeries.portfolio_id == portfolio.id)
-    )
-    min_date, max_date = date_range.one()
-    data_days = (max_date - min_date).days if min_date and max_date else 0
-
+    # NOTE: We previously skipped periods longer than available history at
+    # the API layer. That logic is now in performance_table() — which writes
+    # NULL into the per-period DB columns instead of duplicating the
+    # inception slice. The router passes those NULLs through as None on the
+    # schema; the frontend renders "--" so users see "N/A insufficient
+    # history" rather than a row that silently collapses to inception.
     rows: list[PerformanceRow] = []
     for label, suffix, period_days in PERIODS:
-        # Skip periods that exceed client's data range (except inception)
-        if period_days is not None and period_days > data_days + 15:
-            continue
         row = PerformanceRow(
             period=label,
             port_abs_return=opt2(getattr(risk, f"return_{suffix}", None)),

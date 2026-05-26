@@ -22,6 +22,7 @@ Before starting any work on this project:
 
 ### Project-Specific Standards (supplement global standards)
 - **`PRODUCTION_READINESS.md` — READ FIRST.** Active remediation backlog (17 P0 / 22 P1) from 2026-05-26 audit. Single source of truth for launch-blocking work. Status is tracked there, not in chat.
+- **`INFRA_ACCESS.md` — READ AT SESSION START** if any task involves EC2, RDS, AWS, or live deploys. Documents the env vars Claude needs (configured once in Claude Code project settings) and the verification commands to confirm access before acting on the live system.
 - `DECISIONS_LOG.md` — Append-only architectural decisions (see ADR-006 for remediation context)
 - `LEARNINGS.md` — Claude's self-improvement log for this project
 - `FILE_FORMAT_SPEC.md` — PMS backoffice file parsing (critical for ingestion)
@@ -1272,8 +1273,8 @@ Note: `-p 8007:3000` maps EC2 port 8007 to Next.js port 3000 inside container. N
 
 ```bash
 # Database
-DATABASE_URL=postgresql+asyncpg://fie_admin:FieAdmin2026!@fie-db.c7osw6q6kwmw.ap-south-1.rds.amazonaws.com:5432/client_portal
-DATABASE_URL_SYNC=postgresql://fie_admin:FieAdmin2026!@fie-db.c7osw6q6kwmw.ap-south-1.rds.amazonaws.com:5432/client_portal
+DATABASE_URL=postgresql+asyncpg://fie_admin:&lt;REDACTED — see INFRA_ACCESS.md, real value in Claude Code env vars&gt;@fie-db.c7osw6q6kwmw.ap-south-1.rds.amazonaws.com:5432/client_portal
+DATABASE_URL_SYNC=postgresql://fie_admin:&lt;REDACTED — see INFRA_ACCESS.md, real value in Claude Code env vars&gt;@fie-db.c7osw6q6kwmw.ap-south-1.rds.amazonaws.com:5432/client_portal
 
 # Auth
 JWT_SECRET=                          # openssl rand -hex 32

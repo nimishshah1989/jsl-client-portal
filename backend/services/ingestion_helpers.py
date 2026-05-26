@@ -223,13 +223,21 @@ async def update_benchmark_values(
     if benchmark is None or len(benchmark) == 0:
         return 0
 
-    # Pre-build all (date, value) pairs
+    # Pre-build all (date, value) pairs. Skip NaN/empty cells so we never
+    # write a stale ffilled value past the alignment cap — leave the column
+    # NULL instead. The risk engine treats benchmark_value=0/NULL as
+    # "benchmark unavailable" and emits None for benchmark-relative metrics.
     pairs: list[tuple] = []
     for dt, val in benchmark.items():
+        if val is None or pd.isna(val):
+            continue
         nav_date = dt.date() if hasattr(dt, "date") else dt
         # Decimal(str(val)) captures the string form directly; the prior
         # float() round-trip was lossy and is removed.
         pairs.append((nav_date, Decimal(str(val))))
+
+    if not pairs:
+        return 0
 
     count = 0
     for start in range(0, len(pairs), _BULK_BATCH_SIZE):

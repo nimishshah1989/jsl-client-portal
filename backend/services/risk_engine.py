@@ -147,9 +147,46 @@ def performance_table(
 
     For each period (1M through Inception), computes absolute return, CAGR,
     volatility, max drawdown, Sharpe, and Sortino for both portfolio and benchmark.
+
+    Periods longer than the client's available history (latest nav − first nav)
+    return a row with every metric set to ``None`` so the UI can render
+    "N/A — insufficient history" rather than silently collapsing them to the
+    same value as the inception slice (which was the prior behaviour).
     """
     results: list[dict] = []
+    if len(nav_df) < 2:
+        return results
+
+    # Inclusive day-count of available history.
+    available_days = (
+        nav_df["nav_date"].iloc[-1] - nav_df["nav_date"].iloc[0]
+    ).days
+
+    # Tolerance: a 1Y row should still render if data starts 364 days ago.
+    _PERIOD_TOLERANCE_DAYS = 15
+
     for label, days in PERIODS:
+        if days is not None and days > available_days + _PERIOD_TOLERANCE_DAYS:
+            # Not enough history — emit an explicit None row instead of
+            # reusing the inception slice (the bug that made 3M…4Y rows
+            # identical for short-history clients).
+            results.append({
+                "period": label,
+                "port_abs_return": None,
+                "bench_abs_return": None,
+                "port_cagr": None,
+                "bench_cagr": None,
+                "port_volatility": None,
+                "bench_volatility": None,
+                "port_max_dd": None,
+                "bench_max_dd": None,
+                "port_sharpe": None,
+                "bench_sharpe": None,
+                "port_sortino": None,
+                "bench_sortino": None,
+            })
+            continue
+
         slice_df = _slice_nav_df(nav_df, days)
         if len(slice_df) < 2:
             continue
@@ -247,6 +284,9 @@ def compute_all_metrics(
     for row in perf:
         suffix = _PERIOD_COL_MAP.get(row["period"])
         if suffix:
+            # None values flow through unchanged (insufficient-history rows)
+            # so upsert_risk_metrics writes NULL into the DB column rather
+            # than 0.00 (which would render as +0.00% in the UI).
             # Absolute returns
             period_returns[f"return_{suffix}"] = row["port_abs_return"]
             bench_period_returns[f"bench_return_{suffix}"] = row["bench_abs_return"]

@@ -88,15 +88,25 @@ _UPSERT_SQL = (
 )
 
 
-def to_decimal(value: float, places: int = 4, max_abs: float = 99_999_999.0) -> Decimal:
+def to_decimal(
+    value: float | None,
+    places: int = 4,
+    max_abs: float = 99_999_999.0,
+    *,
+    none_as_null: bool = False,
+) -> Decimal | None:
     """Convert float to Decimal with specified precision for DB storage.
 
     Clamps extreme values to avoid PostgreSQL numeric overflow.
+
+    When ``none_as_null=True``, returns ``None`` for None / NaN / Inf inputs
+    so the DB column ends up NULL instead of 0. Used for period metrics
+    where "insufficient history" must be distinguishable from "zero return".
     """
     if value is None:
-        return Decimal("0")
+        return None if none_as_null else Decimal("0")
     if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
-        return Decimal("0")
+        return None if none_as_null else Decimal("0")
     # Clamp to avoid NUMERIC(12,4) overflow
     clamped = max(-max_abs, min(max_abs, float(value)))
     quantize_str = "0." + "0" * places
@@ -121,14 +131,39 @@ async def upsert_risk_metrics(
     computed_date: date,
     metrics: dict,
 ) -> None:
-    """Upsert a single row of computed metrics into cpp_risk_metrics."""
+    """Upsert a single row of computed metrics into cpp_risk_metrics.
+
+    Period metric fields (return_1y, vol_3y, …) are written as NULL when the
+    computation returned None, so the UI can distinguish "insufficient history"
+    from "zero return". Top-level metrics still default to 0 on missing.
+    """
+    # Field name prefixes that indicate a period-bucketed metric. For these,
+    # None must round-trip as SQL NULL (NOT Decimal("0")) so the UI shows
+    # "N/A — insufficient history" instead of "+0.00%".
+    _PERIOD_PREFIXES = (
+        "return_", "bench_return_",
+        "cagr_", "bench_cagr_",
+        "vol_", "bench_vol_",
+        "dd_", "bench_dd_",
+        "sharpe_", "bench_sharpe_",
+        "sortino_", "bench_sortino_",
+    )
+
     row: dict = {
         "client_id": client_id,
         "portfolio_id": portfolio_id,
         "computed_date": computed_date,
     }
     for field in DECIMAL_FIELDS:
-        row[field] = to_decimal(metrics.get(field, 0.0))
+        is_period_field = (
+            field.startswith(_PERIOD_PREFIXES)
+            and field not in ("sharpe_ratio", "sortino_ratio")
+        )
+        if is_period_field:
+            # None / NaN → NULL in DB, distinguishable from real zero.
+            row[field] = to_decimal(metrics.get(field), none_as_null=True)
+        else:
+            row[field] = to_decimal(metrics.get(field, 0.0))
 
     row["max_dd_start"] = to_date(metrics.get("max_dd_start"))
     row["max_dd_end"] = to_date(metrics.get("max_dd_end"))

@@ -234,6 +234,15 @@ def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
     return result
 
 
+# Max number of calendar days a single benchmark close may be forward-filled
+# to cover an unobserved nav date. NSE has at most ~4 consecutive non-trading
+# days (long weekends + national holiday). A 7-day cap absorbs that without
+# allowing a single survived value to propagate across months or years —
+# which previously turned a sparsely-fetched benchmark into a near-flat
+# series (Vol ≈ 0.5%, Abs Return ≈ +0.05% across ALL periods).
+_BENCHMARK_FFILL_LIMIT_DAYS = 7
+
+
 def align_benchmark(
     nav_dates: pd.DatetimeIndex | pd.Series,
     nifty_df: pd.DataFrame,
@@ -242,14 +251,21 @@ def align_benchmark(
     Align Nifty close prices to the portfolio's NAV dates.
 
     For dates where the market was closed (weekends, holidays), the last
-    available close price is forward-filled.
+    available close price is forward-filled — but only for up to
+    ``_BENCHMARK_FFILL_LIMIT_DAYS`` calendar days. Beyond that the value is
+    left NaN so the caller can detect gaps and not silently propagate a stale
+    quote across months/years.
+
+    A small ``bfill`` (also capped) covers the very-first nav dates that may
+    fall before the first available benchmark observation.
 
     Args:
         nav_dates: Portfolio NAV dates (DatetimeIndex or Series of dates).
         nifty_df: DataFrame from fetch_nifty_data() with DatetimeIndex and 'close' column.
 
     Returns:
-        pd.Series of benchmark close prices indexed by nav_dates.
+        pd.Series of benchmark close prices indexed by nav_dates. Cells that
+        could not be filled within the cap remain NaN.
     """
     if isinstance(nav_dates, pd.Series):
         nav_dates = pd.DatetimeIndex(nav_dates)
@@ -265,13 +281,46 @@ def align_benchmark(
     if nav_dates.tz is not None:
         nav_dates = nav_dates.tz_convert(None)
 
-    # Reindex to nav_dates with forward-fill for holidays
-    aligned = nifty.reindex(nav_dates, method="ffill")
+    # Build the union of benchmark dates and nav dates so we can apply a
+    # *day-aware* forward-fill cap. pandas' ffill `limit=` counts ROWS, but on
+    # the union index every consecutive day is one row, so the limit becomes
+    # a calendar-day cap.
+    union_idx = nifty.index.union(nav_dates).sort_values()
+    # Densify to daily frequency between min/max so the row-count == day-count
+    if len(union_idx) > 0:
+        union_idx = pd.date_range(union_idx.min(), union_idx.max(), freq="D")
+    densified = nifty.reindex(union_idx)
 
-    # If there are still NaN values at the start (nav starts before nifty data),
-    # backfill those
-    if aligned.isna().any():
-        aligned = aligned.bfill()
+    filled = densified.ffill(limit=_BENCHMARK_FFILL_LIMIT_DAYS)
+    # Limited bfill for nav dates before first observation (long-weekend gap only).
+    filled = filled.bfill(limit=_BENCHMARK_FFILL_LIMIT_DAYS)
+
+    # Now select only the nav dates we actually need.
+    aligned = filled.reindex(nav_dates)
+
+    # Sanity-check the result. If after ffill+bfill we end up with fewer than
+    # 2 distinct values, OR with at least 30% of cells still NaN, the source
+    # data was too sparse to produce a meaningful benchmark — return an empty
+    # series so the caller logs a clear "benchmark unavailable" rather than
+    # writing a flat constant.
+    non_na = aligned.dropna()
+    if len(non_na) == 0:
+        return pd.Series(dtype=float, index=nav_dates, name="close")
+
+    distinct_vals = non_na.nunique()
+    nan_ratio = aligned.isna().mean() if len(aligned) else 0.0
+
+    if distinct_vals < 2 or nan_ratio > 0.30:
+        # Suspiciously sparse — refuse to publish a flat/near-flat series.
+        logger.warning(
+            "Benchmark data too sparse to align: %d distinct values, "
+            "%.0f%% NaN cells across %d nav dates. Returning empty so "
+            "benchmark cells stay NULL rather than flat.",
+            distinct_vals,
+            nan_ratio * 100,
+            len(aligned),
+        )
+        return pd.Series(dtype=float, index=nav_dates, name="close")
 
     return aligned
 

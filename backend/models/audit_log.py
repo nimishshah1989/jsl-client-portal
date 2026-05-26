@@ -25,7 +25,7 @@ class AuditLog(Base):
     )
     action: Mapped[str] = mapped_column(
         String(50), nullable=False,
-        comment="VIEW | DOWNLOAD | CREATE | UPDATE | DELETE | LOGIN | LOGIN_FAILED | IMPERSONATE | UPLOAD | RECOMPUTE",
+        comment="VIEW | DOWNLOAD | CREATE | UPDATE | DELETE | LOGIN | LOGIN_FAILED | IMPERSONATE | IMPERSONATE_END | UPLOAD | RECOMPUTE",
     )
     resource_type: Mapped[str] = mapped_column(
         String(50), nullable=False,

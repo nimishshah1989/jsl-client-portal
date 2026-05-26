@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, apiPost } from '@/lib/api';
 import Sidebar from '@/components/layout/Sidebar';
 import Spinner from '@/components/ui/Spinner';
 import { ArrowLeft } from 'lucide-react';
@@ -10,7 +10,12 @@ import { ArrowLeft } from 'lucide-react';
 /**
  * Dashboard layout with sidebar + main content.
  * Auth-protected: redirects to /login if not authenticated.
- * Shows "Back to Admin" banner when viewing as impersonated client.
+ * Shows "Back to Admin" banner when viewing as an impersonated client.
+ *
+ * If the caller is an admin without an active impersonation session
+ * (no `admin_viewing` sessionStorage flag), bounce them to /admin —
+ * otherwise admin queries on the dashboard route would 401 with
+ * "No active portfolio" since the admin user has no portfolio.
  */
 export default function DashboardLayout({ children }) {
   const router = useRouter();
@@ -22,11 +27,16 @@ export default function DashboardLayout({ children }) {
     async function checkAuth() {
       try {
         const data = await apiFetch('/auth/me');
+        const adminViewing = sessionStorage.getItem('admin_viewing');
+
+        // Admin landed on /dashboard without impersonating — send them home.
+        if (data?.is_admin && !adminViewing) {
+          router.replace('/admin');
+          return;
+        }
+
         setUser(data);
-        // If the user is NOT an admin but came from admin (check sessionStorage flag)
-        // OR if the referrer was /admin
-        const wasAdmin = sessionStorage.getItem('admin_viewing');
-        if (wasAdmin) {
+        if (adminViewing) {
           setIsImpersonated(true);
         }
         setAuthChecked(true);
@@ -38,11 +48,15 @@ export default function DashboardLayout({ children }) {
   }, [router]);
 
   async function handleBackToAdmin() {
-    // Re-login as admin by calling /auth/login won't work without password.
-    // Instead, we store admin credentials aren't available, so just redirect
-    // to login page which will bounce admin to /admin.
+    try {
+      await apiPost('/admin/stop-impersonate', {});
+    } catch {
+      // Even if the call fails, fall through to clearing the flag —
+      // the admin's access_token cookie is independent of the
+      // impersonation_token, so they remain authenticated as admin.
+    }
     sessionStorage.removeItem('admin_viewing');
-    window.location.href = '/login';
+    router.replace('/admin');
   }
 
   if (!authChecked) {
@@ -67,7 +81,7 @@ export default function DashboardLayout({ children }) {
               className="flex items-center gap-1 text-sm font-medium text-amber-700 hover:text-amber-900"
             >
               <ArrowLeft className="w-4 h-4" />
-              Back to Admin (re-login required)
+              Back to Admin
             </button>
           </div>
         )}

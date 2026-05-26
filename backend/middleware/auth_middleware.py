@@ -67,25 +67,53 @@ def _decode_token(token: str) -> dict:
     }
 
 
-async def get_current_user(request: Request) -> dict:
+def _extract_token(request: Request, prefer_impersonation: bool) -> str:
     """
-    FastAPI dependency: extract and validate JWT from httpOnly cookie.
-    Returns dict with keys: client_id (int), is_admin (bool).
+    Read the JWT cookie from the request.
+
+    When ``prefer_impersonation`` is True (portfolio routes), use the
+    ``impersonation_token`` cookie if present so an admin can view-as-client
+    without losing admin context, falling back to ``access_token``.
+
+    When False (admin routes), only the ``access_token`` cookie is honored —
+    admin powers must never be derived from the impersonation cookie.
     """
+    if prefer_impersonation:
+        token = request.cookies.get("impersonation_token")
+        if token:
+            return token
     token = request.cookies.get("access_token")
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated — no access token cookie",
         )
-    return _decode_token(token)
+    return token
+
+
+async def get_current_user(request: Request) -> dict:
+    """
+    FastAPI dependency: extract and validate JWT from httpOnly cookie.
+    Returns dict with keys: client_id (int), is_admin (bool), via_impersonation (bool).
+
+    Prefers ``impersonation_token`` over ``access_token`` so admins viewing as
+    a client see the client's data while their admin session stays intact.
+    """
+    impersonation = request.cookies.get("impersonation_token")
+    token = _extract_token(request, prefer_impersonation=True)
+    decoded = _decode_token(token)
+    decoded["via_impersonation"] = bool(impersonation) and impersonation == token
+    return decoded
 
 
 async def get_admin_user(request: Request) -> dict:
     """
-    FastAPI dependency: same as get_current_user but 403 if not admin.
+    FastAPI dependency: 403 if not admin. Admin routes only consult the
+    ``access_token`` cookie — ``impersonation_token`` is intentionally ignored
+    so admin powers cannot be exercised through an impersonation session.
     """
-    user = await get_current_user(request)
+    token = _extract_token(request, prefer_impersonation=False)
+    user = _decode_token(token)
     if not user["is_admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

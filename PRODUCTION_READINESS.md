@@ -61,7 +61,7 @@ These are partially independent — math/test/recon/filter streams can run in pa
 | 15 | C11 | Reconciliation gates client view: `is_recon_clean` flag → block login OR show "Data being reconciled" banner | `backend/models/client.py`, `backend/routers/auth.py`, `frontend/src/app/dashboard/layout.js` | ☐ | UX decision: block vs warn |
 | 16 | C7 | Persistent upload-job state: replace in-memory `_upload_jobs` dict with `cpp_upload_log` row in `processing` state | `backend/routers/admin_upload.py:155`, `backend/models/upload_log.py` | ☐ | Needed for multi-worker correctness |
 | 17 | C13 | Stock-split + corporate-actions auto-apply | New table, `backend/services/holdings_service.py` | ☐ | Larger; design first |
-| 18 | C15 | Tech-docs page auth gate verified; split 1014-line file | `frontend/src/app/tech-docs/page.js` | ☐ | Verify admin-gated; if not, gate it |
+| 18 | C15 | Tech-docs page auth gate verified; split 1014-line file | `frontend/src/app/tech-docs/page.js`, `frontend/src/app/tech-docs/layout.js` | ◐ 2026-05-26 | Auth gate added (admin-only) — verified prior layout had no gating; file-split (F1) still pending |
 | — | — | XIRR robustness: return `None` on non-convergence; sort cash flows ascending; widen bracket | `backend/services/xirr_service.py` | ☑ 2026-05-26 | PR #5 |
 | — | — | Decimal-at-boundary: `live_prices.py` + `ingestion_helpers.py` | `backend/services/live_prices.py`, `backend/services/ingestion_helpers.py` | ☑ 2026-05-26 | PR #4 |
 | — | — | Benchmark flat series fix + N/A for insufficient history | `backend/services/benchmark_service.py`, `backend/services/risk_engine.py`, `backend/services/risk_db.py` | ☑ 2026-05-26 | PR #8 — **run POST /api/admin/recompute-risk after deploy** |

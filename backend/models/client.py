@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -64,6 +65,16 @@ class Client(Base):
         Integer, default=0, server_default="0", nullable=False
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # C11: per-client reconciliation status flag (soft gate — banner only, no blocking)
+    # Default True for clients with no recon history (defensive — don't show banner).
+    # Flipped to False by reconciliation_service when QTY_MISMATCH / EXTRA_HOLDING /
+    # MISSING_HOLDING is detected for this client.
+    is_recon_clean: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
+    recon_last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recon_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Soft delete
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

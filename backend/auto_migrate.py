@@ -49,6 +49,10 @@ _STATEMENTS = [
     "ALTER TABLE cpp_clients ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE",
     "ALTER TABLE cpp_clients ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
     "ALTER TABLE cpp_clients ADD COLUMN IF NOT EXISTS deleted_by INTEGER REFERENCES cpp_clients(id) ON DELETE SET NULL",
+    # C11: per-client reconciliation status (soft gate — banner only, no blocking)
+    "ALTER TABLE cpp_clients ADD COLUMN IF NOT EXISTS is_recon_clean BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE cpp_clients ADD COLUMN IF NOT EXISTS recon_last_run_at TIMESTAMP",
+    "ALTER TABLE cpp_clients ADD COLUMN IF NOT EXISTS recon_notes TEXT",
     "ALTER TABLE cpp_transactions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
     "ALTER TABLE cpp_transactions ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE",
     "ALTER TABLE cpp_transactions ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",

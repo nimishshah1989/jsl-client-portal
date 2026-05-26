@@ -33,6 +33,11 @@ class UserResponse(BaseModel):
     phone: str | None = None
     is_admin: bool
     last_login: dt.datetime | None = None
+    # C11: reconciliation status — frontend shows a yellow banner when
+    # is_recon_clean is explicitly False. NULL/True → no banner.
+    is_recon_clean: bool | None = None
+    recon_last_run_at: dt.datetime | None = None
+    recon_notes: str | None = None
 
     model_config = {"from_attributes": True}
 

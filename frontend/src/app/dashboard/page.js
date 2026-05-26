@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 import ClientHeader from '@/components/dashboard/ClientHeader';
 import SummaryCards from '@/components/dashboard/SummaryCards';
 import NavChart from '@/components/dashboard/NavChart';

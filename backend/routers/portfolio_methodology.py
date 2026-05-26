@@ -4,7 +4,7 @@ import datetime as dt
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.nav_series import NavSeries
 from backend.routers.helpers import dec2, get_default_portfolio, get_latest_risk, opt2
+from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 from backend.schemas.portfolio import (
     MethodologyMetric,
     MethodologyResponse,
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 @router.get("/xirr", response_model=XIRRResponse)
 async def get_xirr(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> XIRRResponse:
@@ -90,6 +92,13 @@ async def get_xirr(
         _compute_xirr(cash_flows) if len(cash_flows) >= 2 else Decimal("0")
     )
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     # opt2 yields None → JSON null when XIRR did not converge; otherwise
     # returns a fixed-2dp string. Avoids mis-displaying non-convergence as 0.
     return XIRRResponse(
@@ -140,6 +149,7 @@ def _compute_xirr(cash_flows: list[tuple[dt.date, Decimal]]) -> Decimal | None:
 
 @router.get("/methodology", response_model=MethodologyResponse)
 async def get_methodology(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> MethodologyResponse:
@@ -171,6 +181,13 @@ async def get_methodology(
     rf = risk.risk_free_rate
     metrics = _build_methodology_metrics(risk, rf, first_nav, last_nav)
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return MethodologyResponse(
         as_of_date=risk.computed_date, risk_free_rate=dec2(rf),
         trading_days_per_year=252, benchmark_name="NIFTY 50", metrics=metrics,

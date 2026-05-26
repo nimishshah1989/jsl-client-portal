@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 import { useEffect } from 'react';
 import {
   useClients,
@@ -71,7 +73,7 @@ export default function AdminDashboard() {
   async function handleViewClient(clientId) {
     try {
       await impersonate(clientId);
-      sessionStorage.setItem('admin_viewing', 'true');
+      sessionStorage.setItem('admin_viewing', String(clientId));
       window.location.href = '/dashboard';
     } catch (err) {
       alert(`Failed to view client: ${err.message}`);

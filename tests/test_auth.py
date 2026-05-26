@@ -48,21 +48,47 @@ class TestJWT:
         mock_settings.JWT_SECRET = "a" * 64
         mock_settings.JWT_EXPIRY_HOURS = 48
 
-        token = create_access_token(client_id=42, is_admin=False)
+        token = create_access_token(client_id=42, is_admin=False, token_version=1)
         assert isinstance(token, str)
 
         result = _decode_token(token)
         assert result["client_id"] == 42
         assert result["is_admin"] is False
+        assert result["token_version"] == 1
 
     @patch("backend.middleware.auth_middleware.settings")
     def test_admin_flag_preserved(self, mock_settings):
         mock_settings.JWT_SECRET = "b" * 64
         mock_settings.JWT_EXPIRY_HOURS = 48
 
-        token = create_access_token(client_id=1, is_admin=True)
+        token = create_access_token(client_id=1, is_admin=True, token_version=3)
         result = _decode_token(token)
         assert result["is_admin"] is True
+        assert result["token_version"] == 3
+
+    @patch("backend.middleware.auth_middleware.settings")
+    def test_token_version_embedded(self, mock_settings):
+        mock_settings.JWT_SECRET = "a" * 64
+        mock_settings.JWT_EXPIRY_HOURS = 48
+
+        token = create_access_token(client_id=7, is_admin=False, token_version=5)
+        result = _decode_token(token)
+        assert result["token_version"] == 5
+
+    @patch("backend.middleware.auth_middleware.settings")
+    def test_missing_tv_defaults_to_zero(self, mock_settings):
+        """Tokens issued before C5 (without tv claim) decode as version 0."""
+        mock_settings.JWT_SECRET = "a" * 64
+
+        import jwt as pyjwt
+        payload = {
+            "sub": "99",
+            "admin": False,
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        }
+        token = pyjwt.encode(payload, "a" * 64, algorithm="HS256")
+        result = _decode_token(token)
+        assert result["token_version"] == 0
 
     @patch("backend.middleware.auth_middleware.settings")
     def test_invalid_token_raises(self, mock_settings):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import ssl
 from collections.abc import AsyncGenerator
 
@@ -35,13 +36,21 @@ class Base(DeclarativeBase):
     metadata = metadata
 
 
-# ── SSL context for RDS ──
-# AWS RDS uses its own CA which isn't in the container trust store.
-# Traffic is encrypted (TLS), but we skip CA chain verification.
-# To enable full verification, bundle the RDS CA cert and set CERT_REQUIRED.
-_ssl_context = ssl.create_default_context()
-_ssl_context.check_hostname = False
-_ssl_context.verify_mode = ssl.CERT_NONE
+# ── SSL context for RDS (C2: sslmode=verify-full) ──
+# When the RDS CA bundle is present on disk and the URL targets RDS,
+# enforce full certificate verification (CERT_REQUIRED + hostname check).
+# Falls back to CERT_NONE during local development where the bundle is absent.
+_ca_bundle: str = settings.RDS_CA_BUNDLE
+_ssl_context: ssl.SSLContext
+if _ca_bundle and os.path.exists(_ca_bundle) and "rds.amazonaws.com" in settings.DATABASE_URL:
+    _ssl_context = ssl.create_default_context(cafile=_ca_bundle)
+    _ssl_context.verify_mode = ssl.CERT_REQUIRED
+    _ssl_context.check_hostname = True
+else:
+    # Local dev / CI: no bundle available — encrypt but skip CA verification.
+    _ssl_context = ssl.create_default_context()
+    _ssl_context.check_hostname = False
+    _ssl_context.verify_mode = ssl.CERT_NONE
 
 # ── Async engine (for FastAPI) ──
 async_engine = create_async_engine(

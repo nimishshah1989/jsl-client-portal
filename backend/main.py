@@ -133,12 +133,14 @@ from backend.routers.admin_clients import router as admin_clients_router  # noqa
 from backend.routers.admin_aggregate import router as admin_aggregate_router  # noqa: E402
 from backend.routers.admin_reconciliation import router as admin_reconciliation_router  # noqa: E402
 from backend.routers.portfolio_methodology import router as portfolio_methodology_router  # noqa: E402
+from backend.routers.me import router as me_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(portfolio_router)
 app.include_router(portfolio_nav_router)
 app.include_router(portfolio_detail_router)
 app.include_router(portfolio_methodology_router)
+app.include_router(me_router)
 app.include_router(admin_router)
 app.include_router(admin_upload_router)
 app.include_router(admin_clients_router)

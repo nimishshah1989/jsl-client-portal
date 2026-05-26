@@ -64,6 +64,15 @@ _STATEMENTS = [
         records         JSONB NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS ix_cpp_bo_snapshot_type_uploaded ON cpp_bo_holdings_snapshot(snapshot_type, uploaded_at DESC)",
+    # C7: persistent upload-job state. Replaces the per-process _upload_jobs
+    # dict so /upload-status/{job_id} works under multi-worker uvicorn.
+    "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS job_id VARCHAR(36)",
+    "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'completed'",
+    "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS progress_pct INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS progress_message TEXT",
+    "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS started_at TIMESTAMP NOT NULL DEFAULT NOW()",
+    "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_cpp_upload_log_job_id ON cpp_upload_log(job_id) WHERE job_id IS NOT NULL",
 ]
 
 

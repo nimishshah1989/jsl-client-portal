@@ -16,7 +16,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import get_db
-from backend.middleware.auth_middleware import get_admin_user
+from backend.middleware.auth_middleware import (
+    ROLE_ADMIN_DATA_ENTRY,
+    ROLE_ADMIN_READONLY,
+    require_role,
+)
 from backend.schemas.reconciliation import (
     ClientReconciliationResponse,
     HoldingMatchResponse,
@@ -196,7 +200,7 @@ def _db_row_to_client_response(c: dict) -> ClientReconciliationResponse:
 @router.post("/upload", response_model=ReconciliationSummaryResponse)
 async def upload_holding_report(
     file: UploadFile = File(...),
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
     """Upload a PMS Holding Report .xlsx, reconcile, and persist results."""
@@ -255,7 +259,7 @@ async def upload_holding_report(
 
 @router.get("/summary", response_model=ReconciliationSummaryResponse)
 async def get_summary(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
     """Get the latest reconciliation summary. Loads from DB if not in memory."""
@@ -308,7 +312,7 @@ async def get_summary(
 @router.get("/detail", response_model=ClientReconciliationResponse)
 async def get_client_detail(
     client_code: str = Query(..., description="UCC / client_code to look up"),
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> ClientReconciliationResponse:
     """Get reconciliation detail for a specific client."""
@@ -329,7 +333,7 @@ async def get_client_detail(
 @router.get("/export")
 async def export_mismatches(
     status_filter: str | None = Query(None, description="Filter by status"),
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Export reconciliation mismatches as CSV."""
@@ -393,7 +397,7 @@ async def export_mismatches(
 
 @router.post("/rerun", response_model=ReconciliationSummaryResponse)
 async def rerun_reconciliation(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
     """Re-run reconciliation against current cpp_holdings without re-uploading a file.
@@ -465,7 +469,7 @@ async def rerun_reconciliation(
 
 @router.post("/sync-costs")
 async def sync_costs_from_backoffice(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Sync avg_cost from backoffice for COST_MISMATCH holdings."""

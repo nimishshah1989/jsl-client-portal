@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.database import get_db
-from backend.middleware.auth_middleware import get_admin_user, hash_password
+from backend.middleware.auth_middleware import (
+    ROLE_ADMIN_DATA_ENTRY,
+    ROLE_ADMIN_READONLY,
+    hash_password,
+    require_role,
+)
 from backend.models.client import Client
 from backend.schemas.admin import (
     BulkCreateResponse,
@@ -27,11 +32,20 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 @router.get("/clients", response_model=list[ClientListResponse])
 async def list_clients(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> list[ClientListResponse]:
-    """List all clients with portfolio counts."""
-    stmt = select(Client).options(selectinload(Client.portfolios)).order_by(Client.name)
+    """List all clients with portfolio counts.
+
+    Soft-deleted clients are excluded (M9). Use a dedicated archive view if
+    deleted records ever need to be inspected.
+    """
+    stmt = (
+        select(Client)
+        .where(Client.is_deleted.is_(False))
+        .options(selectinload(Client.portfolios))
+        .order_by(Client.name)
+    )
     clients = list((await db.execute(stmt)).scalars().all())
 
     return [
@@ -48,7 +62,7 @@ async def list_clients(
 @router.post("/clients", response_model=ClientListResponse, status_code=201)
 async def create_client(
     body: CreateClientRequest,
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> ClientListResponse:
     """Create a single client with credentials."""
@@ -85,7 +99,7 @@ async def create_client(
 @router.post("/clients/bulk-create", response_model=BulkCreateResponse)
 async def bulk_create_clients(
     file: UploadFile,
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> BulkCreateResponse:
     """Bulk create clients from CSV (client_code,name,email,phone,username,password)."""
@@ -147,11 +161,15 @@ async def bulk_create_clients(
 async def update_client(
     client_id: int,
     body: UpdateClientRequest,
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> ClientListResponse:
-    """Update client info or reset password."""
-    stmt = select(Client).options(selectinload(Client.portfolios)).where(Client.id == client_id)
+    """Update client info or reset password. Soft-deleted clients are 404 (M9)."""
+    stmt = (
+        select(Client)
+        .options(selectinload(Client.portfolios))
+        .where(Client.id == client_id, Client.is_deleted.is_(False))
+    )
     client = (await db.execute(stmt)).scalar_one_or_none()
     if client is None:
         raise HTTPException(status_code=404, detail="Client not found")

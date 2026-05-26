@@ -467,7 +467,7 @@ async def impersonate_client(
     if client is None:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    token = create_access_token(client.id, is_admin=False)
+    token = create_access_token(client.id, is_admin=False, token_version=client.token_version)
 
     from backend.config import get_settings
     _settings = get_settings()

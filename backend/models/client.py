@@ -46,6 +46,23 @@ class Client(Base):
     )
     last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # C5: JWT revocation — bump this on logout/password-change/role-change;
+    # the same value is embedded as `tv` in the JWT and validated on every request.
+    token_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+
+    # C6: block login until the client sets a real password (admin-bulk-created accounts start False)
+    is_password_set: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
+    # H3: per-username login lockout
+    failed_login_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Soft delete
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

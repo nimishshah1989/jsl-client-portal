@@ -1,12 +1,12 @@
 """Auth router — login, logout, me, change-password, CSRF, consent."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -39,6 +39,9 @@ _settings = get_settings()
 COOKIE_MAX_AGE = _settings.JWT_EXPIRY_HOURS * 3600
 _SECURE_COOKIE = _settings.APP_ENV == "production"
 
+_LOCKOUT_THRESHOLD = 10
+_LOCKOUT_MINUTES = 30
+
 
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit("5/minute")
@@ -59,7 +62,27 @@ async def login(
     result = await db.execute(stmt)
     client = result.scalar_one_or_none()
 
+    # H3: check lockout before touching the password (prevents timing oracle)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if client is not None and client.locked_until and client.locked_until > now:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "ACCOUNT_LOCKED",
+                "locked_until": client.locked_until.isoformat(),
+                "message": "Too many failed attempts. Account locked for 30 minutes.",
+            },
+        )
+
     if client is None or not verify_password(body.password, client.password_hash):
+        if client is not None:
+            # H3: track consecutive failures
+            client.failed_login_count += 1
+            if client.failed_login_count >= _LOCKOUT_THRESHOLD:
+                client.locked_until = now + timedelta(minutes=_LOCKOUT_MINUTES)
+                client.failed_login_count = 0
+            await db.flush()
+
         await log_audit(
             db, user_id=None, action="LOGIN_FAILED",
             resource_type="SYSTEM", ip_address=get_client_ip(request),
@@ -72,7 +95,23 @@ async def login(
             detail="Invalid username or password",
         )
 
-    token = create_access_token(client.id, client.is_admin)
+    # C6: block login until password is set (admin-bulk-created accounts)
+    if not client.is_password_set:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "PASSWORD_NOT_SET",
+                "message": "Please set your password before logging in.",
+            },
+        )
+
+    # Successful login — reset lockout counters (H3)
+    client.failed_login_count = 0
+    client.locked_until = None
+    client.last_login = now
+
+    token = create_access_token(client.id, client.is_admin, client.token_version)
+    await db.flush()
 
     response.set_cookie(
         key="access_token",
@@ -95,9 +134,6 @@ async def login(
         max_age=COOKIE_MAX_AGE,
     )
 
-    client.last_login = datetime.now(timezone.utc).replace(tzinfo=None)
-    await db.flush()
-
     await log_audit(
         db, user_id=client.id, action="LOGIN",
         resource_type="SYSTEM", ip_address=get_client_ip(request),
@@ -113,8 +149,19 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, str]:
-    """Clear the access_token and CSRF cookies."""
+async def logout(
+    response: Response,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Clear cookies and bump token_version to invalidate all outstanding JWTs (C5)."""
+    await db.execute(
+        update(Client)
+        .where(Client.id == user["client_id"])
+        .values(token_version=Client.token_version + 1)
+    )
+    await db.flush()
+
     response.delete_cookie(
         key="access_token",
         httponly=True,
@@ -160,13 +207,14 @@ async def me(
 
 
 @router.post("/change-password")
+@limiter.limit("5/hour")
 async def change_password(
     request: Request,
     body: ChangePasswordRequest,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    """Change the authenticated client's password."""
+    """Change password; sets is_password_set=True and invalidates other sessions (C5+C6)."""
     stmt = select(Client).where(Client.id == user["client_id"])
     result = await db.execute(stmt)
     client = result.scalar_one_or_none()
@@ -184,6 +232,10 @@ async def change_password(
         )
 
     client.password_hash = hash_password(body.new_password)
+    client.is_password_set = True         # C6: gate cleared
+    client.token_version += 1             # C5: invalidate all other sessions
+    client.failed_login_count = 0         # H3: clear any residual lockout state
+    client.locked_until = None
     await db.flush()
 
     await log_audit(

@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 from backend.database import AsyncSessionLocal, get_db
-from backend.middleware.auth_middleware import create_access_token, get_admin_user
+from backend.middleware.auth_middleware import (
+    ROLE_ADMIN_DATA_ENTRY,
+    ROLE_ADMIN_READONLY,
+    create_access_token,
+    require_role,
+)
 from backend.models.client import Client
 from backend.models.nav_series import NavSeries
 from backend.models.upload_log import UploadLog
@@ -24,7 +29,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 async def recompute_risk(
     client_id: int | None = None,
     force: bool = False,
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Trigger risk recomputation for all or a specific client.
@@ -75,7 +80,7 @@ async def recompute_risk(
 @router.post("/recompute-holdings")
 async def recompute_holdings_all(
     client_id: int | None = None,
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Recompute holdings from transactions for all (or one) client.
@@ -129,7 +134,7 @@ async def recompute_holdings_all(
 
 @router.post("/deduplicate-symbols")
 async def deduplicate_symbols(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Remove duplicate transactions caused by alias/canonical symbol pairs.
@@ -232,7 +237,7 @@ async def deduplicate_symbols(
 
 @router.post("/update-prices")
 async def update_prices(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Fetch live NSE prices and update all holdings."""
@@ -243,7 +248,7 @@ async def update_prices(
 
 @router.get("/upload-log", response_model=list[UploadLogResponse])
 async def get_upload_log(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> list[UploadLogResponse]:
     """List recent upload history."""
@@ -263,7 +268,7 @@ async def get_upload_log(
 
 @router.get("/data-status")
 async def data_status(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Return last upload timestamp and latest NAV date across all clients."""
@@ -285,7 +290,7 @@ async def data_status(
 
 @router.get("/dashboard-analytics")
 async def dashboard_analytics(
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Aggregate analytics for the admin dashboard.
@@ -458,7 +463,7 @@ async def impersonate_client(
     client_id: int,
     request: Request,
     response: Response,
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Issue a JWT for viewing a client's dashboard. Admin only. Audit-logged.
@@ -467,8 +472,14 @@ async def impersonate_client(
     ``access_token`` is never overwritten. Portfolio routes prefer the
     impersonation cookie; admin routes ignore it. See
     ``backend.middleware.auth_middleware`` for the read-side invariant.
+
+    Soft-deleted clients are 404'd (M9) — the impersonation flow must not
+    grant access to a deleted account even if the admin still has its id.
     """
-    stmt = select(Client).where(Client.id == client_id)
+    stmt = select(Client).where(
+        Client.id == client_id,
+        Client.is_deleted.is_(False),
+    )
     client = (await db.execute(stmt)).scalar_one_or_none()
     if client is None:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -506,7 +517,7 @@ async def impersonate_client(
 async def stop_impersonate(
     request: Request,
     response: Response,
-    admin: dict = Depends(get_admin_user),
+    admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """End an impersonation session.

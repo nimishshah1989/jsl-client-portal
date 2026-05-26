@@ -1,6 +1,7 @@
 """JWT authentication middleware — extracts client_id from token."""
 
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 
 import bcrypt
 import jwt
@@ -15,6 +16,41 @@ settings = get_settings()
 
 ALGORITHM = "HS256"
 _BCRYPT_ROUNDS = 12
+
+# Role hierarchy for admin RBAC (M2).
+#
+# Each admin route declares the minimum role it requires; a user with a role at
+# or above that level passes. CLIENT (rank 0) is never an admin — admin routes
+# never see it because get_admin_user already rejects is_admin=False.
+#
+# Back-compat: if is_admin=True but role is missing/unknown (e.g. seeded admins
+# from before the role column existed), we treat them as ADMIN_FULL.
+ROLE_CLIENT = "CLIENT"
+ROLE_ADMIN_READONLY = "ADMIN_READONLY"
+ROLE_ADMIN_DATA_ENTRY = "ADMIN_DATA_ENTRY"
+ROLE_ADMIN_FULL = "ADMIN_FULL"
+
+_ROLE_RANK: dict[str, int] = {
+    ROLE_CLIENT: 0,
+    ROLE_ADMIN_READONLY: 1,
+    ROLE_ADMIN_DATA_ENTRY: 2,
+    ROLE_ADMIN_FULL: 3,
+}
+
+
+def _normalize_admin_role(role: str | None) -> str:
+    """Return the effective admin role, falling back to ADMIN_FULL for legacy admins.
+
+    A row with is_admin=True but role NULL/blank/unknown predates the role
+    column being populated, so treat it as fully-privileged to avoid locking
+    pre-existing operators out of their own tools.
+    """
+    if role is None:
+        return ROLE_ADMIN_FULL
+    role = role.strip().upper()
+    if role in _ROLE_RANK and role != ROLE_CLIENT:
+        return role
+    return ROLE_ADMIN_FULL
 
 
 def hash_password(password: str) -> str:
@@ -107,7 +143,13 @@ async def _validate_client_from_db(
     from backend.models.client import Client  # avoid circular import at module level
 
     result = await db.execute(
-        select(Client.is_active, Client.is_deleted, Client.token_version, Client.is_admin)
+        select(
+            Client.is_active,
+            Client.is_deleted,
+            Client.token_version,
+            Client.is_admin,
+            Client.role,
+        )
         .where(Client.id == decoded["client_id"])
     )
     row = result.one_or_none()
@@ -122,6 +164,11 @@ async def _validate_client_from_db(
             detail="Token has been revoked — please log in again",
         )
     decoded["is_admin"] = row.is_admin  # always read from DB, not JWT
+    # Effective admin role (M2). For non-admins the role on the user record may
+    # legitimately be CLIENT — only normalize when the user IS an admin.
+    decoded["role"] = (
+        _normalize_admin_role(row.role) if row.is_admin else (row.role or ROLE_CLIENT)
+    )
     return decoded
 
 
@@ -148,13 +195,20 @@ async def get_current_user(
 
 
 async def get_admin_user(
-    request: Request, db: AsyncSession = Depends(get_db)
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    required_role: str | None = None,
 ) -> dict:
     """
     FastAPI dependency: 403 if not admin. Admin routes only consult the
     ``access_token`` cookie — ``impersonation_token`` is intentionally ignored
     so admin powers cannot be exercised through an impersonation session (C17).
     Re-validates is_admin from DB so role downgrades take effect immediately (C5).
+
+    When ``required_role`` is supplied (one of the ROLE_* constants), the
+    caller's effective admin role must rank at or above it (M2). Routes that
+    only read data should pass ``ROLE_ADMIN_READONLY``; mutating routes
+    ``ROLE_ADMIN_DATA_ENTRY``; destructive routes ``ROLE_ADMIN_FULL``.
     """
     token = _extract_token(request, prefer_impersonation=False)
     decoded = _decode_token(token)
@@ -164,5 +218,51 @@ async def get_admin_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
+    if required_role is not None:
+        needed = _ROLE_RANK.get(required_role)
+        actual = _ROLE_RANK.get(decoded.get("role", ROLE_ADMIN_FULL), 0)
+        if needed is None:
+            # Misconfigured route — fail closed.
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Server misconfiguration: unknown required role",
+            )
+        if actual < needed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Insufficient admin role: this action requires {required_role}"
+                ),
+            )
     decoded["via_impersonation"] = False
     return decoded
+
+
+def require_role(required_role: str) -> Callable[..., Awaitable[dict]]:
+    """Factory returning a FastAPI dependency that enforces a minimum admin role.
+
+    Usage::
+
+        @router.post("/upload-nav")
+        async def upload_nav(
+            admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
+            ...
+        ):
+
+    See ``get_admin_user`` for the role hierarchy semantics. The factory pattern
+    is used because FastAPI's ``Depends`` cannot pass extra kwargs to a single
+    dependency, so we close over ``required_role`` and reuse ``get_admin_user``
+    for the actual auth + DB re-validation work.
+    """
+    if required_role not in _ROLE_RANK or required_role == ROLE_CLIENT:
+        raise ValueError(f"Invalid admin role: {required_role!r}")
+
+    async def _dep(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        return await get_admin_user(request, db, required_role=required_role)
+
+    # Make introspection (and FastAPI's dep cache key) distinguishable per role.
+    _dep.__name__ = f"require_role_{required_role.lower()}"
+    return _dep

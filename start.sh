@@ -11,7 +11,7 @@ cd /app
 python -m backend.auto_migrate
 
 echo "[CPP] Starting FastAPI on port 8000..."
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 1 &
+uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1 &
 FASTAPI_PID=$!
 
 echo "[CPP] Starting Next.js on port 3000..."

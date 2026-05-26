@@ -8,7 +8,7 @@ import datetime as dt
 import logging
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from backend.routers.helpers import (
     dec2,
     get_default_portfolio,
 )
+from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 from backend.schemas.portfolio import (
     GrowthResponse,
     NavSeriesPoint,
@@ -63,6 +64,7 @@ async def _build_flow_map(
 
 @router.get("/nav-series", response_model=list[NavSeriesPoint])
 async def get_nav_series(
+    request: Request,
     time_range: str = Query("ALL", alias="range"),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -191,11 +193,19 @@ async def get_nav_series(
             cash_pct=cash,
             cash_flow=cf_str,
         ))
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="NAV", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return points
 
 
 @router.get("/growth", response_model=GrowthResponse)
 async def get_growth(
+    request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> GrowthResponse:
@@ -296,6 +306,13 @@ async def get_growth(
             nifty_value = invested * last_nav.benchmark_value / first_nav.benchmark_value
         fd_value_total = invested * ((Decimal("1") + fd_rate_dec) ** years)
 
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO", resource_id=portfolio.id,
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
     return GrowthResponse(
         invested=dec2(invested), portfolio=dec2(current),
         nifty=dec2(nifty_value), fd=dec2(fd_value_total),

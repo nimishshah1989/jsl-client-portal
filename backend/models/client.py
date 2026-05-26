@@ -14,6 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
+from backend.utils.encryption import EncryptedString
 
 
 class Client(Base):
@@ -28,8 +29,9 @@ class Client(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     client_code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    email: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Fernet ciphertext adds ~80 bytes overhead; widened to 500 / 100 chars
+    email: Mapped[str | None] = mapped_column(EncryptedString(500), nullable=True)
+    phone: Mapped[str | None] = mapped_column(EncryptedString(100), nullable=True)
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")

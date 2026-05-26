@@ -4,10 +4,11 @@ import datetime as dt
 from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func, Index
-from sqlalchemy.dialects.postgresql import JSONB, INET
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
+from backend.utils.encryption import EncryptedString
 
 
 class AuditLog(Base):
@@ -37,7 +38,8 @@ class AuditLog(Base):
         nullable=True, index=True,
         comment="Client whose data was accessed (for cross-client audit)",
     )
-    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    # Fernet ciphertext is longer than raw IP; widened to 200 chars
+    ip_address: Mapped[str | None] = mapped_column(EncryptedString(200), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     details: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

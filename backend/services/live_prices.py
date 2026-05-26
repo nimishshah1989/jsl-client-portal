@@ -77,11 +77,19 @@ def _yf_download(ticker_str: str) -> "pd.DataFrame":
     )
 
 
-def _extract_close(data, yf_ticker: str, n_symbols: int) -> float | None:
+def _extract_close(data, yf_ticker: str, n_symbols: int) -> Decimal | None:
+    """
+    Pull the latest non-null Close from a yfinance DataFrame and return it as
+    Decimal. Convert at this boundary (Decimal(str(val))) so the live price
+    enters cpp_holdings.current_price (NUMERIC 18,4) without binary-float
+    artifacts. Decimal(val) directly would re-introduce them.
+    """
     try:
         close_col = data["Close"] if n_symbols == 1 else data["Close"][yf_ticker]
         val = close_col.dropna().iloc[-1]
-        return float(val) if val > 0 else None
+        if val <= 0:
+            return None
+        return Decimal(str(val))
     except (KeyError, IndexError, TypeError):
         return None
 
@@ -109,7 +117,8 @@ def _fetch_by_tickers(
             for key, yf_ticker in ticker_map.items():
                 price = _extract_close(data, yf_ticker, len(ticker_map))
                 if price is not None:
-                    prices[key] = Decimal(str(round(price, 4)))
+                    # _extract_close already returns Decimal; quantize to NUMERIC(18,4) precision.
+                    prices[key] = price.quantize(Decimal("0.0001"))
     except Exception as exc:
         logger.warning("yfinance batch failed (%d tickers): %s", len(ticker_map), exc)
 
@@ -122,7 +131,8 @@ def _fetch_by_tickers(
                 if not data.empty:
                     price = _extract_close(data, yf_ticker, 1)
                     if price is not None:
-                        prices[key] = Decimal(str(round(price, 4)))
+                        # _extract_close already returns Decimal; quantize to NUMERIC(18,4) precision.
+                        prices[key] = price.quantize(Decimal("0.0001"))
             except Exception:
                 continue
 

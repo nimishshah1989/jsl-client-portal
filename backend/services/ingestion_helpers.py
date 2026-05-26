@@ -227,7 +227,9 @@ async def update_benchmark_values(
     pairs: list[tuple] = []
     for dt, val in benchmark.items():
         nav_date = dt.date() if hasattr(dt, "date") else dt
-        pairs.append((nav_date, Decimal(str(float(val)))))
+        # Decimal(str(val)) captures the string form directly; the prior
+        # float() round-trip was lossy and is removed.
+        pairs.append((nav_date, Decimal(str(val))))
 
     count = 0
     for start in range(0, len(pairs), _BULK_BATCH_SIZE):

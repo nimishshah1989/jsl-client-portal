@@ -28,7 +28,6 @@ from backend.services.risk_metrics import (
     compute_daily_returns,
     compute_drawdown_series,
     compute_twr_series,
-    compute_weighted_avg_corpus,
     compute_weighted_bench_return,
     down_capture,
     information_ratio,
@@ -131,10 +130,12 @@ def _compute_period_metrics(
         "bench_volatility": bench_vol,
         "port_max_dd": port_dd["max_dd_pct"],
         "bench_max_dd": bench_dd["max_dd_pct"],
-        "port_sharpe": sharpe_ratio(port_ret, risk_free_rate),
-        "bench_sharpe": sharpe_ratio(bench_ret, risk_free_rate),
-        "port_sortino": sortino_ratio(port_ret, risk_free_rate),
-        "bench_sortino": sortino_ratio(bench_ret, risk_free_rate),
+        # Spec-aligned: (CAGR_pct - Rf) / volatility_pct for Sharpe;
+        # (CAGR_pct - Rf) / downside_dev_pct for Sortino (threshold = 0).
+        "port_sharpe": sharpe_ratio(port_cagr, port_vol, risk_free_rate),
+        "bench_sharpe": sharpe_ratio(bench_cagr, bench_vol, risk_free_rate),
+        "port_sortino": sortino_ratio(port_cagr, port_ret, risk_free_rate),
+        "bench_sortino": sortino_ratio(bench_cagr, bench_ret, risk_free_rate),
     }
 
 
@@ -306,36 +307,21 @@ def compute_all_metrics(
             period_returns[f"sortino_{suffix}"] = row["port_sortino"]
             bench_period_returns[f"bench_sortino_{suffix}"] = row["bench_sortino"]
 
-    # PMS reports two inception-level return numbers side-by-side:
-    #   - "Absolute Return %"            = (current_value − net_contribution) / net_contribution
-    #   - "Adjusted Return [Weighted] %" = profit / time-weighted-average-corpus
-    #     (Simple-Dietz: normalises profit by the average capital actually at work)
-    # Our `absolute_return` field is the Simple-Dietz figure (matches PMS
-    # "Adjusted Return [Weighted]"); `absolute_return_simple` is the
-    # committed-capital ratio shown as PMS "Absolute Return %".
-    nav_raw = nav_df["nav_value"].astype(float)
-    corpus_raw = nav_df["invested_amount"].astype(float)
-    terminal_nav = float(nav_raw.iloc[-1])
-    terminal_corpus = float(corpus_raw.iloc[-1])
-    profit = terminal_nav - terminal_corpus
-    simple_abs_return = (
-        (profit / terminal_corpus) * 100.0 if terminal_corpus > 0 else 0.0
-    )
-    weighted_avg_corpus = compute_weighted_avg_corpus(nav_df)
-    adjusted_weighted_return = (
-        (profit / weighted_avg_corpus) * 100.0
-        if weighted_avg_corpus > 0
-        else 0.0
-    )
+    # Spec-aligned absolute return: trailing total return on the TWR-adjusted
+    # series from inception to latest, expressed as a percentage.
+    #   absolute_return = (NAV_end / NAV_start) - 1
+    # Computed on the same TWR series used for CAGR/volatility/etc. so the
+    # value is independent of corpus inflows/outflows (per CLAUDE.md "Risk
+    # Computation Engine — 3. Period Returns").
+    spec_abs_return = absolute_return(port_series)
 
     result = {
-        "absolute_return": adjusted_weighted_return,
-        "absolute_return_simple": simple_abs_return,
+        "absolute_return": spec_abs_return,
         "cagr": port_cagr,
         "xirr": xirr_val,
         "volatility": port_vol,
-        "sharpe_ratio": sharpe_ratio(port_ret, risk_free_rate),
-        "sortino_ratio": sortino_ratio(port_ret, risk_free_rate),
+        "sharpe_ratio": sharpe_ratio(port_cagr, port_vol, risk_free_rate),
+        "sortino_ratio": sortino_ratio(port_cagr, port_ret, risk_free_rate),
         "max_drawdown": dd_result["max_dd_pct"],
         "max_dd_start": dd_result["dd_start"],
         "max_dd_end": dd_result["dd_end"],

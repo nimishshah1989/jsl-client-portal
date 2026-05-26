@@ -140,28 +140,33 @@ def annualized_volatility(daily_returns: pd.Series) -> float:
 
 
 def sharpe_ratio(
-    daily_returns: pd.Series,
+    cagr_pct: float,
+    volatility_pct: float,
     risk_free_rate: float = 6.50,
-    trading_days: int = 252,
 ) -> float:
     """
-    Sharpe Ratio — risk-adjusted return (daily excess approach).
+    Sharpe Ratio — risk-adjusted return.
 
-    Formula: mean(R_daily - Rf_daily) / std(R_daily - Rf_daily) * sqrt(252)
-    Where Rf_daily = annual_rf / 252.
-    Matches FIE2/Market Pulse reference implementation.
+    Formula: (R_p - R_f) / σ_p
+    Where:
+      R_p = portfolio CAGR (annualized return) — already in %
+      R_f = risk-free rate (6.50% = India 10Y govt bond yield)
+      σ_p = annualized volatility — already in %
+
+    Interpretation:
+      > 1.0 = Good risk-adjusted returns
+      > 2.0 = Excellent
+      < 0   = Returns below risk-free rate
+
+    Spec reference: CLAUDE.md "Risk Computation Engine — 7. Sharpe Ratio".
     """
-    if len(daily_returns) < 2:
+    if volatility_pct is None or float(volatility_pct) == 0.0:
         return 0.0
-    daily_rf = risk_free_rate / 100.0 / trading_days
-    excess = daily_returns - daily_rf
-    std = float(excess.std())
-    if std < 1e-10:
-        return 0.0
-    return float(excess.mean() / std * np.sqrt(trading_days))
+    return float((float(cagr_pct) - float(risk_free_rate)) / float(volatility_pct))
 
 
 def sortino_ratio(
+    cagr_pct: float,
     daily_returns: pd.Series,
     risk_free_rate: float = 6.50,
     trading_days: int = 252,
@@ -169,23 +174,28 @@ def sortino_ratio(
     """
     Sortino Ratio — penalizes only downside volatility.
 
-    Formula: (mean(R_daily) - Rf_daily) / downside_dev * sqrt(252)
-    Where downside = returns below Rf_daily (not below zero).
-    Matches FIE2/Market Pulse reference implementation.
+    Formula: (R_p - R_f) / σ_downside
+    Where:
+      σ_downside = √(252) × √(mean(min(R_daily, 0)²)) (expressed as %)
+      Only NEGATIVE daily returns contribute to downside deviation
+      (threshold is ZERO, not the daily risk-free rate).
+
+    Sortino penalizes only downside volatility — upside volatility is a good
+    thing. More appropriate than Sharpe for portfolios with asymmetric
+    returns.
+
+    Spec reference: CLAUDE.md "Risk Computation Engine — 8. Sortino Ratio".
     """
-    if len(daily_returns) < 2:
+    if daily_returns is None or len(daily_returns) < 2:
         return 0.0
-    # Zero-volatility portfolio (e.g. 100% cash) — ratio is undefined
-    if float(daily_returns.std()) < 1e-10:
-        return 0.0
-    daily_rf = risk_free_rate / 100.0 / trading_days
-    downside = daily_returns[daily_returns < daily_rf] - daily_rf
+    downside = daily_returns[daily_returns < 0]
     if len(downside) == 0:
         return 0.0
-    downside_dev = float(np.sqrt((downside**2).mean()))
-    if downside_dev < 1e-10:
+    # σ_downside annualised and expressed as a percentage to match cagr_pct units
+    downside_dev_pct = float(np.sqrt((downside**2).mean()) * np.sqrt(trading_days) * 100)
+    if downside_dev_pct < 1e-10:
         return 0.0
-    return float((daily_returns.mean() - daily_rf) / downside_dev * np.sqrt(trading_days))
+    return float((float(cagr_pct) - float(risk_free_rate)) / downside_dev_pct)
 
 
 def max_drawdown(nav_series: pd.Series) -> dict:

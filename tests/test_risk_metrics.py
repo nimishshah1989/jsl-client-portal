@@ -108,30 +108,49 @@ class TestVolatility:
 
 
 class TestSharpeRatio:
-    def test_positive_sharpe(self):
-        np.random.seed(42)
-        rets = pd.Series(np.random.normal(0.001, 0.01, 252))
-        result = sharpe_ratio(rets, risk_free_rate=6.50)
-        assert isinstance(result, float)
+    """Sharpe = (CAGR_pct - Rf) / Volatility_pct per CLAUDE.md spec."""
+
+    def test_known_value(self):
+        # CAGR 35.64%, Vol 15%, Rf 6.50% → (35.64 - 6.50) / 15 = 1.9427 (matches
+        # the worked example in CLAUDE.md Section 13).
+        result = sharpe_ratio(cagr_pct=35.64, volatility_pct=15.0, risk_free_rate=6.50)
+        assert pytest.approx(result, rel=1e-4) == (35.64 - 6.50) / 15.0
+
+    def test_returns_below_risk_free(self):
+        # Negative excess return → negative Sharpe.
+        result = sharpe_ratio(cagr_pct=4.0, volatility_pct=12.0, risk_free_rate=6.50)
+        assert result < 0
+        assert pytest.approx(result, rel=1e-4) == (4.0 - 6.50) / 12.0
 
     def test_zero_vol(self):
-        rets = pd.Series([0.001] * 100)
-        assert sharpe_ratio(rets) == 0.0
-
-    def test_short_series(self):
-        assert sharpe_ratio(pd.Series([0.01])) == 0.0
+        assert sharpe_ratio(cagr_pct=10.0, volatility_pct=0.0, risk_free_rate=6.50) == 0.0
 
 
 class TestSortinoRatio:
-    def test_no_downside(self):
+    """
+    Sortino = (CAGR_pct - Rf) / σ_downside_pct, where
+    σ_downside_pct = √252 × √(mean(min(R_daily, 0)²)) × 100.
+    Downside threshold is ZERO, not the daily Rf.
+    """
+
+    def test_no_downside_returns_zero(self):
+        # All-positive return series → no negative days → undefined → return 0.0
         rets = pd.Series([0.01, 0.02, 0.015, 0.005])
-        # All returns above daily rf (7%/252 ≈ 0.028%) → may still have some above
-        result = sortino_ratio(rets, risk_free_rate=0.0)
-        # With rf=0, all positive returns are above threshold
-        assert result == 0.0 or result > 0
+        assert sortino_ratio(cagr_pct=25.0, daily_returns=rets, risk_free_rate=6.50) == 0.0
+
+    def test_known_value(self):
+        # Hand-computed: returns = [-0.02, +0.01, -0.01, +0.03]
+        # downside = [-0.02, -0.01]; mean(square) = (0.0004+0.0001)/2 = 0.00025
+        # √0.00025 = 0.015811...; × √252 ≈ 0.250998; × 100 ≈ 25.0998 (%)
+        # CAGR 30%, Rf 6.50 → (30 - 6.5) / 25.0998 ≈ 0.9363
+        rets = pd.Series([-0.02, 0.01, -0.01, 0.03])
+        result = sortino_ratio(cagr_pct=30.0, daily_returns=rets, risk_free_rate=6.50)
+        expected_dd = (((-0.02) ** 2 + (-0.01) ** 2) / 2) ** 0.5
+        expected_dd_pct = expected_dd * (252 ** 0.5) * 100
+        assert pytest.approx(result, rel=1e-4) == (30.0 - 6.50) / expected_dd_pct
 
     def test_short_series(self):
-        assert sortino_ratio(pd.Series([0.01])) == 0.0
+        assert sortino_ratio(cagr_pct=10.0, daily_returns=pd.Series([0.01])) == 0.0
 
 
 class TestMaxDrawdown:

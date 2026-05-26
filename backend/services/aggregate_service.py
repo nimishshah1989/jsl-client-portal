@@ -287,8 +287,10 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
     bench_cagr_val = cagr(100.0, float(bench_series.iloc[-1]), total_days)
 
     vol = annualized_volatility(daily_port)
-    sharpe = sharpe_ratio(daily_port, RISK_FREE_RATE)
-    sortino_val = sortino_ratio(daily_port, RISK_FREE_RATE)
+    # Spec: (CAGR_pct - Rf) / Volatility_pct for Sharpe; downside threshold = 0
+    # for Sortino (CLAUDE.md "Risk Computation Engine" sections 7 & 8).
+    sharpe = sharpe_ratio(port_cagr, vol, RISK_FREE_RATE)
+    sortino_val = sortino_ratio(port_cagr, daily_port, RISK_FREE_RATE)
     dd = max_drawdown(port_series)
     beta_val = beta(daily_port, daily_bench)
     alpha_val = alpha(port_cagr, bench_cagr_val, beta_val, RISK_FREE_RATE)
@@ -396,20 +398,27 @@ async def get_aggregate_performance_table(db: AsyncSession) -> list[dict[str, An
         dp = compute_daily_returns(port_s)
         db_r = compute_daily_returns(bench_s)
 
+        port_cagr_p = cagr(float(port_s.iloc[0]), float(port_s.iloc[-1]), days_in_slice)
+        bench_cagr_p = cagr(float(bench_s.iloc[0]), float(bench_s.iloc[-1]), days_in_slice)
+        port_vol_p = annualized_volatility(dp)
+        bench_vol_p = annualized_volatility(db_r)
+
         results.append({
             "period": label,
             "port_abs_return": _r2(absolute_return(port_s)),
             "bench_abs_return": _r2(absolute_return(bench_s)),
-            "port_cagr": _r2(cagr(float(port_s.iloc[0]), float(port_s.iloc[-1]), days_in_slice)),
-            "bench_cagr": _r2(cagr(float(bench_s.iloc[0]), float(bench_s.iloc[-1]), days_in_slice)),
-            "port_volatility": _r2(annualized_volatility(dp)),
-            "bench_volatility": _r2(annualized_volatility(db_r)),
+            "port_cagr": _r2(port_cagr_p),
+            "bench_cagr": _r2(bench_cagr_p),
+            "port_volatility": _r2(port_vol_p),
+            "bench_volatility": _r2(bench_vol_p),
             "port_max_dd": _r2(max_drawdown(port_s)["max_dd_pct"]),
             "bench_max_dd": _r2(max_drawdown(bench_s)["max_dd_pct"]),
-            "port_sharpe": _r2(sharpe_ratio(dp, RISK_FREE_RATE)),
-            "bench_sharpe": _r2(sharpe_ratio(db_r, RISK_FREE_RATE)),
-            "port_sortino": _r2(sortino_ratio(dp, RISK_FREE_RATE)),
-            "bench_sortino": _r2(sortino_ratio(db_r, RISK_FREE_RATE)),
+            # Spec-aligned: (CAGR_pct - Rf) / vol_pct for Sharpe;
+            # (CAGR_pct - Rf) / downside_dev_pct for Sortino (threshold = 0).
+            "port_sharpe": _r2(sharpe_ratio(port_cagr_p, port_vol_p, RISK_FREE_RATE)),
+            "bench_sharpe": _r2(sharpe_ratio(bench_cagr_p, bench_vol_p, RISK_FREE_RATE)),
+            "port_sortino": _r2(sortino_ratio(port_cagr_p, dp, RISK_FREE_RATE)),
+            "bench_sortino": _r2(sortino_ratio(bench_cagr_p, db_r, RISK_FREE_RATE)),
         })
 
     return results

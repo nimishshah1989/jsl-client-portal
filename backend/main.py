@@ -152,7 +152,10 @@ from backend.routers.portfolio_detail import router as portfolio_detail_router  
 from backend.routers.admin import router as admin_router  # noqa: E402
 from backend.routers.admin_upload import router as admin_upload_router  # noqa: E402
 from backend.routers.admin_clients import router as admin_clients_router  # noqa: E402
-from backend.routers.admin_aggregate import router as admin_aggregate_router  # noqa: E402
+from backend.routers.admin_aggregate import (  # noqa: E402
+    benchmark_router as admin_benchmark_router,
+    router as admin_aggregate_router,
+)
 from backend.routers.admin_reconciliation import router as admin_reconciliation_router  # noqa: E402
 from backend.routers.portfolio_methodology import router as portfolio_methodology_router  # noqa: E402
 from backend.routers.me import router as me_router  # noqa: E402
@@ -167,6 +170,7 @@ app.include_router(admin_router)
 app.include_router(admin_upload_router)
 app.include_router(admin_clients_router)
 app.include_router(admin_aggregate_router)
+app.include_router(admin_benchmark_router)
 app.include_router(admin_reconciliation_router)
 
 

@@ -109,11 +109,33 @@ async def _get_cached_composite(db: AsyncSession) -> tuple[pd.DataFrame, pd.Seri
 
 
 async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
-    """Compute AUM-weighted daily returns in SQL for speed.
+    """Compute AUM-weighted, TWR-adjusted daily returns in SQL for speed.
 
-    Uses window functions to get prev-day NAV per client, compute returns,
-    and weight by AUM — all in the database. Returns ~2000 rows (one per date)
-    instead of ~366K rows.
+    Uses window functions to get prev-day NAV and prev-day invested_amount per
+    client, then computes time-weighted-return-adjusted daily returns that strip
+    out the effect of corpus inflows/outflows on a per-client basis BEFORE
+    AUM-weighting them into a firm-wide composite.
+
+    TWR adjustment (mirrors ``risk_metrics.compute_twr_series``):
+        corpus_change  = invested_today - invested_yesterday
+        adjusted_prev  = prev_nav + corpus_change
+        daily_ret      = (nav_value / adjusted_prev) - 1
+
+    On non-infusion days ``corpus_change`` is 0 so the formula naturally
+    collapses to the standard ``(nav_value / prev_nav) - 1``. On infusion days
+    the new cash is subtracted from the numerator (numerically, it inflates the
+    denominator instead — algebraically equivalent and avoids floating-point
+    cancellation) so the daily return reflects market performance only.
+
+    Edge cases (matching ``compute_twr_series``):
+      - ``prev_nav <= 0``        → row excluded
+      - ``adjusted_prev <= 0``   → row excluded (treated as no return contribution)
+      - missing ``prev_invested`` → row excluded (first NAV row per client)
+
+    AUM weighting still uses ``prev_nav`` (the pre-infusion NAV) as documented.
+    All arithmetic stays in ``numeric`` to preserve precision.
+
+    Returns ~2000 rows (one per date) instead of ~366K rows.
     """
     result = await db.execute(text("""
         WITH client_nav AS (
@@ -121,9 +143,17 @@ async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
                 n.nav_date,
                 n.client_id,
                 n.nav_value,
+                n.invested_amount,
                 COALESCE(n.benchmark_value, 0) AS benchmark_value,
-                LAG(n.nav_value) OVER (PARTITION BY n.client_id ORDER BY n.nav_date) AS prev_nav,
-                LAG(COALESCE(n.benchmark_value, 0)) OVER (PARTITION BY n.client_id ORDER BY n.nav_date) AS prev_bench
+                LAG(n.nav_value) OVER (
+                    PARTITION BY n.client_id ORDER BY n.nav_date
+                ) AS prev_nav,
+                LAG(n.invested_amount) OVER (
+                    PARTITION BY n.client_id ORDER BY n.nav_date
+                ) AS prev_invested,
+                LAG(COALESCE(n.benchmark_value, 0)) OVER (
+                    PARTITION BY n.client_id ORDER BY n.nav_date
+                ) AS prev_bench
             FROM cpp_nav_series n
             JOIN cpp_clients c ON c.id = n.client_id
             WHERE c.is_active = true AND c.is_admin = false
@@ -133,12 +163,19 @@ async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
             SELECT
                 nav_date,
                 prev_nav,
-                (nav_value - prev_nav) / prev_nav AS port_ret,
+                -- TWR-adjusted denominator: add corpus_change to prev_nav so
+                -- new cash isn't counted as a return. On non-infusion days
+                -- (corpus_change = 0) this is exactly prev_nav.
+                (nav_value /
+                    (prev_nav + (invested_amount - prev_invested))
+                ) - 1 AS port_ret,
                 CASE WHEN prev_bench > 0
                      THEN (benchmark_value - prev_bench) / prev_bench
                      ELSE 0 END AS bench_ret
             FROM client_nav
             WHERE prev_nav > 0
+              AND prev_invested IS NOT NULL
+              AND (prev_nav + (invested_amount - prev_invested)) > 0
         )
         SELECT
             nav_date,

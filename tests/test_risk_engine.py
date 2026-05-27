@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 
 from backend.services.benchmark_service import align_benchmark
-from backend.services.risk_engine import performance_table
+from backend.services.risk_engine import compute_all_metrics, performance_table
 
 
 # ───────────────────────────── helpers ──────────────────────────────────
@@ -218,3 +218,104 @@ def test_benchmark_realistic_sanity_check():
         f"5Y bench max DD = {bench_dd:.2f}% — too shallow. A realistic 5Y "
         f"benchmark should have at least one >3% drawdown. (The bug produced ~-0.14%.)"
     )
+
+
+# ────── Since-Inception overrides: Modified-Dietz, not TWR base-100 ──────
+
+def _make_bj53_shape_nav_df(days: int = 2000) -> pd.DataFrame:
+    """Build a nav_df that mimics BJ53's shape: a single mid-period corpus
+    infusion that makes TWR-base-100 and Modified-Dietz diverge meaningfully.
+
+    Without the divergence, this regression test is vacuous — the override is
+    a no-op when the two methods agree (no corpus changes).
+    """
+    rng = np.random.default_rng(2026)
+    dates = pd.date_range("2020-09-28", periods=days, freq="D")
+    daily_ret = rng.normal(0.0010, 0.012, size=days)
+    nav = 333_000.0 * np.cumprod(1.0 + daily_ret)
+
+    # Corpus infusion ~40% of the way through.
+    infusion_day = int(days * 0.4)
+    infusion = 1_657_506.0
+    nav[infusion_day:] = nav[infusion_day:] + infusion
+
+    invested = np.full(days, 333_000.0)
+    invested[infusion_day:] = 333_000.0 + infusion
+
+    bench = 11_000 * np.cumprod(1.0 + rng.normal(0.0004, 0.010, size=days))
+
+    return pd.DataFrame({
+        "nav_date": dates,
+        "nav_value": nav,
+        "invested_amount": invested,
+        "current_value": nav,
+        "benchmark_value": bench,
+        "cash_pct": np.full(days, 5.0),
+        # twr_value as production builds it via compute_twr_series; for this
+        # synthetic test we use a simple inception-base ratio of nav_value
+        # which is good enough — compute_all_metrics will use it via the
+        # value_col branch.
+        "twr_value": (nav / nav[0]) * 100.0,
+    })
+
+
+def test_perf_table_inception_uses_modified_dietz():
+    """The Performance Summary "Since Inception" row must show the same
+    cumulative-return and CAGR numbers as the dashboard's headline Summary
+    card — i.e. the Modified-Dietz "Adjusted Return [Weighted]" figures,
+    not the TWR base-100 simple ratio.
+
+    Bug fixed: production dashboard for BJ53 showed 227.47% on the Summary
+    card but 316.30% on the Perf Table Since-Inception row because the two
+    columns were reading from different computation methods.
+    """
+    nav_df = _make_bj53_shape_nav_df()
+    metrics = compute_all_metrics(nav_df)
+
+    assert "return_inception" in metrics
+    assert "cagr_inception" in metrics
+    assert metrics["return_inception"] == metrics["absolute_return"], (
+        f"return_inception ({metrics['return_inception']:.4f}) must equal "
+        f"absolute_return ({metrics['absolute_return']:.4f}) — both should "
+        "be the Modified-Dietz cumulative figure shown on the Summary card."
+    )
+    assert metrics["cagr_inception"] == metrics["cagr"], (
+        f"cagr_inception ({metrics['cagr_inception']:.4f}) must equal "
+        f"cagr ({metrics['cagr']:.4f}) — both should be the Modified-Dietz "
+        "annualised figure shown on the Summary card."
+    )
+
+
+def test_perf_table_trailing_periods_unchanged():
+    """Trailing-period (1M..5Y) rows in the Perf Table must STAY on TWR.
+
+    Those windows already match the PMS report under the TWR base-100
+    method, so the inception-only fix must not bleed into them. This is the
+    regression guard against someone "fixing" the wrong thing later.
+    """
+    nav_df = _make_bj53_shape_nav_df()
+    metrics = compute_all_metrics(nav_df)
+
+    md_cumulative = metrics["absolute_return"]
+    md_annualised = metrics["cagr"]
+
+    # On a BJ53-shape series with a corpus infusion, TWR base-100 and
+    # Modified-Dietz produce materially different cumulative returns.  Any
+    # trailing-period field that happens to coincide with absolute_return
+    # would indicate the override leaked.
+    for suffix in ("1m", "3m", "6m", "1y", "2y", "3y", "4y", "5y"):
+        ret_key = f"return_{suffix}"
+        cagr_key = f"cagr_{suffix}"
+        # Skip insufficient-history periods (the value can be None).
+        if metrics.get(ret_key) is None:
+            continue
+        assert metrics[ret_key] != md_cumulative, (
+            f"{ret_key} ({metrics[ret_key]:.4f}) must remain TWR-based — "
+            f"it equals the Modified-Dietz cumulative ({md_cumulative:.4f}), "
+            "indicating the inception override leaked into trailing periods."
+        )
+        if metrics.get(cagr_key) is not None:
+            assert metrics[cagr_key] != md_annualised, (
+                f"{cagr_key} ({metrics[cagr_key]:.4f}) must remain TWR-based "
+                f"— it equals the Modified-Dietz annualised ({md_annualised:.4f})."
+            )

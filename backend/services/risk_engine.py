@@ -453,6 +453,17 @@ def compute_all_metrics(
     }
     result.update(period_returns)
     result.update(bench_period_returns)
+
+    # Since-Inception headline figures MUST match the PMS "Adjusted Return
+    # [Weighted]" report, NOT the TWR base-100 simple ratio that diverges
+    # whenever there are corpus infusions (BJ53: TWR 316.30% vs PMS 227.42%).
+    # The trailing-period rows (1M..5Y) keep their TWR-based values because
+    # those windows already match the PMS report for those periods — only
+    # the inception row is repointed.
+    if "return_inception" in result:
+        result["return_inception"] = result["absolute_return"]
+    if "cagr_inception" in result:
+        result["cagr_inception"] = result["cagr"]
     return result
 
 
@@ -580,6 +591,22 @@ async def run_risk_engine(
     )
     if weighted_bench_return != 0.0:
         metrics["bench_return_inception"] = weighted_bench_return
+        # Keep the inception benchmark CAGR consistent with the weighted
+        # cumulative benchmark return that's now displayed — annualise the
+        # same Modified-Dietz weighted-bench figure over the full period.
+        # Without this, the Perf Summary "Since Inception" row would show
+        # a CAGR derived from raw NIFTY close ratio while the absolute
+        # return shows the weighted method (inconsistent pair).
+        total_days = (
+            nav_df["nav_date"].iloc[-1] - nav_df["nav_date"].iloc[0]
+        ).days
+        if total_days > 0:
+            years = total_days / 365.25
+            bench_cumul = weighted_bench_return / 100.0
+            if 1 + bench_cumul > 0:
+                metrics["bench_cagr_inception"] = (
+                    (1 + bench_cumul) ** (1 / years) - 1
+                ) * 100
 
     # 3b. Recompute XIRR using real cash flows if available
     cf_result = await db_session.execute(

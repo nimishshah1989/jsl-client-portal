@@ -11,6 +11,8 @@ Conversion to Decimal happens in risk_engine.py before DB write.
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
 import numpy as np
 import pandas as pd
 
@@ -94,12 +96,19 @@ def compute_daily_returns(series: pd.Series) -> pd.Series:
     return series.pct_change().dropna()
 
 
-def absolute_return(nav_series: pd.Series, days: int | None = None) -> float:
+def simple_return(nav_series: pd.Series, days: int | None = None) -> float:
     """
-    Trailing absolute return over N calendar days.
+    Trailing simple return over N calendar days.
 
     Formula: (NAV_end / NAV_start) - 1, expressed as percentage.
     If days is None, computes since inception.
+
+    NOTE: This is the naive TWR ratio between two endpoints. For the
+    inception-to-date headline return shown on the dashboard, the portal
+    uses ``compute_modified_dietz_return`` instead, which matches the
+    "Adjusted Return [Weighted] %" reported on the PMS backoffice report.
+    ``simple_return`` is kept for trailing-period rows where the ratio is
+    computed off the TWR-adjusted series.
     """
     if len(nav_series) < 2:
         return 0.0
@@ -112,6 +121,14 @@ def absolute_return(nav_series: pd.Series, days: int | None = None) -> float:
     if start_val == 0:
         return 0.0
     return ((end_val / start_val) - 1) * 100
+
+
+# Backwards-compatible alias.  Module-level callers (period table builders in
+# risk_engine and aggregate_service, plus existing tests) keep importing
+# ``absolute_return``; under the hood it is the same simple two-endpoint ratio.
+# The *headline* inception return persisted in cpp_risk_metrics.absolute_return
+# is recomputed by ``compute_modified_dietz_return`` in risk_engine.
+absolute_return = simple_return
 
 
 def cagr(start_value: float, end_value: float, days: int) -> float:
@@ -275,54 +292,21 @@ def compute_weighted_avg_corpus(nav_df: pd.DataFrame) -> float:
 
 def compute_weighted_bench_return(nav_df: pd.DataFrame) -> float:
     """
-    Cash-flow-weighted benchmark return using the virtual units method.
+    Cash-flow-weighted benchmark return matching PMS
+    "Absolute Return S&P CNX Nifty [Weighted] %".
 
-    Matches PMS "Absolute Return S&P CNX Nifty [Weighted] %".
+    Delegates to ``backend.services.modified_dietz`` which applies the
+    Modified-Dietz denominator (= V_start + Σ CF_i * w_i, i.e. the time-
+    weighted average corpus) rather than naively dividing by net
+    contributions.  This was the production bug that made BJ53 read
+    47.55% instead of the official 74.72%.
 
-    For each corpus change (inflow/outflow), we "buy" or "sell" Nifty units at
-    that date's benchmark price.  The total current value of those units versus
-    net contributions gives the cash-flow-adjusted benchmark return.
-
-    Formula:
-      - Each corpus delta d at date t: nifty_units += d / benchmark(t)
-      - net_corpus = sum of all deltas (inflows positive, outflows negative)
-      - weighted_return = (nifty_units * latest_benchmark - net_corpus) / net_corpus * 100
-
-    Returns 0.0 if benchmark data is unavailable or net corpus is zero.
+    See ``modified_dietz.compute_modified_dietz_bench_return`` for the
+    full math + worked example.
     """
-    bench_vals = nav_df["benchmark_value"].astype(float)
-    corpus_vals = nav_df["invested_amount"].astype(float)
+    from backend.services.modified_dietz import compute_modified_dietz_bench_return
 
-    if bench_vals.sum() == 0 or bench_vals.isna().all():
-        return 0.0
-
-    nifty_units = 0.0
-    net_corpus = 0.0
-    prev_corpus = 0.0
-
-    for i in range(len(nav_df)):
-        corpus = float(corpus_vals.iloc[i])
-        bench = float(bench_vals.iloc[i])
-
-        if bench <= 0:
-            prev_corpus = corpus
-            continue
-
-        if abs(corpus - prev_corpus) > 1e-4:
-            delta = corpus - prev_corpus
-            nifty_units += delta / bench
-            net_corpus += delta
-            prev_corpus = corpus
-
-    if net_corpus <= 0 or nifty_units <= 0:
-        return 0.0
-
-    latest_bench = float(bench_vals.iloc[-1])
-    if latest_bench <= 0:
-        return 0.0
-
-    nifty_value = nifty_units * latest_bench
-    return ((nifty_value - net_corpus) / net_corpus) * 100
+    return compute_modified_dietz_bench_return(nav_df)
 
 
 # ── Re-exports from risk_metrics_analysis for backward compatibility ──
@@ -338,4 +322,12 @@ from backend.services.risk_metrics_analysis import (  # noqa: F401, E402
     tracking_error,
     ulcer_index,
     up_capture,
+)
+
+# ── Re-exports for Modified-Dietz (PMS "Adjusted Return [Weighted]") ──
+from backend.services.modified_dietz import (  # noqa: F401, E402
+    compute_average_corpus,
+    compute_modified_dietz_bench_return,
+    compute_modified_dietz_return,
+    extract_modified_dietz_inputs,
 )

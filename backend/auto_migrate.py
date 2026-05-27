@@ -77,6 +77,10 @@ _STATEMENTS = [
     "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS started_at TIMESTAMP NOT NULL DEFAULT NOW()",
     "ALTER TABLE cpp_upload_log ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP",
     "CREATE UNIQUE INDEX IF NOT EXISTS ux_cpp_upload_log_job_id ON cpp_upload_log(job_id) WHERE job_id IS NOT NULL",
+    # Modified-Dietz "Adjusted Return [Weighted]" rollout: persist the
+    # time-weighted average corpus alongside the headline cumulative return so
+    # the methodology page can render the worked example with real numbers.
+    "ALTER TABLE cpp_risk_metrics ADD COLUMN IF NOT EXISTS average_corpus NUMERIC(20, 2)",
 ]
 
 

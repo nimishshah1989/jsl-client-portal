@@ -234,8 +234,90 @@ def compute_average_corpus(nav_df: pd.DataFrame) -> float:
     return weighted_sum / total_days if total_days > 0 else 0.0
 
 
+_STUCK_RUN_MIN_LENGTH = 10  # consecutive identical bench rows that triggers "stuck"
+
+
+def _resolve_anchor_bench(
+    bench_series: pd.Series,
+    target_date: pd.Timestamp,
+    *,
+    direction: str = "forward",
+) -> float:
+    """
+    Return the benchmark value at ``target_date`` UNLESS that value is the
+    tail of a long forward-filled / constant run, in which case fall through
+    to the first value that breaks the constant.
+
+    Why this exists: PR #21 documented that ``cpp_nav_series.benchmark_value``
+    was stuck at a single value (23,643.50) for 87% of 384,883 NAV rows
+    before the JIP ``index_prices`` repoint landed.  Until every client has
+    been recomputed with the fresh benchmark backfill, the latest row of
+    ``benchmark_value`` for some clients is still the stuck ffill value
+    rather than the actual Nifty close on the latest NAV date.  Using that
+    stuck value as ``latest_bench`` understates the synthetic Nifty portfolio
+    at the terminal and drags the weighted-bench return down by several
+    percentage points (BJ53: 74.72 expected → 70.41 observed in production).
+
+    A long, perfectly-constant run hugging the anchor is the only signal we
+    can detect without an external lookup; this routine deliberately does
+    NOT touch anchors when neighbouring values disagree, so well-behaved
+    series (and unit-test fixtures with distinct daily values) are
+    unaffected.
+
+    ``bench_series`` must be a date-indexed pd.Series of float bench prices,
+    sorted ascending by index.
+    """
+    if target_date not in bench_series.index:
+        return float(bench_series.iloc[-1] if direction == "backward" else bench_series.iloc[0])
+
+    anchor_value = float(bench_series.loc[target_date])
+    if anchor_value <= 0 or np.isnan(anchor_value):
+        return anchor_value  # caller will guard against it.
+
+    anchor_pos = bench_series.index.get_loc(target_date)
+
+    # Count the contiguous run of values equal to anchor_value pinned to the
+    # anchor side.  For the FORWARD (inception) anchor we walk outward FROM
+    # row 0 — i.e. forwards in time — counting how many consecutive leading
+    # rows share the anchor value.  For the BACKWARD (latest) anchor we walk
+    # outward from the last row — i.e. backwards in time.
+    if direction == "backward":
+        # Anchor sits at the end; count identical trailing rows.
+        run = 1
+        i = anchor_pos - 1
+        while i >= 0 and float(bench_series.iloc[i]) == anchor_value:
+            run += 1
+            i -= 1
+        next_distinct_pos = i  # index of the first non-stuck row
+    else:
+        # Anchor sits at the start; count identical leading rows.
+        run = 1
+        i = anchor_pos + 1
+        while i < len(bench_series) and float(bench_series.iloc[i]) == anchor_value:
+            run += 1
+            i += 1
+        next_distinct_pos = i
+
+    if run < _STUCK_RUN_MIN_LENGTH:
+        # Not a long forward-filled run; the anchor is genuine — use it.
+        return anchor_value
+
+    if next_distinct_pos < 0 or next_distinct_pos >= len(bench_series):
+        # The entire series is one constant value — nothing better to use.
+        return anchor_value
+
+    candidate = float(bench_series.iloc[next_distinct_pos])
+    if candidate <= 0 or np.isnan(candidate):
+        return anchor_value
+
+    return candidate
+
+
 def compute_modified_dietz_bench_return(
     nav_df: pd.DataFrame,
+    *,
+    inception_bench_override: float | None = None,
+    latest_bench_override: float | None = None,
 ) -> float:
     """
     Cash-flow-weighted benchmark return matching PMS
@@ -257,6 +339,15 @@ def compute_modified_dietz_bench_return(
             / (V_start + sum(CF_i * w_i))
             * 100
 
+    The two ``*_override`` kwargs let callers (e.g. the async risk engine)
+    inject an authoritative inception / latest Nifty close fetched directly
+    from ``fie_v3.index_prices`` so the function does not silently use a
+    forward-filled / stale ``benchmark_value`` from ``cpp_nav_series``.
+    BJ53 production was hitting 70.41% (vs the 74.72% PMS reference)
+    specifically because the terminal ``benchmark_value`` for the latest
+    nav_date was a stale ffill of an earlier Nifty close — not the
+    24,031.70 close on 2026-05-25 that the PMS report uses.
+
     Returns 0.0 if benchmark data is unavailable, inception bench price
     is missing, or the denominator collapses.
     """
@@ -270,8 +361,28 @@ def compute_modified_dietz_bench_return(
     if bench_vals.sum() == 0 or bench_vals.isna().all():
         return 0.0
 
-    inception_bench = float(bench_vals.iloc[0])
-    latest_bench = float(bench_vals.iloc[-1])
+    bench_series = pd.Series(
+        bench_vals.values,
+        index=pd.to_datetime(df["nav_date"]).values,
+    ).sort_index()
+
+    # Resolve inception and terminal Nifty anchors.  Prefer explicit
+    # overrides from the caller (authoritative source-of-truth); otherwise
+    # fall back to the value in the dataframe, with stuck-tail detection.
+    if inception_bench_override is not None and inception_bench_override > 0:
+        inception_bench = float(inception_bench_override)
+    else:
+        inception_bench = _resolve_anchor_bench(
+            bench_series, bench_series.index[0], direction="forward"
+        )
+
+    if latest_bench_override is not None and latest_bench_override > 0:
+        latest_bench = float(latest_bench_override)
+    else:
+        latest_bench = _resolve_anchor_bench(
+            bench_series, bench_series.index[-1], direction="backward"
+        )
+
     if inception_bench <= 0 or latest_bench <= 0:
         return 0.0
 
@@ -281,14 +392,8 @@ def compute_modified_dietz_bench_return(
 
     inception_date = _to_pydate(df["nav_date"].iloc[0])
 
-    # Map each cash-flow date to its benchmark price by an as-of lookup
-    # on the nav_df (the benchmark column is already date-aligned).
-    bench_lookup = pd.Series(
-        bench_vals.values,
-        index=pd.to_datetime(df["nav_date"]).values,
-    ).sort_index()
-
-    # Buy units on inception with v_start.
+    # Buy units on inception with v_start (anchored to the resolved
+    # inception Nifty close, not necessarily the row's stored value).
     nifty_units = v_start / inception_bench
     sum_cf = 0.0
     sum_weighted_cf = 0.0
@@ -297,7 +402,7 @@ def compute_modified_dietz_bench_return(
         ts = pd.Timestamp(cf_date)
         # as-of: most recent benchmark price ≤ cf_date.
         try:
-            bench_at_cf = float(bench_lookup.asof(ts))
+            bench_at_cf = float(bench_series.asof(ts))
         except KeyError:
             bench_at_cf = 0.0
         if bench_at_cf is None or np.isnan(bench_at_cf) or bench_at_cf <= 0:

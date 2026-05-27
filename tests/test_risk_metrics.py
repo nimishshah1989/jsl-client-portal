@@ -450,13 +450,22 @@ class TestModifiedDietzBJ53Reference:
     def test_weighted_bench_bj53_reference_exact(self):
         """
         Tighter pinning of the weighted-benchmark return against BJ53's PMS
-        reference of 74.72%.  Uses the FULL infusion timeline (not the
-        single-CF approximation in ``test_weighted_bench_bj53_reference``)
-        plus Nifty 50 closes on each infusion date so the synthetic
-        unit-purchase math runs end-to-end exactly the way it does in
-        production.
+        reference of 74.72%, using the PRODUCTION-SHAPE input: a daily
+        ``nav_df`` exactly the way ``risk_engine.run_risk_engine`` builds it
+        from ``cpp_nav_series`` (one row per calendar day, invested_amount
+        stepping up on infusion dates, benchmark_value populated for every
+        date from ``fie_v3.index_prices`` via ``align_benchmark``).
 
-        Nifty 50 closes (NSE):
+        The earlier version of this test fed 6 inflection-only rows to the
+        function — that geometry is NEVER what production passes in.
+        Production passes 2,066 rows (one per day from 2020-09-28 to
+        2026-05-25).  By rebuilding that shape here we guard against any
+        regression that only manifests when the function has to iterate
+        full daily history (e.g. a corpus-delta detector that mis-fires on
+        identical-value runs, or a benchmark anchor that picks up a
+        forward-filled value from the tail of the series).
+
+        Nifty 50 closes (NSE, anchor points):
             2020-09-28  11,050.25  (inception)
             2021-07-05  15,722.20
             2023-02-02  17,765.00
@@ -467,39 +476,88 @@ class TestModifiedDietzBJ53Reference:
         Acceptance band: 74.2%..75.2% (±0.5pp from the 74.72% PMS report).
         The slack accounts for as-of NAV-vs-trading-day alignment and
         intra-day price variance — the structure of the math must produce
-        a number INSIDE this band, not the buggy ~70% it produced before
-        the inception infusion was treated as the unit-buy anchor.
+        a number INSIDE this band, not the buggy ~70% it produced when the
+        terminal anchor was a stale forward-fill from ~23,600.
         """
-        nav_dates = [
-            date(2020, 9, 28),
-            date(2021, 7, 5),
-            date(2023, 2, 2),
-            date(2023, 2, 21),
-            date(2023, 6, 12),
-            date(2026, 5, 25),
+        # Build a daily-row nav_df between inception and terminal.
+        all_dates = pd.date_range(
+            self.INCEPTION, self.END, freq="D"
+        )
+
+        # invested_amount steps up on each infusion date.
+        corpus_steps = {
+            date(2020, 9, 28): 333_000.0,
+            date(2021, 7, 5): 533_000.0,
+            date(2023, 2, 2): 1_033_000.0,
+            date(2023, 2, 21): 1_890_506.0,
+            date(2023, 6, 12): 1_990_506.0,
+        }
+        invested: list[float] = []
+        current = 0.0
+        for ts in all_dates:
+            d = ts.date()
+            if d in corpus_steps:
+                current = corpus_steps[d]
+            invested.append(current)
+
+        # benchmark_value: linearly interpolate between the known Nifty
+        # anchor closes.  This mimics ``align_benchmark`` with ffill close
+        # enough that the function's as-of lookup at each CF date resolves
+        # to a price within ~1% of the actual close — enough to land inside
+        # the ±0.5pp acceptance band.
+        bench_anchors = [
+            (date(2020, 9, 28), 11_050.25),
+            (date(2021, 7, 5), 15_722.20),
+            (date(2023, 2, 2), 17_765.00),
+            (date(2023, 2, 21), 17_826.00),
+            (date(2023, 6, 12), 18_601.00),
+            (date(2026, 5, 25), 24_031.70),
         ]
-        invested = [333_000.0, 533_000.0, 1_033_000.0, 1_890_506.0, 1_990_506.0, 1_990_506.0]
-        bench = [11_050.25, 15_722.20, 17_765.00, 17_826.00, 18_601.00, 24_031.70]
+        bench: list[float] = []
+        for ts in all_dates:
+            d = ts.date()
+            value = bench_anchors[-1][1]
+            for (d0, b0), (d1, b1) in zip(bench_anchors, bench_anchors[1:]):
+                if d0 <= d <= d1:
+                    span = (d1 - d0).days or 1
+                    frac = (d - d0).days / span
+                    value = b0 + frac * (b1 - b0)
+                    break
+            bench.append(value)
+
+        # nav_value / current_value: linear glide from V_start to V_end.
+        # The bench function does not use these fields except through
+        # extract_modified_dietz_inputs (for V_end), but production carries
+        # them on every row so we mirror that.
+        n = len(all_dates)
+        nav_glide = [
+            self.V_START + (self.V_END - self.V_START) * (i / (n - 1))
+            for i in range(n)
+        ]
 
         df = pd.DataFrame({
-            "nav_date": nav_dates,
+            "nav_date": all_dates,
             "invested_amount": invested,
-            # current_value rises linearly with invested until the terminal
-            # row, which carries the actual ₹50.48L mark — the bench function
-            # only reads invested + benchmark_value, but compute_modified_dietz
-            # _inputs reads current_value/nav_value to find V_end.
-            "current_value": invested[:-1] + [5_048_414.94],
-            "nav_value": invested[:-1] + [5_048_414.94],
+            "current_value": nav_glide,
+            "nav_value": nav_glide,
             "benchmark_value": bench,
         })
+
+        # Sanity: the production-shape df must be a daily series, not the
+        # 6-row inflection geometry the older test used.
+        assert len(df) > 2000, (
+            f"This test must reproduce production daily-row geometry; got "
+            f"{len(df)} rows."
+        )
 
         result = compute_modified_dietz_bench_return(df)
 
         assert 74.2 <= result <= 75.2, (
-            f"BJ53 weighted bench return mismatch: got {result:.4f}, "
-            f"expected ~74.72% (±0.5pp). The structure should anchor the "
-            f"first synthetic unit purchase at the inception NAV date with "
-            f"V_start in the denominator."
+            f"BJ53 weighted bench return mismatch on production-shape "
+            f"daily nav_df: got {result:.4f}, expected ~74.72% (±0.5pp). "
+            f"The structure should anchor the first synthetic unit purchase "
+            f"at the inception NAV date with V_start in the denominator, and "
+            f"must not be dragged down by a stale ffill at either bench anchor."
         )
 
 

@@ -18,9 +18,11 @@ from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import AsyncSessionLocal
+from backend.models.nav_series import NavSeries
 from backend.services.benchmark_service import fetch_nifty_data
 from backend.services.ingestion_helpers import (
     find_or_create_client,
@@ -52,14 +54,30 @@ class UploadResult:
     client_codes: list[str] = field(default_factory=list)
 
 
-def _derive_cash_flows_from_nav(client_code: str, records: list[dict]) -> list[dict]:
+def _derive_cash_flows_from_nav(
+    client_code: str,
+    records: list[dict],
+    prior_corpus: Decimal = Decimal("0"),
+) -> list[dict]:
     """Derive INFLOW/OUTFLOW records from corpus changes in parsed NAV records.
 
     Called during NAV ingestion so cpp_cash_flows stays current without needing
     a separate cashflow file upload.  XIRR then always uses current corpus data.
+
+    Args:
+        client_code: UCC of the client (used as source_ucc and for logging).
+        records: Parsed NAV rows for this client in the current upload.
+        prior_corpus: The most recent ``invested_amount`` from ``cpp_nav_series``
+            for this client/portfolio with ``nav_date`` STRICTLY BEFORE the
+            earliest date in ``records``. Default ``Decimal("0")`` is correct
+            for the very first backfill (no prior history). For incremental
+            daily uploads the caller MUST look this up and pass it — otherwise
+            the function will treat the entire current corpus as a phantom
+            INFLOW on the upload's first date (production-incident 2026-05-26:
+            1,088 phantom rows across 364 clients, all XIRR values NULL).
     """
     sorted_recs = sorted(records, key=lambda r: r["date"])
-    prev_corpus = Decimal("0")
+    prev_corpus = prior_corpus
     cf_records: list[dict] = []
     for rec in sorted_recs:
         corpus = Decimal(str(rec["corpus"])) if rec["corpus"] is not None else Decimal("0")
@@ -189,7 +207,31 @@ async def ingest_nav_file(
 
             # Derive cash flows from corpus changes and upsert — keeps cpp_cash_flows
             # current after every NAV upload so XIRR is always accurate.
-            cf_records = _derive_cash_flows_from_nav(client_code, client_records)
+            #
+            # CRITICAL: For incremental uploads (single day per upload, which is the
+            # production pattern), we must compare today's corpus against the most
+            # recent corpus already in cpp_nav_series — NOT against zero — otherwise
+            # we synthesise a phantom INFLOW for the full corpus on every upload.
+            # See production incident 2026-05-26.
+            min_upload_date = min(
+                r["date"].date() if isinstance(r["date"], datetime) else r["date"]
+                for r in client_records
+            )
+            prior_result = await db.execute(
+                select(NavSeries.invested_amount)
+                .where(
+                    NavSeries.client_id == client_id,
+                    NavSeries.portfolio_id == portfolio_id,
+                    NavSeries.nav_date < min_upload_date,
+                )
+                .order_by(NavSeries.nav_date.desc())
+                .limit(1)
+            )
+            prior_corpus = prior_result.scalar_one_or_none() or Decimal("0")
+
+            cf_records = _derive_cash_flows_from_nav(
+                client_code, client_records, prior_corpus=prior_corpus
+            )
             if cf_records:
                 cf_count = await upsert_cash_flows(db, client_id, portfolio_id, cf_records)
                 logger.debug("Upserted %d corpus-derived cash flows for %s", cf_count, client_code)

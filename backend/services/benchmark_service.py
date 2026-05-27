@@ -166,6 +166,104 @@ def _fetch_jip_index_history(
     return df
 
 
+def _write_jip_index_history(index_name: str, df: pd.DataFrame) -> int:
+    """
+    Idempotently write (date, close_price) rows into fie_v3.public.index_prices
+    for the given index_name. Used when yfinance is the source of truth for
+    dates that fie_v3 hasn't ingested yet — we write back so subsequent reads
+    hit the canonical source and we don't keep calling the external API.
+
+    Uses ON CONFLICT (date, index_name) DO NOTHING. If the table is owned by
+    another writer and the conflict target differs, the conflict still resolves
+    safely (no rows inserted, no exception).
+
+    Returns the number of rows the INSERT actually wrote (after conflict
+    resolution). Returns 0 if no JIP DSN is configured or the table is not
+    writable — write failures are logged at WARNING and never raised, because
+    a write-back failure must not break ingestion.
+    """
+    if df is None or df.empty:
+        return 0
+
+    dsn = _jip_db_dsn()
+    if not dsn:
+        logger.debug("No JIP DSN configured; skipping write-back of %d rows", len(df))
+        return 0
+
+    # Materialise (date, close) tuples so we don't depend on the DataFrame's
+    # exact dtype downstream. Drop NaN closes — they're useless.
+    pairs: list[tuple] = []
+    for ts, val in df["close"].items():
+        if val is None or pd.isna(val):
+            continue
+        d = ts.date() if hasattr(ts, "date") else ts
+        pairs.append((d, float(val)))
+
+    if not pairs:
+        return 0
+
+    try:
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                # ON CONFLICT target matches the natural key on the table
+                # (date + index_name). If the deployed table uses a different
+                # constraint name, fall back to a do-nothing INSERT path.
+                try:
+                    cur.executemany(
+                        """
+                        INSERT INTO public.index_prices (date, index_name, close_price)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (date, index_name) DO NOTHING
+                        """,
+                        [(d, index_name, c) for (d, c) in pairs],
+                    )
+                    written = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                except psycopg2.errors.InvalidColumnReference:
+                    # Conflict target doesn't exist — fall back to a guarded insert.
+                    conn.rollback()
+                    written = 0
+                    with conn.cursor() as cur2:
+                        for d, c in pairs:
+                            try:
+                                cur2.execute(
+                                    """
+                                    INSERT INTO public.index_prices
+                                        (date, index_name, close_price)
+                                    SELECT %s, %s, %s
+                                    WHERE NOT EXISTS (
+                                        SELECT 1 FROM public.index_prices
+                                        WHERE date = %s AND index_name = %s
+                                    )
+                                    """,
+                                    (d, index_name, c, d, index_name),
+                                )
+                                if cur2.rowcount:
+                                    written += cur2.rowcount
+                            except Exception as inner:
+                                logger.debug(
+                                    "Write-back skipped for %s: %s", d, inner
+                                )
+            conn.commit()
+        finally:
+            conn.close()
+        if written:
+            logger.info(
+                "Wrote back %d %s row(s) to fie_v3.index_prices "
+                "(yfinance → JIP cache hydration)",
+                written, index_name,
+            )
+        return written
+    except Exception as exc:
+        # Write-back failure is non-fatal: the in-memory data is still usable
+        # for the current ingestion, we just won't have it cached for next time.
+        logger.warning(
+            "Failed to write back %d Nifty rows to fie_v3.index_prices: %s",
+            len(pairs), exc,
+        )
+        return 0
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=2, max=8),
@@ -191,12 +289,45 @@ def _fetch_yfinance_history(fetch_start: date, fetch_end: date) -> pd.DataFrame:
     return hist
 
 
+def _trading_days_in_range(start: date, end: date) -> list[date]:
+    """Return calendar weekdays in [start, end] inclusive — a cheap proxy for
+    NSE trading days when checking whether fie_v3 has comprehensive coverage.
+
+    We don't have the actual NSE holiday calendar at the data layer; weekday
+    coverage is a sufficient gate to decide "do we need to call yfinance to
+    fill a gap?". The price of an occasional unnecessary yfinance call on a
+    holiday is bounded (the cache absorbs the result for the rest of the day).
+    """
+    out: list[date] = []
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5:  # Mon-Fri
+            out.append(cur)
+        cur += timedelta(days=1)
+    return out
+
+
+def _missing_dates(have: pd.DataFrame, start: date, end: date) -> list[date]:
+    """Compute the trading days in [start, end] that are NOT present in
+    ``have``'s DatetimeIndex. Used to decide whether yfinance needs to be
+    consulted to fill holes in the fie_v3 coverage."""
+    if have is None or have.empty:
+        return _trading_days_in_range(start, end)
+    have_dates = {ts.date() for ts in have.index}
+    return [d for d in _trading_days_in_range(start, end) if d not in have_dates]
+
+
 def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
     """
     Fetch Nifty 50 daily close prices.
 
-    Primary: JIP data core (`fie_v3.public.index_prices`, NIFTY).
-    Fallback: yfinance `^NSEI` if JIP query returns empty.
+    Self-healing source order:
+      1. JIP data core (`fie_v3.public.index_prices`, NIFTY) — canonical.
+      2. yfinance `^NSEI` fills any TRADING-DAY gaps that the JIP source is
+         missing (e.g. brand-new dates that fie_v3 hasn't ingested yet).
+         Any rows pulled from yfinance are written BACK to fie_v3 so the
+         next read hits the canonical cache and we don't keep calling the
+         external API.
 
     Args:
         start_date: First date needed (inclusive).
@@ -221,7 +352,8 @@ def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
     fetch_start = start_date - timedelta(days=_BUFFER_DAYS)
     fetch_end = end_date
 
-    # 1. Try JIP data core first.
+    # 1. Pull what fie_v3 has.
+    jip_df = pd.DataFrame(columns=["close"])
     try:
         jip_df = _fetch_jip_index_history(_JIP_NIFTY_INDEX, fetch_start, fetch_end)
         if not jip_df.empty:
@@ -229,34 +361,70 @@ def fetch_nifty_data(start_date: date, end_date: date) -> pd.DataFrame:
                 "JIP data core: fetched %d Nifty rows for %s to %s",
                 len(jip_df), fetch_start, fetch_end,
             )
-            BenchmarkCache.put(_NIFTY_TICKER, jip_df)
-            mask = (jip_df.index.date >= start_date) & (jip_df.index.date <= end_date)
-            return jip_df.loc[mask].copy()
-        logger.warning(
-            "JIP data core returned 0 rows for NIFTY %s to %s; falling back to yfinance",
-            fetch_start, fetch_end,
-        )
     except Exception as exc:
-        logger.warning("JIP data core query failed (%s); falling back to yfinance", exc)
+        logger.warning("JIP data core query failed (%s); will rely on yfinance", exc)
 
-    # 2. Fallback to yfinance.
-    try:
-        hist = _fetch_yfinance_history(fetch_start, fetch_end + timedelta(days=1))
-    except Exception as exc:
+    # 2. Decide whether yfinance has to fill any trading-day gaps. We only
+    #    consider holes IN THE REQUESTED RANGE [start_date, end_date] — the
+    #    buffer days aren't critical to align navdates.
+    missing = _missing_dates(jip_df, start_date, end_date)
+    yf_df = pd.DataFrame(columns=["close"])
+    if missing:
+        logger.info(
+            "JIP missing %d trading day(s) in [%s, %s]; calling yfinance to fill",
+            len(missing), start_date, end_date,
+        )
+        try:
+            # yfinance's `end` is exclusive — add a day to ensure we get end_date.
+            hist = _fetch_yfinance_history(fetch_start, fetch_end + timedelta(days=1))
+            yf_df = hist[["Close"]].copy()
+            yf_df.columns = ["close"]
+            yf_df.index.name = "date"
+            yf_df = yf_df.sort_index()
+            # Strip tz for consistency with JIP
+            if yf_df.index.tz is not None:
+                yf_df.index = yf_df.index.tz_convert(None)
+        except Exception as exc:
+            logger.warning(
+                "yfinance fallback failed for Nifty %s to %s: %s",
+                fetch_start, fetch_end, exc,
+            )
+
+    # 3. Combine: JIP wins on overlap, yfinance fills the rest.
+    if jip_df.empty and yf_df.empty:
         logger.warning(
-            "Both JIP and yfinance failed for Nifty %s to %s: %s",
-            fetch_start, fetch_end, exc,
+            "Both JIP and yfinance returned no Nifty data for %s to %s",
+            fetch_start, fetch_end,
         )
         return pd.DataFrame(columns=["close"])
 
-    df = hist[["Close"]].copy()
-    df.columns = ["close"]
-    df.index.name = "date"
-    df = df.sort_index()
-    BenchmarkCache.put(_NIFTY_TICKER, df)
-    mask = (df.index.date >= start_date) & (df.index.date <= end_date)
-    result = df.loc[mask].copy()
-    logger.info("yfinance fallback: %d Nifty points", len(result))
+    if jip_df.empty:
+        combined = yf_df
+    elif yf_df.empty:
+        combined = jip_df
+    else:
+        # Drop yfinance dates already covered by fie_v3 so JIP stays authoritative.
+        jip_dates = set(jip_df.index)
+        yf_only = yf_df.loc[~yf_df.index.isin(jip_dates)]
+        combined = pd.concat([jip_df, yf_only]).sort_index()
+
+    # 4. Write back to fie_v3 the dates that ONLY yfinance has, so the next
+    #    read finds them in the canonical source.
+    if not yf_df.empty:
+        if jip_df.empty:
+            writeback_df = yf_df
+        else:
+            writeback_df = yf_df.loc[~yf_df.index.isin(jip_df.index)]
+        if not writeback_df.empty:
+            _write_jip_index_history(_JIP_NIFTY_INDEX, writeback_df)
+
+    BenchmarkCache.put(_NIFTY_TICKER, combined)
+    mask = (combined.index.date >= start_date) & (combined.index.date <= end_date)
+    result = combined.loc[mask].copy()
+    logger.info(
+        "Nifty fetch: %d rows from JIP + %d gap-fill from yfinance (range %s..%s)",
+        len(jip_df), len(yf_df), start_date, end_date,
+    )
     return result
 
 

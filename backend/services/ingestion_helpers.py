@@ -9,14 +9,18 @@ Separated from ingestion_service.py to keep files under 400 lines.
 
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.services.benchmark_service import align_benchmark, fetch_and_align
+from backend.services.benchmark_service import (
+    align_benchmark,
+    fetch_and_align,
+    fetch_nifty_data,
+)
 from backend.services.holdings_service import compute_holdings
 from backend.services.isin_resolver import (
     isin_to_symbol,
@@ -180,6 +184,56 @@ async def upsert_nav_rows(
     return count
 
 
+def _align_or_widen(
+    nav_dates: pd.DatetimeIndex,
+    pre_fetched: "pd.DataFrame | None",
+) -> pd.Series:
+    """Align benchmark to nav_dates, widening the fetch if the pre-fetched
+    DataFrame doesn't span the client's history.
+
+    Self-healing benchmark contract (see PR ``feat(benchmark): self-healing
+    Nifty data pipeline``):
+
+      * If ``pre_fetched`` is None → fetch the full nav_dates range fresh.
+      * If ``pre_fetched`` doesn't cover the full nav_dates range OR is too
+        sparse for ``align_benchmark`` to keep (diversity guard fires),
+        re-fetch the full nav_dates range and align against THAT.
+      * Returns an empty series only if every source comes up empty.
+    """
+    if pre_fetched is None or pre_fetched.empty:
+        return fetch_and_align(nav_dates)
+
+    # Check whether the pre-fetched range covers nav_dates.
+    pf_start = pre_fetched.index.min().date() if len(pre_fetched) else None
+    pf_end = pre_fetched.index.max().date() if len(pre_fetched) else None
+    needed_start = nav_dates.min().date()
+    needed_end = nav_dates.max().date()
+    covers_range = (
+        pf_start is not None
+        and pf_end is not None
+        and pf_start <= needed_start
+        and pf_end >= needed_end
+    )
+
+    if covers_range:
+        aligned = align_benchmark(nav_dates, pre_fetched)
+        if aligned is not None and len(aligned.dropna()) > 0:
+            return aligned
+        logger.info(
+            "Pre-fetched bench produced no aligned values for nav_dates "
+            "%s..%s; re-fetching full range",
+            needed_start, needed_end,
+        )
+    else:
+        logger.info(
+            "Pre-fetched bench range (%s..%s) narrower than nav_dates "
+            "(%s..%s); re-fetching full range",
+            pf_start, pf_end, needed_start, needed_end,
+        )
+
+    return fetch_and_align(nav_dates)
+
+
 async def update_benchmark_values(
     db: AsyncSession,
     client_id: int,
@@ -188,12 +242,21 @@ async def update_benchmark_values(
 ) -> int:
     """Bulk-update benchmark_value in cpp_nav_series for a single client.
 
+    Self-healing contract: every nav_date the client has in
+    ``cpp_nav_series`` either gets a non-zero Nifty close written, or stays
+    NULL with a WARNING log — we never silently write benchmark_value=0 for
+    a real nav_date (writing zero broke the aggregate-page daily return on
+    2026-05-26, producing −100 % bench return for the upload date).
+
     Parameters
     ----------
     benchmark_data:
-        Pre-fetched Nifty DataFrame (from ``fetch_nifty_data``).  If supplied
-        the function calls ``align_benchmark`` locally and skips yfinance.
-        If None, falls back to ``fetch_and_align`` (backward-compatible).
+        Optional pre-fetched Nifty DataFrame (from ``fetch_nifty_data``)
+        covering at least the client's nav_dates range. If supplied and
+        sufficient we align against it locally (no extra network call). If
+        the pre-fetched range is narrower than the client's history OR is
+        too sparse for ``align_benchmark`` to retain, we transparently
+        re-fetch the full range — the caller never has to think about this.
 
     Uses a single ``UPDATE … FROM (VALUES …)`` per batch of 500 dates instead
     of one UPDATE statement per date, reducing round-trips by ~99 %.
@@ -206,40 +269,130 @@ async def update_benchmark_values(
         """),
         {"cid": client_id, "pid": portfolio_id},
     )
-    dates = [row[0] for row in result.fetchall()]
-    if len(dates) < 2:
+    # Coerce every row to a python ``date`` — some drivers (notably aiosqlite
+    # used by the tests) return ISO strings instead of date objects.
+    raw_dates = [row[0] for row in result.fetchall()]
+    dates: list[date] = []
+    for d in raw_dates:
+        if isinstance(d, datetime):
+            dates.append(d.date())
+        elif isinstance(d, date):
+            dates.append(d)
+        else:
+            dates.append(datetime.fromisoformat(str(d)).date())
+    if not dates:
         return 0
 
     nav_dates = pd.DatetimeIndex(dates)
-    try:
-        if benchmark_data is not None:
-            benchmark = align_benchmark(nav_dates, benchmark_data)
-        else:
-            benchmark = fetch_and_align(nav_dates)
-    except (RuntimeError, TypeError, ValueError) as exc:
-        logger.error("Failed to align benchmark data: %s", exc)
-        return 0
 
-    if benchmark is None or len(benchmark) == 0:
-        return 0
+    # ── Path A: enough history for align_benchmark's diversity guard ──
+    # ``align_benchmark`` enforces ≥ 2 distinct closes and ≤ 30 % NaN. For
+    # a single-day client this can't pass; fall through to Path B.
+    benchmark: pd.Series = pd.Series(dtype=float)
+    if len(dates) >= 2:
+        try:
+            benchmark = _align_or_widen(nav_dates, benchmark_data)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            logger.error("Failed to align benchmark data: %s", exc)
+            benchmark = pd.Series(dtype=float)
 
-    # Pre-build all (date, value) pairs. Skip NaN/empty cells so we never
-    # write a stale ffilled value past the alignment cap — leave the column
-    # NULL instead. The risk engine treats benchmark_value=0/NULL as
-    # "benchmark unavailable" and emits None for benchmark-relative metrics.
-    pairs: list[tuple] = []
-    for dt, val in benchmark.items():
-        if val is None or pd.isna(val):
-            continue
-        nav_date = dt.date() if hasattr(dt, "date") else dt
-        # Decimal(str(val)) captures the string form directly; the prior
-        # float() round-trip was lossy and is removed.
-        pairs.append((nav_date, Decimal(str(val))))
+    # ── Path B: per-date fetch for nav_dates still missing a bench ──
+    # Covers (a) single-day clients (align_benchmark won't return anything
+    # for them by construction) and (b) the production-incident case where
+    # the pre-fetched window was too narrow to align across the client's
+    # full history. We try fetch_nifty_data for each missing date — which
+    # itself self-heals across fie_v3 → yfinance → write-back.
+    have: dict[date, Decimal] = {}
+    if benchmark is not None and len(benchmark) > 0:
+        for ts, val in benchmark.items():
+            if val is None or pd.isna(val):
+                continue
+            d = ts.date() if hasattr(ts, "date") else ts
+            have[d] = Decimal(str(val))
+
+    missing_dates = [d for d in dates if d not in have]
+    if missing_dates:
+        # Single bulk fetch over the missing-date span — usually it's a
+        # contiguous tail like the most recent upload date.
+        miss_start = min(missing_dates)
+        miss_end = max(missing_dates)
+        try:
+            patch_df = fetch_nifty_data(miss_start, miss_end)
+        except Exception as exc:
+            logger.warning(
+                "Per-date bench fetch failed for %s..%s: %s",
+                miss_start, miss_end, exc,
+            )
+            patch_df = pd.DataFrame(columns=["close"])
+
+        if patch_df is not None and not patch_df.empty:
+            for ts, val in patch_df["close"].items():
+                if val is None or pd.isna(val):
+                    continue
+                d = ts.date() if hasattr(ts, "date") else ts
+                have.setdefault(d, Decimal(str(val)))
+
+        # For dates STILL missing after the bulk patch (e.g. weekend nav
+        # dates with no nearby trading day in the fetched window), try a
+        # one-date fetch — yfinance may return a trading-day close even
+        # when we asked for a single weekend date.
+        still_missing = [d for d in dates if d not in have]
+        for d in still_missing:
+            try:
+                single = fetch_nifty_data(d, d)
+                if single is not None and not single.empty:
+                    val = single["close"].iloc[0]
+                    if val is not None and not pd.isna(val):
+                        have[d] = Decimal(str(val))
+            except Exception as exc:
+                logger.debug("Single-date bench fetch failed for %s: %s", d, exc)
+
+    # ── Final write: skip NaN/missing rather than writing zero ──
+    pairs: list[tuple] = [(d, v) for d in dates if (v := have.get(d)) is not None]
+
+    truly_missing = [d for d in dates if d not in have]
+    if truly_missing:
+        logger.warning(
+            "Benchmark unavailable for %d nav_date(s) on client_id=%d "
+            "portfolio_id=%d (sample: %s..%s); leaving benchmark_value "
+            "untouched — nightly sweep will retry",
+            len(truly_missing), client_id, portfolio_id,
+            truly_missing[0], truly_missing[-1],
+        )
 
     if not pairs:
         return 0
 
+    # Dialect-aware UPDATE: Postgres supports the fast UPDATE … FROM (VALUES …)
+    # form; SQLite (used in the test harness) does not. The SQLite branch is
+    # one statement per row — bounded by len(dates) which is typically O(1k)
+    # and is only ever hit in tests, so the per-row cost is fine there.
+    dialect_name = getattr(getattr(db, "bind", None), "dialect", None)
+    dialect_name = getattr(dialect_name, "name", "") if dialect_name else ""
+    if not dialect_name:
+        # AsyncSession exposes the engine via `.get_bind()` in some paths.
+        try:
+            bind = db.get_bind()
+            dialect_name = getattr(bind.dialect, "name", "")
+        except Exception:
+            dialect_name = ""
+
     count = 0
+    if dialect_name == "sqlite":
+        for nav_date, bv in pairs:
+            await db.execute(
+                text("""
+                    UPDATE cpp_nav_series
+                    SET benchmark_value = :bv
+                    WHERE client_id = :cid
+                      AND portfolio_id = :pid
+                      AND nav_date = :nd
+                """),
+                {"bv": bv, "cid": client_id, "pid": portfolio_id, "nd": nav_date},
+            )
+            count += 1
+        return count
+
     for start in range(0, len(pairs), _BULK_BATCH_SIZE):
         batch = pairs[start : start + _BULK_BATCH_SIZE]
         values_parts: list[str] = []

@@ -4,6 +4,11 @@ Background scheduler for periodic tasks.
 Runs inside the FastAPI process via APScheduler.
 - Live price refresh: every hour during NSE market hours (Mon-Fri, 9:15-16:00 IST)
 - Post-market price update: once at 16:15 IST (final closing prices)
+- Nightly benchmark sync: every day at 19:30 IST — back-fills any cpp_nav_series
+  rows whose benchmark_value is missing (NULL/0). This is the safety net for
+  the production incident 2026-05-26 where a single-day NAV upload left 277
+  rows at benchmark=0 because the pre-fetched Nifty window collapsed against
+  the client's full 4y nav_dates range.
 """
 
 import logging
@@ -36,6 +41,45 @@ async def _refresh_prices() -> None:
         logger.error("Scheduled price refresh failed: %s", exc, exc_info=True)
 
 
+async def _nightly_benchmark_sync() -> None:
+    """
+    Find any cpp_nav_series nav_date in the last 14 days with a NULL or 0
+    benchmark_value and back-fill it from fie_v3.index_prices (primary) /
+    yfinance (fallback, with write-back to fie_v3).
+
+    This is the self-healing guarantee: even if a NAV file is uploaded 10 days
+    late, the missing benchmark gets filled within ~24 hours automatically.
+
+    Runs in the APScheduler async executor, so it shares the FastAPI event
+    loop but does NOT block it on the synchronous network calls — those
+    happen inside the same await chain ingestion already uses, and the
+    sweep is bounded to ~14 dates per run.
+    """
+    from backend.database import AsyncSessionLocal
+    from backend.services.benchmark_sweep import (
+        DEFAULT_SWEEP_DAYS,
+        sweep_benchmark_holes,
+    )
+
+    logger.info(
+        "[bench-sync] nightly run starting at %s (window=%d days)",
+        datetime.now().isoformat(), DEFAULT_SWEEP_DAYS,
+    )
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await sweep_benchmark_holes(db, days=DEFAULT_SWEEP_DAYS)
+        logger.info(
+            "[bench-sync] nightly run done: dates_checked=%d filled=%d "
+            "failed=%d rows_updated=%d",
+            result.dates_checked, result.dates_filled,
+            result.dates_failed, result.rows_updated,
+        )
+    except Exception as exc:
+        logger.error(
+            "[bench-sync] nightly run failed: %s", exc, exc_info=True
+        )
+
+
 def start_scheduler() -> None:
     """Register all scheduled jobs and start the scheduler."""
     # Hourly during market hours: Mon-Fri, every hour from 10:00 to 15:00 IST
@@ -64,6 +108,22 @@ def start_scheduler() -> None:
         ),
         id="closing_price_refresh",
         name="Post-market closing price update",
+        replace_existing=True,
+    )
+
+    # Nightly benchmark sync at 19:30 IST — 1.5h after market close so the
+    # JIP data core has had time to ingest the day's closing prices; also
+    # runs on weekends so a Friday-evening NAV upload still gets healed by
+    # Saturday night.
+    scheduler.add_job(
+        _nightly_benchmark_sync,
+        CronTrigger(
+            hour=19,
+            minute=30,
+            timezone="Asia/Kolkata",
+        ),
+        id="nightly_benchmark_sync",
+        name="Nightly benchmark sync",
         replace_existing=True,
     )
 

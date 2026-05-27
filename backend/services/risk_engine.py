@@ -18,6 +18,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.risk_db import replace_drawdown_series, upsert_risk_metrics
+from backend.services.modified_dietz import (
+    compute_average_corpus,
+    compute_modified_dietz_bench_return,
+    compute_modified_dietz_return,
+    extract_modified_dietz_inputs,
+)
 from backend.services.risk_metrics import (
     absolute_return,
     alpha,
@@ -28,7 +34,6 @@ from backend.services.risk_metrics import (
     compute_daily_returns,
     compute_drawdown_series,
     compute_twr_series,
-    compute_weighted_bench_return,
     down_capture,
     information_ratio,
     market_correlation,
@@ -249,8 +254,32 @@ def compute_all_metrics(
     if total_days <= 0:
         total_days = 1
 
-    # Core metrics (inception-to-date)
-    port_cagr = cagr(float(port_series.iloc[0]), float(port_series.iloc[-1]), total_days)
+    # Headline cumulative return — Modified-Dietz "Adjusted Return [Weighted] %"
+    # matching the PMS Portfolio Summary report.  Pure TWR on the chain-linked
+    # series ignores how much capital was deployed for how long, which can
+    # diverge sharply from the number clients see on their official PMS
+    # statement (e.g. BJ53: TWR 316.30% vs PMS-adjusted 227.42%).
+    md_v_start, md_v_end, md_cash_flows, md_period_days = (
+        extract_modified_dietz_inputs(nav_df)
+    )
+    md_inception_date = (
+        nav_df["nav_date"].iloc[0].date()
+        if hasattr(nav_df["nav_date"].iloc[0], "date")
+        else nav_df["nav_date"].iloc[0]
+    )
+    md_cumulative_pct, md_annualised_pct = compute_modified_dietz_return(
+        md_v_start, md_v_end, md_cash_flows, md_period_days,
+        inception_date=md_inception_date,
+    )
+
+    avg_corpus = compute_average_corpus(nav_df)
+
+    # Core metrics (inception-to-date) — CAGR is derived from the Modified-Dietz
+    # annualised result so it stays consistent with the headline cumulative
+    # number.  TWR-based daily returns are still used downstream for vol /
+    # Sharpe / Sortino / capture / drawdown — only the headline return and
+    # CAGR are repointed.
+    port_cagr = md_annualised_pct
     bench_cagr = (
         cagr(float(bench_series.iloc[0]), float(bench_series.iloc[-1]), total_days)
         if has_benchmark
@@ -307,16 +336,12 @@ def compute_all_metrics(
             period_returns[f"sortino_{suffix}"] = row["port_sortino"]
             bench_period_returns[f"bench_sortino_{suffix}"] = row["bench_sortino"]
 
-    # Spec-aligned absolute return: trailing total return on the TWR-adjusted
-    # series from inception to latest, expressed as a percentage.
-    #   absolute_return = (NAV_end / NAV_start) - 1
-    # Computed on the same TWR series used for CAGR/volatility/etc. so the
-    # value is independent of corpus inflows/outflows (per CLAUDE.md "Risk
-    # Computation Engine — 3. Period Returns").
-    spec_abs_return = absolute_return(port_series)
-
+    # Headline absolute return — Modified-Dietz "Adjusted Return [Weighted] %".
+    # This MUST match the PMS Portfolio Summary report number that clients see
+    # on their official statements (BJ53 reference: 227.42%).
     result = {
-        "absolute_return": spec_abs_return,
+        "absolute_return": md_cumulative_pct,
+        "average_corpus": avg_corpus,
         "cagr": port_cagr,
         "xirr": xirr_val,
         "volatility": port_vol,
@@ -453,12 +478,13 @@ async def run_risk_engine(
     if not metrics:
         return {}
 
-    # 3a. Override inception benchmark return with cash-flow-weighted virtual units
-    # method to match PMS "Absolute Return S&P CNX Nifty [Weighted] %".
-    # The simple ratio (bench_end/bench_start - 1) over-states Nifty returns when
-    # clients added corpus at higher Nifty prices; the weighted method accounts
-    # for the actual timing and size of each inflow/outflow.
-    weighted_bench_return = compute_weighted_bench_return(nav_df)
+    # 3a. Override inception benchmark return with the Modified-Dietz cash-flow-
+    # weighted method to match PMS "Absolute Return S&P CNX Nifty [Weighted] %".
+    # Uses the SAME denominator as the portfolio (time-weighted average corpus)
+    # so the two numbers are directly comparable.  The old "divide by net
+    # contributions" version was producing 47.55% for BJ53 vs the official
+    # 74.72% — see ADR / PR description for details.
+    weighted_bench_return = compute_modified_dietz_bench_return(nav_df)
     if weighted_bench_return != 0.0:
         metrics["bench_return_inception"] = weighted_bench_return
 

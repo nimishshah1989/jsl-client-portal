@@ -70,11 +70,16 @@ DECIMAL_FIELDS = [
     "bench_sortino_inception",
 ]
 
+# average_corpus is a rupee amount (NUMERIC(20, 2)) and can run into crores —
+# handled separately from the percentage decimals above so it gets its own
+# precision/clamp envelope (see upsert_risk_metrics).
+_AMOUNT_FIELDS = ["average_corpus"]
+
 _ALL_EXTRA = [
     "max_dd_start", "max_dd_end", "max_dd_recovery",
     "max_consecutive_loss", "win_months", "loss_months",
 ]
-_ALL_COLS = DECIMAL_FIELDS + _ALL_EXTRA
+_ALL_COLS = DECIMAL_FIELDS + _AMOUNT_FIELDS + _ALL_EXTRA
 
 # Build SQL fragments once at import time
 _COL_LIST = ", ".join(_ALL_COLS)
@@ -174,6 +179,17 @@ async def upsert_risk_metrics(
             row[field] = to_decimal(metrics.get(field), nullable=True)
         else:
             row[field] = to_decimal(metrics.get(field, 0.0))
+
+    # Amount fields — wider clamp envelope (up to ~10 trillion rupees) and
+    # two-decimal precision to match NUMERIC(20, 2).  NaN/None → SQL NULL so
+    # we don't masquerade a missing computation as ₹0.
+    for field in _AMOUNT_FIELDS:
+        row[field] = to_decimal(
+            metrics.get(field),
+            places=2,
+            max_abs=9_999_999_999_999.0,
+            nullable=True,
+        )
 
     row["max_dd_start"] = to_date(metrics.get("max_dd_start"))
     row["max_dd_end"] = to_date(metrics.get("max_dd_end"))

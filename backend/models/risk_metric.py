@@ -39,6 +39,11 @@ class RiskMetric(Base):
     cagr: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     xirr: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
+    # Average Corpus (time-weighted mean of invested_amount across the period)
+    # — reported on the PMS Portfolio Summary alongside Adjusted Return.
+    # Wide precision because portfolios range from ₹1L up to multiple crores.
+    average_corpus: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
+
     # Risk
     volatility: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
     sharpe_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))

@@ -49,6 +49,7 @@ from backend.services.xirr_service import (
     compute_xirr,
     extract_cash_flows_from_corpus,
     extract_cash_flows_from_db,
+    inject_inception_flow,
 )
 
 logger = logging.getLogger(__name__)
@@ -503,6 +504,21 @@ async def run_risk_engine(
         terminal_date = nav_df["nav_date"].iloc[-1].to_pydatetime()
         terminal_value = float(nav_df["nav_value"].iloc[-1])
         real_flows = extract_cash_flows_from_db(cf_rows, terminal_date, terminal_value)
+
+        # The cpp_cash_flows table stores ONLY subsequent infusions/withdrawals
+        # — never the inception-day starting corpus (because that isn't a
+        # delta from any prior corpus, it IS the prior corpus). For XIRR to
+        # produce the same number the PMS report shows, the starting corpus
+        # must be a cash flow on day 1. We synthesise it here in-memory only
+        # and DO NOT persist it: writing it back to cpp_cash_flows would
+        # corrupt the corpus-delta detection on the next ingest run.
+        #
+        # See PR description for the BJ53 case (XIRR was 37.41% vs the 26.66%
+        # reference because the ₹3.33L starting corpus was missing).
+        first_nav_date = nav_df["nav_date"].iloc[0].to_pydatetime()
+        first_invested = float(nav_df["invested_amount"].iloc[0])
+        real_flows = inject_inception_flow(real_flows, first_nav_date, first_invested)
+
         if len(real_flows) >= 2:
             xirr_val = compute_xirr(real_flows)
             metrics["xirr"] = xirr_val

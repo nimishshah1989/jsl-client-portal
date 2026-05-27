@@ -447,6 +447,61 @@ class TestModifiedDietzBJ53Reference:
         assert 5.6 <= years <= 5.7
         assert days == 2065
 
+    def test_weighted_bench_bj53_reference_exact(self):
+        """
+        Tighter pinning of the weighted-benchmark return against BJ53's PMS
+        reference of 74.72%.  Uses the FULL infusion timeline (not the
+        single-CF approximation in ``test_weighted_bench_bj53_reference``)
+        plus Nifty 50 closes on each infusion date so the synthetic
+        unit-purchase math runs end-to-end exactly the way it does in
+        production.
+
+        Nifty 50 closes (NSE):
+            2020-09-28  11,050.25  (inception)
+            2021-07-05  15,722.20
+            2023-02-02  17,765.00
+            2023-02-21  17,826.00
+            2023-06-12  18,601.00
+            2026-05-25  24,031.70  (terminal)
+
+        Acceptance band: 74.2%..75.2% (±0.5pp from the 74.72% PMS report).
+        The slack accounts for as-of NAV-vs-trading-day alignment and
+        intra-day price variance — the structure of the math must produce
+        a number INSIDE this band, not the buggy ~70% it produced before
+        the inception infusion was treated as the unit-buy anchor.
+        """
+        nav_dates = [
+            date(2020, 9, 28),
+            date(2021, 7, 5),
+            date(2023, 2, 2),
+            date(2023, 2, 21),
+            date(2023, 6, 12),
+            date(2026, 5, 25),
+        ]
+        invested = [333_000.0, 533_000.0, 1_033_000.0, 1_890_506.0, 1_990_506.0, 1_990_506.0]
+        bench = [11_050.25, 15_722.20, 17_765.00, 17_826.00, 18_601.00, 24_031.70]
+
+        df = pd.DataFrame({
+            "nav_date": nav_dates,
+            "invested_amount": invested,
+            # current_value rises linearly with invested until the terminal
+            # row, which carries the actual ₹50.48L mark — the bench function
+            # only reads invested + benchmark_value, but compute_modified_dietz
+            # _inputs reads current_value/nav_value to find V_end.
+            "current_value": invested[:-1] + [5_048_414.94],
+            "nav_value": invested[:-1] + [5_048_414.94],
+            "benchmark_value": bench,
+        })
+
+        result = compute_modified_dietz_bench_return(df)
+
+        assert 74.2 <= result <= 75.2, (
+            f"BJ53 weighted bench return mismatch: got {result:.4f}, "
+            f"expected ~74.72% (±0.5pp). The structure should anchor the "
+            f"first synthetic unit purchase at the inception NAV date with "
+            f"V_start in the denominator."
+        )
+
 
 class TestAverageCorpusTimeWeighted:
     def test_three_equal_segments(self):

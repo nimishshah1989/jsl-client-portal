@@ -51,6 +51,76 @@ def extract_cash_flows_from_db(
     return flows
 
 
+def inject_inception_flow(
+    flows: list[tuple[datetime, float]],
+    inception_date: datetime,
+    starting_corpus: float,
+) -> list[tuple[datetime, float]]:
+    """
+    Inject the inception-day starting corpus as the FIRST cash flow.
+
+    ``cpp_cash_flows`` only records subsequent infusions/withdrawals because
+    the ingestion pipeline detects deltas in the NAV file's Corpus column.
+    The inception corpus is not a delta — it IS the prior corpus — so it
+    never gets written. XIRR therefore needs us to add it back as a
+    synthetic in-memory flow on the inception date.
+
+    Without this, XIRR sees only the second-and-later infusions and
+    massively overstates the annualised rate (it thinks 5.66 years of
+    growth happened over the ~3 years between the first recorded inflow
+    and the terminal date).
+
+    Args:
+        flows: Existing flows from ``extract_cash_flows_from_db``. Expected
+               to contain at least the terminal (negative) value.
+        inception_date: First NAV date (datetime). Must NOT collide with
+               any existing real inflow's date — if it does, we merge into
+               the existing flow to keep brentq happy.
+        starting_corpus: V_start as read from ``cpp_nav_series`` first row's
+               ``invested_amount``. If ≤ 0 we fall back to returning ``flows``
+               unchanged with a warning — better to skip the injection than
+               to inject a degenerate flow.
+
+    Returns:
+        New list with the inception flow inserted at the front (or merged
+        if a flow on the same date already exists). Original list is not
+        mutated.
+    """
+    if starting_corpus <= 0:
+        logger.warning(
+            "inject_inception_flow: starting_corpus=%.2f is non-positive; "
+            "skipping inception flow injection",
+            starting_corpus,
+        )
+        return list(flows)
+
+    if isinstance(inception_date, pd.Timestamp):
+        inception_dt = inception_date.to_pydatetime()
+    else:
+        inception_dt = inception_date
+
+    inception_d = inception_dt.date() if isinstance(inception_dt, datetime) else inception_dt
+    new_flows: list[tuple[datetime, float]] = []
+    merged = False
+    for d, amt in flows:
+        d_norm = d
+        if isinstance(d_norm, pd.Timestamp):
+            d_norm = d_norm.to_pydatetime()
+        d_cmp = d_norm.date() if isinstance(d_norm, datetime) else d_norm
+        if d_cmp == inception_d and amt > 0 and not merged:
+            # Real inflow already lives on the inception date; merge the
+            # starting corpus into it instead of duplicating the date.
+            new_flows.append((d, amt + starting_corpus))
+            merged = True
+        else:
+            new_flows.append((d, amt))
+
+    if not merged:
+        new_flows.insert(0, (inception_dt, starting_corpus))
+
+    return new_flows
+
+
 def extract_cash_flows_from_corpus(nav_df: pd.DataFrame) -> list[tuple[datetime, float]]:
     """
     Fallback: extract investment cash flows from corpus changes in NAV data.

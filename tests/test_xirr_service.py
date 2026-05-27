@@ -9,6 +9,7 @@ from backend.services.xirr_service import (
     compute_xirr,
     extract_cash_flows_from_corpus,
     extract_cash_flows_from_db,
+    inject_inception_flow,
 )
 
 
@@ -305,6 +306,95 @@ class TestXIRRRobustness:
         assert result is None or (-1 < result < 5), (
             f"Mixed date/datetime input must produce a sane rate; got {result}"
         )
+
+    def test_xirr_with_inception_flow_bj53(self):
+        """BJ53 reference scenario from the PMS Portfolio Summary report.
+
+        cpp_cash_flows table stores only SUBSEQUENT infusions (the 4 inflows
+        from Jul-2021 to Jun-2023). Without injecting the inception starting
+        corpus of ₹3.33L on 28-Sep-2020, XIRR sees only ~3 years of growth
+        across ~₹16.57L deployed → 37.41% (the production bug).
+
+        After ``inject_inception_flow`` adds the ₹3.33L back at inception,
+        XIRR should land at the official PMS reference of 26.66% (±0.2pp
+        for solver tolerance).
+        """
+        # DB-stored flows: subsequent infusions only — NO inception entry.
+        db_records = [
+            (datetime(2021, 7, 5), "INFLOW", 200000.0),
+            (datetime(2023, 2, 2), "INFLOW", 500000.0),
+            (datetime(2023, 2, 21), "INFLOW", 857506.0),
+            (datetime(2023, 6, 12), "INFLOW", 100000.0),
+        ]
+        terminal_date = datetime(2026, 5, 25)
+        terminal_value = 5_048_414.94
+
+        flows = extract_cash_flows_from_db(db_records, terminal_date, terminal_value)
+        # Without inception: dramatically overstated rate.
+        buggy = compute_xirr(flows)
+        assert buggy is not None and buggy > 35.0, (
+            f"Sanity check: without inception flow XIRR should overstate to ~37%; "
+            f"got {buggy}"
+        )
+
+        # Inject the starting corpus on the inception NAV date.
+        flows_with_inception = inject_inception_flow(
+            flows,
+            inception_date=datetime(2020, 9, 28),
+            starting_corpus=333_000.0,
+        )
+
+        result = compute_xirr(flows_with_inception)
+        assert result is not None
+        assert 26.5 <= result <= 26.9, (
+            f"BJ53 XIRR with inception flow should be ~26.66% (PMS reference); "
+            f"got {result:.4f}%"
+        )
+
+    def test_inject_inception_flow_preserves_order(self):
+        """Injection should put the inception flow first (or merge if a
+        same-date entry already exists)."""
+        flows = [
+            (datetime(2021, 1, 1), 100.0),
+            (datetime(2022, 1, 1), -200.0),
+        ]
+        out = inject_inception_flow(
+            flows, inception_date=datetime(2020, 1, 1), starting_corpus=50.0,
+        )
+        assert len(out) == 3
+        assert out[0] == (datetime(2020, 1, 1), 50.0)
+        # Original list untouched
+        assert len(flows) == 2
+
+    def test_inject_inception_flow_merges_same_date(self):
+        """If a real flow already lives on the inception date, the synthetic
+        starting corpus must merge into it rather than duplicate the date —
+        duplicate-date flows trip brentq."""
+        flows = [
+            (datetime(2020, 9, 28), 200.0),   # Same date as inception
+            (datetime(2022, 1, 1), -500.0),
+        ]
+        out = inject_inception_flow(
+            flows, inception_date=datetime(2020, 9, 28), starting_corpus=333.0,
+        )
+        assert len(out) == 2
+        # First entry merged: 200 + 333 = 533
+        assert out[0][1] == 533.0
+        assert out[1][1] == -500.0
+
+    def test_inject_inception_flow_skips_when_corpus_nonpositive(self):
+        """Defensive: if starting_corpus is 0 or negative we should NOT
+        inject anything (better to keep the existing flows than to corrupt
+        them with a degenerate inflow)."""
+        flows = [
+            (datetime(2021, 1, 1), 100.0),
+            (datetime(2022, 1, 1), -150.0),
+        ]
+        out = inject_inception_flow(
+            flows, inception_date=datetime(2020, 1, 1), starting_corpus=0.0,
+        )
+        assert out == flows
+        assert out is not flows  # Returns a copy
 
     def test_unconvergeable_input_returns_none(self):
         """When brentq genuinely cannot find a root, compute_xirr must

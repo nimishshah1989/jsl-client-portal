@@ -87,6 +87,84 @@ except Exception:
     _RF_RATE = 6.50  # fallback — India 10Y govt bond yield proxy
 
 
+async def _fetch_bench_anchors(
+    nav_df: pd.DataFrame,
+) -> tuple[float | None, float | None]:
+    """
+    Look up the authoritative Nifty closes for the inception nav_date and
+    the latest nav_date, bypassing any stale ``benchmark_value`` cells in
+    ``cpp_nav_series``.
+
+    Primary source is ``benchmark_service.fetch_nifty_data`` which reads
+    from ``fie_v3.index_prices`` (the same source PR #21 wired up).  If the
+    lookup fails for any reason, returns ``(None, None)`` and the caller
+    falls back to the values stored in ``nav_df``.
+
+    Runs the synchronous fetch in a worker thread so the async risk engine
+    doesn't block its event loop on a psycopg2 round-trip.
+    """
+    import asyncio
+    from datetime import timedelta
+
+    try:
+        from backend.services.benchmark_service import fetch_nifty_data
+    except Exception:
+        return None, None
+
+    if nav_df is None or len(nav_df) < 2:
+        return None, None
+
+    inception_date = pd.Timestamp(nav_df["nav_date"].iloc[0]).date()
+    latest_date = pd.Timestamp(nav_df["nav_date"].iloc[-1]).date()
+
+    # Pad the window by ±7 days so weekends/holidays around either anchor
+    # still resolve (we as-of into the returned frame).
+    fetch_start = inception_date - timedelta(days=7)
+    fetch_end = latest_date + timedelta(days=1)
+
+    try:
+        nifty_df = await asyncio.to_thread(fetch_nifty_data, fetch_start, fetch_end)
+    except Exception as exc:
+        logger.warning(
+            "Anchor fetch from index_prices failed (%s); falling back to "
+            "cpp_nav_series.benchmark_value", exc,
+        )
+        return None, None
+
+    if nifty_df is None or nifty_df.empty:
+        return None, None
+
+    series = nifty_df["close"].copy()
+    if series.index.tz is not None:
+        series = series.tz_convert(None)
+    series = series.sort_index().dropna()
+    if series.empty:
+        return None, None
+
+    inception_ts = pd.Timestamp(inception_date)
+    latest_ts = pd.Timestamp(latest_date)
+
+    try:
+        inception_anchor = float(series.asof(inception_ts))
+    except (KeyError, ValueError):
+        inception_anchor = None
+    try:
+        latest_anchor = float(series.asof(latest_ts))
+    except (KeyError, ValueError):
+        latest_anchor = None
+
+    if inception_anchor is None or pd.isna(inception_anchor) or inception_anchor <= 0:
+        inception_anchor = None
+    if latest_anchor is None or pd.isna(latest_anchor) or latest_anchor <= 0:
+        latest_anchor = None
+
+    logger.debug(
+        "Bench anchors from index_prices: inception=%s @ %s, latest=%s @ %s",
+        inception_anchor, inception_date, latest_anchor, latest_date,
+    )
+    return inception_anchor, latest_anchor
+
+
 def _slice_nav_df(nav_df: pd.DataFrame, days: int | None) -> pd.DataFrame:
     """Slice nav_df to trailing N calendar days. None = full series."""
     if days is None or len(nav_df) == 0:
@@ -485,7 +563,21 @@ async def run_risk_engine(
     # so the two numbers are directly comparable.  The old "divide by net
     # contributions" version was producing 47.55% for BJ53 vs the official
     # 74.72% — see ADR / PR description for details.
-    weighted_bench_return = compute_modified_dietz_bench_return(nav_df)
+    #
+    # We fetch the authoritative inception and terminal Nifty closes directly
+    # from fie_v3.index_prices (the same source benchmark_service uses for
+    # backfilling cpp_nav_series.benchmark_value).  This bypasses any
+    # forward-filled / stale anchor values that may still exist in
+    # cpp_nav_series — PR #21 documented that 87% of NAV rows had a constant
+    # bench value before the index_prices repoint, and BJ53's
+    # bench_return_inception was reading 70.41% (vs 74.72% reference)
+    # specifically because the terminal anchor was stale.
+    inception_anchor, latest_anchor = await _fetch_bench_anchors(nav_df)
+    weighted_bench_return = compute_modified_dietz_bench_return(
+        nav_df,
+        inception_bench_override=inception_anchor,
+        latest_bench_override=latest_anchor,
+    )
     if weighted_bench_return != 0.0:
         metrics["bench_return_inception"] = weighted_bench_return
 

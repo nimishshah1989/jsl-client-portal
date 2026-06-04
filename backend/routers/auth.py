@@ -33,7 +33,25 @@ from backend.services.audit_service import get_client_ip, get_request_id, log_au
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-limiter = Limiter(key_func=get_remote_address)
+
+
+def _get_real_ip(request: Request) -> str:
+    """Rate-limit by real client IP, not the Nginx reverse-proxy address.
+
+    In production Nginx sets X-Forwarded-For and X-Real-IP. Using the raw
+    socket address (get_remote_address) would return the proxy's IP for every
+    request, collapsing all clients into a single rate-limit bucket.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_get_real_ip)
 
 _settings = get_settings()
 COOKIE_MAX_AGE = _settings.JWT_EXPIRY_HOURS * 3600

@@ -420,6 +420,13 @@ async def reconcile(
             bo_isin = (bo.get("isin") or "").strip()
             bo_price = _safe_dec(bo["market_price"])
             bo_value = _safe_dec(bo["market_value"])
+            # Normalise BO symbol through _SYMBOL_OVERRIDES (lazy import to
+            # avoid circular dependency). This bridges renamed tickers where
+            # the BO file still uses the old name (e.g. TATAMOTORS) while our
+            # cpp_holdings already carries the new name (e.g. TMPV), and the
+            # transaction was parsed in 20-col format so ISIN is absent.
+            from backend.services.txn_parser import _SYMBOL_OVERRIDES  # noqa: PLC0415
+            normalized_bo_symbol = _SYMBOL_OVERRIDES.get(bo_symbol, bo_symbol)
             # Rows from the ETF Holdings file are tagged source_bucket="ETF" by
             # callers; everything else (including standard exchange-listed ETFs
             # that live in the equity Holdings file) is equity-bucket.
@@ -435,9 +442,10 @@ async def reconcile(
             if bo_isin and bo_isin in our_isn:
                 our = our_isn[bo_isin]
                 matched_by = "isin"
-            elif bo_symbol in our_sym:
-                # Symbol fallback — warn if BO had an ISIN we should have matched
-                our = our_sym[bo_symbol]
+            elif normalized_bo_symbol in our_sym:
+                # Symbol fallback (uses override-normalised symbol) — warn if
+                # BO had an ISIN we should have matched via ISIN path instead
+                our = our_sym[normalized_bo_symbol]
                 matched_by = "symbol"
                 if bo_isin:
                     logger.warning(

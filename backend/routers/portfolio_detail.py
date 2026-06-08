@@ -95,6 +95,29 @@ async def get_risk_scorecard(
     # Compute monthly returns from NAV series for heatmap
     monthly_returns = await _compute_monthly_returns(db, client_id, portfolio.id)
 
+    # Re-compute current_cash from the latest NAV row so the scorecard always
+    # matches the NavChart and SummaryCards (which also compute from live data).
+    # cpp_risk_metrics.current_cash is only updated when risk is recomputed;
+    # if the NAV file was re-uploaded without a risk recompute it goes stale.
+    fresh_current_cash = opt2(risk.current_cash)  # fallback if no NAV rows
+    latest_nav_stmt = (
+        select(NavSeries)
+        .where(NavSeries.client_id == client_id)
+        .where(NavSeries.portfolio_id == portfolio.id)
+        .order_by(NavSeries.nav_date.desc())
+        .limit(1)
+    )
+    latest_nav = (await db.execute(latest_nav_stmt)).scalar_one_or_none()
+    if latest_nav is not None:
+        etf_v = latest_nav.etf_value or Decimal("0")
+        cash_v = latest_nav.cash_value or Decimal("0")
+        bank_v = latest_nav.bank_balance or Decimal("0")
+        total_cash = etf_v + cash_v + bank_v
+        if total_cash > Decimal("0") and latest_nav.nav_value:
+            fresh_current_cash = dec2(total_cash / latest_nav.nav_value * 100)
+        elif latest_nav.cash_pct is not None:
+            fresh_current_cash = dec2(latest_nav.cash_pct)
+
     await log_audit(
         db, user_id=client_id, action="VIEW",
         resource_type="PORTFOLIO", resource_id=portfolio.id,
@@ -121,7 +144,7 @@ async def get_risk_scorecard(
         monthly_returns=monthly_returns,
         avg_cash_held=opt2(risk.avg_cash_held),
         max_cash_held=opt2(risk.max_cash_held),
-        current_cash=opt2(risk.current_cash),
+        current_cash=fresh_current_cash,
         volatility=opt2(risk.volatility),
         sharpe_ratio=opt2(risk.sharpe_ratio),
         sortino_ratio=opt2(risk.sortino_ratio),

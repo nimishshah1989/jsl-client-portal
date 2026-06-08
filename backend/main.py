@@ -117,7 +117,22 @@ app.add_middleware(
 
 
 # ── Rate Limiting ──
-app.state.limiter = __import__("slowapi").Limiter(key_func=__import__("slowapi.util", fromlist=["get_remote_address"]).get_remote_address)
+from slowapi import Limiter  # noqa: E402
+from slowapi.util import get_remote_address  # noqa: E402
+
+
+def _get_real_ip(request: Request) -> str:
+    """Return real client IP for rate limiting, bypassing Nginx proxy address."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    return get_remote_address(request)
+
+
+app.state.limiter = Limiter(key_func=_get_real_ip)
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── Exception Handlers ──

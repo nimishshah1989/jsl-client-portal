@@ -176,6 +176,22 @@ export default function RiskScorecard() {
           subtitle={num(m.market_correlation) < 0.7 ? 'Independent return sources' : 'Closely tracks market'}
           explanation="Pearson correlation with NIFTY 50 daily returns. <0.7 = meaningful diversification."
         />
+        <MetricCard
+          label="Sharpe Ratio"
+          value={safe(m.sharpe_ratio)}
+          benchValue={m.bench_sharpe != null ? safe(m.bench_sharpe) : null}
+          subtitle={num(m.sharpe_ratio) > 1 ? 'Good risk-adjusted return' : num(m.sharpe_ratio) > 0.5 ? 'Moderate risk-adjusted return' : num(m.sharpe_ratio) > 0 ? 'Below expectations' : 'Below risk-free rate'}
+          explanation="Excess return per unit of total risk (vs 6.5% risk-free rate). >1 = good, >2 = excellent."
+          color={num(m.sharpe_ratio) > 1 ? 'text-emerald-600' : num(m.sharpe_ratio) > 0 ? 'text-slate-800' : 'text-red-600'}
+        />
+        <MetricCard
+          label="Sortino Ratio"
+          value={safe(m.sortino_ratio)}
+          benchValue={m.bench_sortino != null ? safe(m.bench_sortino) : null}
+          subtitle={num(m.sortino_ratio) > 1 ? 'Good downside-adjusted return' : num(m.sortino_ratio) > 0.5 ? 'Moderate downside protection' : 'Below expectations'}
+          explanation="Like Sharpe but penalises only downside volatility. Measures quality of negative-day management."
+          color={num(m.sortino_ratio) > 1 ? 'text-emerald-600' : num(m.sortino_ratio) > 0 ? 'text-slate-800' : 'text-red-600'}
+        />
       </div>
 
       {/* Cash metrics row */}

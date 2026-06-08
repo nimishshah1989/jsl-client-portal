@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import LoginForm from '@/components/auth/LoginForm';
 import Spinner from '@/components/ui/Spinner';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ensureCsrfToken } from '@/lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -23,7 +23,11 @@ export default function LoginPage() {
         }
       } catch {
         // 401 (or other) — user really is logged out, show the form.
-        if (!cancelled) setChecking(false);
+        // Pre-warm the CSRF cookie so it's ready before the login POST fires.
+        if (!cancelled) {
+          ensureCsrfToken().catch(() => {});
+          setChecking(false);
+        }
       }
     }
     redirectIfLoggedIn();

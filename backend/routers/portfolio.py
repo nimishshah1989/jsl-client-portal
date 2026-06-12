@@ -29,8 +29,10 @@ from backend.routers.helpers import (
 from backend.schemas.portfolio import (
     AllocationItem,
     AllocationResponse,
+    CashLineItem,
     DrawdownPoint,
     HoldingResponse,
+    HoldingsResponse,
     SummaryResponse,
 )
 from backend.services.audit_service import get_client_ip, get_request_id, log_audit
@@ -204,7 +206,22 @@ async def get_allocation(
     return AllocationResponse(by_sector=by_sector)
 
 
-@router.get("/holdings", response_model=list[HoldingResponse])
+_LIQUID_SYMBOLS = {"LIQUIDBEES", "LIQUIDETF", "LIQUIDCASE"}
+
+
+def _is_cash_instrument(symbol: str | None, asset_class: str | None) -> bool:
+    """True for liquid-ETF / cash instruments.
+
+    These are represented via the NAV file's cash breakdown (etf_value), not as
+    equity holding rows — excluding them here prevents double-counting when the
+    'Liquid Bees / Liquid ETF' cash line is added.
+    """
+    sym = (symbol or "").upper().strip()
+    asset = (asset_class or "").upper().strip()
+    return asset == "CASH" or sym in _LIQUID_SYMBOLS or sym.startswith("LIQUID")
+
+
+@router.get("/holdings", response_model=HoldingsResponse)
 async def get_holdings(
     request: Request,
     sort: str = Query("weight", regex="^(weight|pnl|value|name|price|quantity|avg_cost|pnl_pct)$"),
@@ -212,10 +229,25 @@ async def get_holdings(
     asset_class: str | None = Query(None),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> list[HoldingResponse]:
-    """Current holdings with P&L, sortable and filterable."""
+) -> HoldingsResponse:
+    """Current holdings with P&L, sortable and filterable.
+
+    Weights are computed on the TOTAL portfolio value (equity holdings + cash),
+    so the equity rows and the cash rows together sum to ~100%. Cash is split
+    into 'Undeployed Cash' (ledger cash + bank balance) and 'Liquid Bees /
+    Liquid ETF' (etf_value), taken from the latest NAV row.
+    """
     client_id: int = user["client_id"]
     portfolio = await get_default_portfolio(db, client_id)
+
+    # Latest NAV row — authoritative source for total value + cash breakdown.
+    latest_nav = (await db.execute(
+        select(NavSeries)
+        .where(NavSeries.client_id == client_id)
+        .where(NavSeries.portfolio_id == portfolio.id)
+        .order_by(desc(NavSeries.nav_date))
+        .limit(1)
+    )).scalar_one_or_none()
 
     stmt = (
         select(Holding)
@@ -235,11 +267,36 @@ async def get_holdings(
     stmt = stmt.order_by(desc(sort_col) if order == "desc" else sort_col)
     holdings = list((await db.execute(stmt)).scalars().all())
 
+    # Drop liquid-ETF / cash instruments — represented via the cash breakdown.
+    equity = [h for h in holdings if not _is_cash_instrument(h.symbol, h.asset_class)]
+
+    # Cash components from the latest NAV row (₹).
+    cash_val = bank = etf = Decimal("0")
+    if latest_nav is not None:
+        cash_val = latest_nav.cash_value or Decimal("0")
+        bank = latest_nav.bank_balance or Decimal("0")
+        etf = latest_nav.etf_value or Decimal("0")
+    undeployed = cash_val + bank
+    liquid_bees = etf
+
+    # Fallback for clients whose NAV file pre-dates the cash-breakdown columns:
+    # derive a single combined cash figure from Liquidity %, shown as undeployed.
+    if undeployed == Decimal("0") and liquid_bees == Decimal("0") and latest_nav is not None:
+        nav_value = latest_nav.nav_value or Decimal("0")
+        fallback_pct = latest_nav.cash_pct or Decimal("0")
+        if nav_value > Decimal("0") and fallback_pct > Decimal("0"):
+            undeployed = nav_value * fallback_pct / Decimal("100")
+
+    equity_total = sum((h.current_value or Decimal("0")) for h in equity)
+    total_value = equity_total + undeployed + liquid_bees
+    denom = total_value if total_value > Decimal("0") else Decimal("1")
+
     responses: list[HoldingResponse] = []
-    for h in holdings:
+    for h in equity:
         pnl_pct: str | None = None
         if h.avg_cost and h.current_price and h.avg_cost != Decimal("0"):
             pnl_pct = dec2((h.current_price - h.avg_cost) / h.avg_cost * Decimal("100"))
+        cur_val = h.current_value or Decimal("0")
         responses.append(HoldingResponse(
             symbol=h.symbol, asset_name=h.asset_name, asset_class=h.asset_class,
             sector=h.sector, quantity=dec4(h.quantity), avg_cost=dec2(h.avg_cost),
@@ -247,8 +304,23 @@ async def get_holdings(
             current_value=dec2(h.current_value) if h.current_value else None,
             unrealized_pnl=dec2(h.unrealized_pnl) if h.unrealized_pnl else None,
             pnl_pct=pnl_pct,
-            weight_pct=dec2(h.weight_pct) if h.weight_pct else None,
+            weight_pct=dec2(cur_val / denom * Decimal("100")),
         ))
+
+    cash_items: list[CashLineItem] = []
+    if undeployed > Decimal("0"):
+        cash_items.append(CashLineItem(
+            label="Undeployed Cash",
+            value=dec2(undeployed),
+            weight_pct=dec2(undeployed / denom * Decimal("100")),
+        ))
+    if liquid_bees > Decimal("0"):
+        cash_items.append(CashLineItem(
+            label="Liquid Bees / Liquid ETF",
+            value=dec2(liquid_bees),
+            weight_pct=dec2(liquid_bees / denom * Decimal("100")),
+        ))
+
     await log_audit(
         db, user_id=client_id, action="VIEW",
         resource_type="HOLDINGS", resource_id=portfolio.id,
@@ -256,7 +328,12 @@ async def get_holdings(
         request_id=get_request_id(request),
         target_client_id=client_id,
     )
-    return responses
+    return HoldingsResponse(
+        holdings=responses,
+        cash=cash_items,
+        total_value=dec2(total_value),
+        as_of_date=latest_nav.nav_date if latest_nav is not None else None,
+    )
 
 
 @router.get("/drawdown-series", response_model=list[DrawdownPoint])

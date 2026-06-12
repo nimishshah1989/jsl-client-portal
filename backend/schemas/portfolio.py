@@ -97,6 +97,30 @@ class HoldingResponse(BaseModel):
     weight_pct: str | None = None
 
 
+class CashLineItem(BaseModel):
+    """A cash component shown in the holdings table.
+
+    Cash is part of the total portfolio, so it carries a weight that, together
+    with the equity holdings, sums to ~100%. Split into undeployed cash (ledger
+    cash + bank balance) and liquid-ETF cash (LIQUIDBEES / LIQUIDETF).
+    """
+    label: str
+    value: str
+    weight_pct: str
+
+
+class HoldingsResponse(BaseModel):
+    """GET /api/portfolio/holdings.
+
+    Weights are computed on the TOTAL portfolio value (equity + cash), so the
+    holdings and cash rows together sum to ~100%.
+    """
+    holdings: list[HoldingResponse]
+    cash: list[CashLineItem] = []
+    total_value: str
+    as_of_date: dt.date | None = None
+
+
 class DrawdownPoint(BaseModel):
     """Single data point in the underwater chart."""
     date: dt.date

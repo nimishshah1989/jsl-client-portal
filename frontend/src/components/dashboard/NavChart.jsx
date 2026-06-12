@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useNavSeries } from '@/hooks/usePortfolio';
-import { formatDateShort, formatINRShort, formatINR } from '@/lib/format';
+import { formatDateAxis, formatDateTooltip, formatINRShort, formatPct } from '@/lib/format';
 import { CHART_COLORS, TIME_RANGES } from '@/lib/constants';
 import {
   ComposedChart,
@@ -34,23 +34,34 @@ function ChartSkeleton() {
   );
 }
 
-function CustomTooltip({ active, payload, label }) {
+function CustomTooltip({ active, payload }) {
   if (!active || !payload || payload.length === 0) return null;
-  const cashFlowEntry = payload.find((e) => e.payload?.cash_flow != null && e.payload.cash_flow !== 0);
-  const cashFlowAmt = cashFlowEntry ? Number(cashFlowEntry.payload.cash_flow) : null;
+  const point = payload[0]?.payload || {};
+  // Invested corpus on this date — basis for absolute return %
+  const invested = point.invested != null ? Number(point.invested) : null;
+  const cashFlowAmt = point.cash_flow != null && point.cash_flow !== 0 ? Number(point.cash_flow) : null;
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
-      <p className="font-medium text-slate-700 mb-1">{label}</p>
+      <p className="font-medium text-slate-700 mb-1">{formatDateTooltip(point.date)}</p>
       {payload.map((entry) => {
         if (entry.value == null) return null;
         if (entry.dataKey === 'cash_flow') return null;
         let displayValue;
+        let retNode = null;
         if (entry.dataKey === 'cash_pct') {
           displayValue = `${Number(entry.value).toFixed(1)}%`;
-        } else if (entry.dataKey === 'invested') {
-          displayValue = formatINRShort(entry.value);
         } else {
           displayValue = formatINRShort(entry.value);
+          // Absolute return vs invested value as at this date — for both
+          // the portfolio (nav) and the Nifty-equivalent (benchmark) lines.
+          if ((entry.dataKey === 'nav' || entry.dataKey === 'benchmark') && invested && invested > 0) {
+            const ret = (Number(entry.value) / invested - 1) * 100;
+            retNode = (
+              <span className={`font-mono text-xs ${ret >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                ({formatPct(ret)})
+              </span>
+            );
+          }
         }
         return (
           <div key={entry.dataKey} className="flex items-center gap-2">
@@ -62,6 +73,7 @@ function CustomTooltip({ active, payload, label }) {
             <span className="font-mono font-medium text-slate-800">
               {displayValue}
             </span>
+            {retNode}
           </div>
         );
       })}
@@ -98,9 +110,11 @@ export default function NavChart() {
     );
   }
 
-  // Format data for Recharts — all financial values are numeric ₹ amounts
+  // Format data for Recharts — all financial values are numeric ₹ amounts.
+  // The raw ISO `date` is the X-axis category (unique per row); ticks are
+  // formatted to dd-MMM and the tooltip shows the full dd-MMM-yy.
   const chartData = data.map((d) => ({
-    dateLabel: formatDateShort(d.date),
+    date: d.date,
     nav: d.nav != null ? Number(d.nav) : null,
     benchmark: d.benchmark != null ? Number(d.benchmark) : null,
     invested: d.invested != null ? Number(d.invested) : null,
@@ -112,7 +126,7 @@ export default function NavChart() {
   const cashFlowPoints = chartData
     .filter((d) => d.cash_flow != null && d.cash_flow !== 0)
     .map((d) => ({
-      dateLabel: d.dateLabel,
+      date: d.date,
       amount: d.cash_flow,
       isInflow: d.cash_flow > 0,
     }));
@@ -160,7 +174,8 @@ export default function NavChart() {
             vertical={false}
           />
           <XAxis
-            dataKey="dateLabel"
+            dataKey="date"
+            tickFormatter={formatDateAxis}
             tick={{ fontSize: 10, fill: '#94a3b8' }}
             tickLine={false}
             axisLine={{ stroke: '#e2e8f0' }}
@@ -245,8 +260,8 @@ export default function NavChart() {
           {/* Cash flow date markers — vertical lines where inflows/outflows occurred */}
           {cashFlowPoints.map((cf) => (
             <ReferenceLine
-              key={cf.dateLabel}
-              x={cf.dateLabel}
+              key={cf.date}
+              x={cf.date}
               yAxisId="nav"
               stroke={cf.isInflow ? '#059669' : '#dc2626'}
               strokeDasharray="4 3"
@@ -259,6 +274,7 @@ export default function NavChart() {
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400 mt-2 px-1">
         <span>Cash % includes ledger cash, bank balance, and liquid ETF instruments (LIQUIDBEES, LIQUIDETF).</span>
+        <span>Hover shows absolute return vs. invested value on that date.</span>
         {cashFlowPoints.length > 0 && (
           <span className="flex items-center gap-2">
             <span className="inline-block w-4 border-t border-dashed border-emerald-500" /> Inflow

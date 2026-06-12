@@ -130,6 +130,38 @@ export function formatDateShort(dateVal) {
   return `${months[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
 }
 
+const _MONTHS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/**
+ * Format date as "dd-MMM" for chart axis ticks: "05-Jun"
+ * @param {string|Date} dateVal
+ * @returns {string}
+ */
+export function formatDateAxis(dateVal) {
+  if (!dateVal) return '';
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return '';
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${day}-${_MONTHS[d.getMonth()]}`;
+}
+
+/**
+ * Format date as "dd-MMM-yy" for chart hover tooltips: "05-Jun-26"
+ * @param {string|Date} dateVal
+ * @returns {string}
+ */
+export function formatDateTooltip(dateVal) {
+  if (!dateVal) return '';
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return '';
+  const day = String(d.getDate()).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(2);
+  return `${day}-${_MONTHS[d.getMonth()]}-${yy}`;
+}
+
 /**
  * Return color class for a value: green if positive, red if negative
  * @param {number} value

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useAggregateNavSeries } from '@/hooks/useAggregate';
-import { formatDateShort, formatINRShort, formatINRCrores } from '@/lib/format';
+import { formatDateAxis, formatDateTooltip, formatINRShort, formatPct } from '@/lib/format';
 import { CHART_COLORS, TIME_RANGES } from '@/lib/constants';
 import {
   ComposedChart,
@@ -33,18 +33,32 @@ function ChartSkeleton() {
   );
 }
 
-function CustomTooltip({ active, payload, label }) {
+function CustomTooltip({ active, payload }) {
   if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0]?.payload || {};
+  // Total invested capital on this date — basis for absolute return %
+  const invested = point.invested != null ? Number(point.invested) : null;
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-sm">
-      <p className="font-medium text-slate-700 mb-1">{label}</p>
+      <p className="font-medium text-slate-700 mb-1">{formatDateTooltip(point.date)}</p>
       {payload.map((entry) => {
         if (entry.value == null) return null;
         let displayValue;
+        let retNode = null;
         if (entry.dataKey === 'cash_pct') {
           displayValue = `${Number(entry.value).toFixed(1)}%`;
         } else {
           displayValue = formatINRShort(entry.value);
+          // Absolute return vs invested capital as at this date — for both the
+          // AUM portfolio and the Nifty-equivalent line.
+          if ((entry.dataKey === 'portfolio' || entry.dataKey === 'benchmark') && invested && invested > 0) {
+            const ret = (Number(entry.value) / invested - 1) * 100;
+            retNode = (
+              <span className={`font-mono text-xs ${ret >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                ({formatPct(ret)})
+              </span>
+            );
+          }
         }
         return (
           <div key={entry.dataKey} className="flex items-center gap-2">
@@ -56,6 +70,7 @@ function CustomTooltip({ active, payload, label }) {
             <span className="font-mono font-medium text-slate-800">
               {displayValue}
             </span>
+            {retNode}
           </div>
         );
       })}
@@ -86,9 +101,10 @@ export default function AggregateNavChart() {
   }
 
   const chartData = data.map((d) => ({
-    dateLabel: formatDateShort(d.date),
+    date: d.date,
     portfolio: d.nav != null ? Number(d.nav) : (d.portfolio != null ? Number(d.portfolio) : null),
     benchmark: d.benchmark != null ? Number(d.benchmark) : null,
+    invested: d.invested != null ? Number(d.invested) : null,
     cash_pct: d.cash_pct != null ? Math.min(100, Math.max(0, Number(d.cash_pct))) : null,
   }));
 
@@ -134,7 +150,8 @@ export default function AggregateNavChart() {
             vertical={false}
           />
           <XAxis
-            dataKey="dateLabel"
+            dataKey="date"
+            tickFormatter={formatDateAxis}
             tick={{ fontSize: 10, fill: '#94a3b8' }}
             tickLine={false}
             axisLine={{ stroke: '#e2e8f0' }}

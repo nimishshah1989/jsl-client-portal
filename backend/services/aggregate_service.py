@@ -299,6 +299,10 @@ async def get_aggregate_nav_series(
             "date": row["nav_date"].isoformat(),
             "nav": round(float(total_aum[i]), 0),
             "benchmark": round(float(nifty_aum[i]), 0),
+            # Total invested capital on this date — lets the chart tooltip show
+            # absolute return (value / invested - 1) for both the portfolio and
+            # the Nifty-equivalent line.
+            "invested": round(float(total_invested[i]), 0),
             "cash_pct": round(row["weighted_cash_pct"], 2),
         })
 

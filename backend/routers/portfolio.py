@@ -18,12 +18,13 @@ from backend.middleware.auth_middleware import get_current_user
 from backend.models.drawdown import DrawdownSeries
 from backend.models.holding import Holding
 from backend.models.nav_series import NavSeries
+from backend.models.portfolio import Portfolio
 from backend.models.risk_metric import RiskMetric
 from backend.routers.helpers import (
     date_cutoff,
     dec2,
     dec4,
-    get_default_portfolio,
+    resolve_portfolio,
     opt2,
 )
 from backend.schemas.portfolio import (
@@ -33,6 +34,7 @@ from backend.schemas.portfolio import (
     DrawdownPoint,
     HoldingResponse,
     HoldingsResponse,
+    PortfolioListItem,
     SummaryResponse,
 )
 from backend.services.audit_service import get_client_ip, get_request_id, log_audit
@@ -40,6 +42,46 @@ from backend.services.audit_service import get_client_ip, get_request_id, log_au
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
+
+
+@router.get("/list", response_model=list[PortfolioListItem])
+async def list_portfolios(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[PortfolioListItem]:
+    """All portfolios for the logged-in client (for the dashboard switcher).
+
+    Live portfolios first, then closed; the frontend marks closed ones and
+    keeps them out of the Combined view. Every other portfolio endpoint accepts
+    ``?portfolio_id=`` (validated against the caller via resolve_portfolio).
+    """
+    client_id: int = user["client_id"]
+    stmt = (
+        select(Portfolio)
+        .where(Portfolio.client_id == client_id)
+        .order_by(Portfolio.is_closed, Portfolio.strategy, Portfolio.id)
+    )
+    portfolios = list((await db.execute(stmt)).scalars().all())
+
+    await log_audit(
+        db, user_id=client_id, action="VIEW",
+        resource_type="PORTFOLIO",
+        ip_address=get_client_ip(request),
+        request_id=get_request_id(request),
+        target_client_id=client_id,
+    )
+    return [
+        PortfolioListItem(
+            portfolio_id=p.id,
+            client_code=p.client_code,
+            strategy=p.strategy,
+            portfolio_name=p.portfolio_name,
+            inception_date=p.inception_date,
+            is_closed=p.is_closed,
+        )
+        for p in portfolios
+    ]
 
 
 @router.get("/summary", response_model=SummaryResponse)
@@ -50,7 +92,7 @@ async def get_summary(
 ) -> SummaryResponse:
     """Summary cards: invested, current, profit, CAGR, YTD, max DD."""
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     nav_stmt = (
         select(NavSeries)
@@ -168,7 +210,7 @@ async def get_allocation(
     LIQUID* instruments -> 'Cash', GOLDBEES/SILVERBEES -> 'Metals', etc.
     """
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     stmt = (
         select(Holding)
@@ -238,7 +280,7 @@ async def get_holdings(
     Liquid ETF' (etf_value), taken from the latest NAV row.
     """
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     # Latest NAV row — authoritative source for total value + cash breakdown.
     latest_nav = (await db.execute(
@@ -356,7 +398,7 @@ async def get_drawdown_series(
 ) -> list[DrawdownPoint]:
     """Drawdown underwater chart data."""
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     stmt = (
         select(DrawdownSeries)

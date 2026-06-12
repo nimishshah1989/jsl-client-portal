@@ -12,7 +12,7 @@ from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.nav_series import NavSeries
 from backend.models.transaction import Transaction
-from backend.routers.helpers import dec2, dec4, get_default_portfolio, get_latest_risk, opt2
+from backend.routers.helpers import dec2, dec4, resolve_portfolio, get_latest_risk, opt2
 from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 from backend.schemas.portfolio import (
     PaginatedTransactions,
@@ -40,7 +40,7 @@ async def get_performance_table(
 ) -> list[PerformanceRow]:
     """Multi-period returns table with all metrics."""
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
     risk = await get_latest_risk(db, client_id, portfolio.id)
     if risk is None:
         return []
@@ -87,7 +87,7 @@ async def get_risk_scorecard(
 ) -> RiskScorecardResponse:
     """Risk scorecard with capture ratios, beta, alpha, monthly profile."""
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
     risk = await get_latest_risk(db, client_id, portfolio.id)
     if risk is None:
         raise HTTPException(status_code=404, detail="No risk metrics computed yet")
@@ -224,7 +224,7 @@ async def get_transactions(
 ) -> PaginatedTransactions:
     """Paginated, filterable transaction history."""
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     base = (
         select(Transaction)

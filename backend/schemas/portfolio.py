@@ -121,6 +121,16 @@ class HoldingsResponse(BaseModel):
     as_of_date: dt.date | None = None
 
 
+class PortfolioListItem(BaseModel):
+    """One portfolio in the logged-in client's switcher list."""
+    portfolio_id: int
+    client_code: str | None = None
+    strategy: str
+    portfolio_name: str
+    inception_date: dt.date
+    is_closed: bool
+
+
 class DrawdownPoint(BaseModel):
     """Single data point in the underwater chart."""
     date: dt.date

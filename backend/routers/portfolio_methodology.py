@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.database import get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models.nav_series import NavSeries
-from backend.routers.helpers import dec2, get_default_portfolio, get_latest_risk, opt2
+from backend.routers.helpers import dec2, resolve_portfolio, get_latest_risk, opt2
 from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 from backend.schemas.portfolio import (
     MethodologyMetric,
@@ -34,7 +34,7 @@ async def get_xirr(
     from sqlalchemy import text as sa_text
 
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     # Fetch NAV data for terminal value and fallback
     stmt = (
@@ -155,7 +155,7 @@ async def get_methodology(
 ) -> MethodologyResponse:
     """All metrics with values, formulae inputs for worked examples."""
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
     risk = await get_latest_risk(db, client_id, portfolio.id)
     if risk is None:
         raise HTTPException(status_code=404, detail="No risk metrics computed yet")

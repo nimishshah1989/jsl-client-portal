@@ -3,7 +3,7 @@
 import datetime as dt
 from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +61,46 @@ async def get_default_portfolio(db: AsyncSession, client_id: int) -> Portfolio:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No active portfolio found for this client",
+        )
+    return portfolio
+
+
+async def resolve_portfolio(
+    db: AsyncSession, client_id: int, request: Request | None = None,
+) -> Portfolio:
+    """Resolve which portfolio to serve for a request.
+
+    If the request carries ``?portfolio_id=``, return that portfolio — but ONLY
+    when it belongs to the logged-in client (tenant isolation). A foreign or
+    unknown id returns 404 (not 403) so we never reveal whether an id exists for
+    another client. With no portfolio_id, fall back to the client's default
+    (first active) portfolio — the existing behaviour.
+    """
+    portfolio_id: int | None = None
+    if request is not None:
+        raw = request.query_params.get("portfolio_id")
+        if raw not in (None, ""):
+            try:
+                portfolio_id = int(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid portfolio_id",
+                )
+
+    if portfolio_id is None:
+        return await get_default_portfolio(db, client_id)
+
+    stmt = (
+        select(Portfolio)
+        .where(Portfolio.id == portfolio_id)
+        .where(Portfolio.client_id == client_id)
+    )
+    portfolio = (await db.execute(stmt)).scalar_one_or_none()
+    if portfolio is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Portfolio not found",
         )
     return portfolio
 

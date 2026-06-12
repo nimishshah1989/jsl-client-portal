@@ -4,7 +4,7 @@ dashboard analytics, and client impersonation."""
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select, desc, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from backend.models.client import Client
 from backend.models.nav_series import NavSeries
 from backend.models.upload_log import UploadLog
 from backend.schemas.admin import UploadLogResponse
+from backend.services.strategy_filter import portfolio_clause, strategy_params
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -290,10 +291,16 @@ async def data_status(
 
 @router.get("/dashboard-analytics")
 async def dashboard_analytics(
+    strategy: str = Query("COMBINED"),
     admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Aggregate analytics for the admin dashboard.
+    """Aggregate analytics for the admin dashboard, scoped to a strategy.
+
+    Strategy is COMBINED / LEADERS / PASSIVE / IND11; closed accounts are always
+    excluded. NOTE: the latest-NAV/risk queries keep DISTINCT ON (client_id),
+    which is exact while each client maps to one portfolio; PR-B (multi-portfolio
+    per login) will move these to per-portfolio aggregation.
 
     Returns:
         total_aum: Total assets under management (sum of all latest NAV values)
@@ -306,13 +313,22 @@ async def dashboard_analytics(
         avg_max_drawdown: Average max drawdown across clients
         data_as_of: Latest NAV date in the system
     """
-    # Total active clients
-    client_count = (await db.execute(
-        text("SELECT COUNT(*) FROM cpp_clients WHERE is_active = true AND is_admin = false")
-    )).scalar() or 0
+    params = strategy_params(strategy)
+
+    # Active clients with a live portfolio in this strategy.
+    cc_sql = (
+        "SELECT COUNT(DISTINCT c.id) FROM cpp_clients c "
+        "JOIN cpp_portfolios pstrat ON pstrat.client_id = c.id "
+        "WHERE c.is_active = true AND c.is_admin = false "
+        "AND pstrat.is_closed = false"
+    )
+    if params:
+        cc_sql += " AND pstrat.strategy = :strategy"
+    client_count = (await db.execute(text(cc_sql), params)).scalar() or 0
 
     # Latest NAV per client (for AUM, cash calculations)
-    latest_navs = await db.execute(text("""
+    nav_join, nav_where = portfolio_clause(strategy, alias="n")
+    latest_navs = await db.execute(text(f"""
         SELECT DISTINCT ON (n.client_id)
             n.client_id, c.name, c.client_code,
             n.nav_value, n.invested_amount, n.nav_date,
@@ -322,9 +338,11 @@ async def dashboard_analytics(
             n.cash_pct
         FROM cpp_nav_series n
         JOIN cpp_clients c ON c.id = n.client_id
+        {nav_join}
         WHERE c.is_active = true AND c.is_admin = false
+          {nav_where}
         ORDER BY n.client_id, n.nav_date DESC
-    """))
+    """), params)
     nav_rows = latest_navs.fetchall()
 
     total_aum = 0.0
@@ -356,16 +374,19 @@ async def dashboard_analytics(
     total_profit_pct = ((total_aum / total_invested - 1) * 100) if total_invested > 0 else 0.0
 
     # Latest risk metrics per client for blended CAGR and performer ranking
-    risk_rows = await db.execute(text("""
+    risk_join, risk_where = portfolio_clause(strategy, alias="r")
+    risk_rows = await db.execute(text(f"""
         SELECT DISTINCT ON (r.client_id)
             r.client_id, c.name, c.client_code,
             r.cagr, r.max_drawdown, r.sharpe_ratio, r.xirr,
             r.volatility, r.up_capture, r.down_capture
         FROM cpp_risk_metrics r
         JOIN cpp_clients c ON c.id = r.client_id
+        {risk_join}
         WHERE c.is_active = true AND c.is_admin = false
+          {risk_where}
         ORDER BY r.client_id, r.computed_date DESC
-    """))
+    """), params)
     risk_data = risk_rows.fetchall()
 
     # Build AUM + invested lookup for weighting and ranking

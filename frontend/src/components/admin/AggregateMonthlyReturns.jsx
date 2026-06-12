@@ -99,8 +99,8 @@ function HeatmapGrid({ monthlyData = [] }) {
   );
 }
 
-export default function AggregateMonthlyReturns() {
-  const { data, loading, error } = useAggregateMonthlyReturns();
+export default function AggregateMonthlyReturns({ strategy = 'COMBINED' }) {
+  const { data, loading, error } = useAggregateMonthlyReturns(strategy);
 
   if (loading) return <Skeleton />;
   if (error) {

@@ -70,8 +70,8 @@ function CellValue({ metric, value, isBench }) {
   );
 }
 
-export default function AggregatePerformance() {
-  const { data, loading, error } = useAggregatePerformance();
+export default function AggregatePerformance({ strategy = 'COMBINED' }) {
+  const { data, loading, error } = useAggregatePerformance(strategy);
 
   if (loading) return <Skeleton />;
   if (error) {

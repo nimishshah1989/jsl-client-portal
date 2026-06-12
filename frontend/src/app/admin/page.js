@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   useClients,
   useUploadLog,
@@ -35,7 +35,15 @@ import AggregateAllocation from '@/components/admin/AggregateAllocation';
 import AggregateRiskScorecard from '@/components/admin/AggregateRiskScorecard';
 import AggregateMonthlyReturns from '@/components/admin/AggregateMonthlyReturns';
 
+const STRATEGIES = [
+  { key: 'COMBINED', label: 'Combined' },
+  { key: 'LEADERS', label: 'Leaders' },
+  { key: 'PASSIVE', label: 'Passive' },
+  { key: 'IND11', label: 'IND11' },
+];
+
 export default function AdminDashboard() {
+  const [strategy, setStrategy] = useState('COMBINED');
   const { data: clients, loading: clientsLoading, refetch: refetchClients } =
     useClients();
   const { data: logs, loading: logsLoading, refetch: refetchLogs } =
@@ -51,14 +59,19 @@ export default function AdminDashboard() {
     data: analytics,
     loading: analyticsLoading,
     refetch: refetchAnalytics,
-  } = useDashboardAnalytics();
+  } = useDashboardAnalytics(strategy);
 
   useEffect(() => {
     refetchClients();
     refetchLogs();
     refetchStatus();
+  }, [refetchClients, refetchLogs, refetchStatus]);
+
+  // Analytics cards refetch whenever the strategy toggle changes (the aggregate
+  // components below refetch themselves via their own strategy-keyed hooks).
+  useEffect(() => {
     refetchAnalytics();
-  }, [refetchClients, refetchLogs, refetchStatus, refetchAnalytics]);
+  }, [refetchAnalytics]);
 
   async function handleRecompute() {
     try {
@@ -140,6 +153,28 @@ export default function AdminDashboard() {
         </div>
       </div>
 
+      {/* Strategy toggle — scopes the cards and the whole aggregate dashboard.
+          Closed accounts are always excluded from these live views. */}
+      <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider mr-1">
+          Strategy
+        </span>
+        {STRATEGIES.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => setStrategy(s.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              strategy === s.key
+                ? 'bg-jip-teal text-white'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+        <span className="text-xs text-slate-400 ml-auto">Closed accounts excluded</span>
+      </div>
+
       {/* Analytics Cards */}
       {analyticsLoading ? (
         <div className="flex justify-center py-8">
@@ -192,20 +227,22 @@ export default function AdminDashboard() {
             Aggregate Portfolio Dashboard
           </h3>
           <span className="text-xs text-slate-400 ml-1">
-            Composite view across all clients
+            {strategy === 'COMBINED'
+              ? 'Composite view across all live client portfolios'
+              : `${STRATEGIES.find((s) => s.key === strategy)?.label} strategy only`}
           </span>
         </div>
       </div>
 
-      <AggregateNavChart />
-      <AggregatePerformance />
+      <AggregateNavChart strategy={strategy} />
+      <AggregatePerformance strategy={strategy} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <AggregateAllocation />
-        <AggregateRiskScorecard />
+        <AggregateAllocation strategy={strategy} />
+        <AggregateRiskScorecard strategy={strategy} />
       </div>
 
-      <AggregateMonthlyReturns />
+      <AggregateMonthlyReturns strategy={strategy} />
 
       {/* Top Performers / Investors */}
       {analytics && (

@@ -34,22 +34,25 @@ function useApiData(url, deps = {}) {
   return { data, loading, error, refetch };
 }
 
-export function useAggregateNavSeries(range = 'ALL') {
-  return useApiData(`/admin/aggregate/nav-series?range=${range}`, { range });
+export function useAggregateNavSeries(range = 'ALL', strategy = 'COMBINED') {
+  return useApiData(
+    `/admin/aggregate/nav-series?range=${range}&strategy=${strategy}`,
+    { range, strategy },
+  );
 }
 
-export function useAggregatePerformance() {
-  return useApiData('/admin/aggregate/performance-table');
+export function useAggregatePerformance(strategy = 'COMBINED') {
+  return useApiData(`/admin/aggregate/performance-table?strategy=${strategy}`, { strategy });
 }
 
-export function useAggregateRisk() {
-  return useApiData('/admin/aggregate/risk-scorecard');
+export function useAggregateRisk(strategy = 'COMBINED') {
+  return useApiData(`/admin/aggregate/risk-scorecard?strategy=${strategy}`, { strategy });
 }
 
-export function useAggregateAllocation() {
-  return useApiData('/admin/aggregate/allocation');
+export function useAggregateAllocation(strategy = 'COMBINED') {
+  return useApiData(`/admin/aggregate/allocation?strategy=${strategy}`, { strategy });
 }
 
-export function useAggregateMonthlyReturns() {
-  return useApiData('/admin/aggregate/monthly-returns');
+export function useAggregateMonthlyReturns(strategy = 'COMBINED') {
+  return useApiData(`/admin/aggregate/monthly-returns?strategy=${strategy}`, { strategy });
 }

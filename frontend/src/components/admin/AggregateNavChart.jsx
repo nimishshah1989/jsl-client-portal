@@ -78,9 +78,9 @@ function CustomTooltip({ active, payload }) {
   );
 }
 
-export default function AggregateNavChart() {
+export default function AggregateNavChart({ strategy = 'COMBINED' }) {
   const [range, setRange] = useState('ALL');
-  const { data, loading, error } = useAggregateNavSeries(range);
+  const { data, loading, error } = useAggregateNavSeries(range, strategy);
 
   if (loading) return <ChartSkeleton />;
 

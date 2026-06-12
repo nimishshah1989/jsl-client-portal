@@ -70,6 +70,7 @@ from backend.models.transaction import Transaction
 
 from backend.routers.admin import router as admin_router
 from backend.routers.portfolio import router as portfolio_router
+from backend.routers.portfolio_combined import router as portfolio_combined_router
 from backend.routers.portfolio_detail import router as portfolio_detail_router
 from backend.routers.portfolio_methodology import router as portfolio_methodology_router
 from backend.routers.portfolio_nav import router as portfolio_nav_router
@@ -445,6 +446,7 @@ def _build_app(session_factory) -> FastAPI:
     app.include_router(portfolio_nav_router)
     app.include_router(portfolio_detail_router)
     app.include_router(portfolio_methodology_router)
+    app.include_router(portfolio_combined_router)
     # Admin router is included only to test the IDOR rejection (non-admin
     # token must get 403, not the requested data).
     app.include_router(admin_router)
@@ -497,6 +499,7 @@ def _enumerate_portfolio_get_endpoints() -> list[tuple[str, dict]]:
         portfolio_nav_router,
         portfolio_detail_router,
         portfolio_methodology_router,
+        portfolio_combined_router,
     ):
         for route in router.routes:
             methods = getattr(route, "methods", set()) or set()
@@ -529,8 +532,11 @@ def _expected_endpoint_count() -> int:
       /api/portfolio/transactions
       /api/portfolio/xirr
       /api/portfolio/methodology
+      /api/portfolio/combined/summary
+      /api/portfolio/combined/nav-series
+      /api/portfolio/combined/holdings
     """
-    return 12
+    return 15
 
 
 # Endpoints that use Postgres-specific raw SQL features (date arithmetic on

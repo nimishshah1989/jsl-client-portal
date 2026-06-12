@@ -173,6 +173,7 @@ from backend.routers.admin_aggregate import (  # noqa: E402
 )
 from backend.routers.admin_reconciliation import router as admin_reconciliation_router  # noqa: E402
 from backend.routers.portfolio_methodology import router as portfolio_methodology_router  # noqa: E402
+from backend.routers.portfolio_combined import router as portfolio_combined_router  # noqa: E402
 from backend.routers.me import router as me_router  # noqa: E402
 
 app.include_router(auth_router)
@@ -180,6 +181,7 @@ app.include_router(portfolio_router)
 app.include_router(portfolio_nav_router)
 app.include_router(portfolio_detail_router)
 app.include_router(portfolio_methodology_router)
+app.include_router(portfolio_combined_router)
 app.include_router(me_router)
 app.include_router(admin_router)
 app.include_router(admin_upload_router)

@@ -258,29 +258,25 @@ async def get_aggregate_nav_series(
     invested_changes = np.diff(total_invested, prepend=0)
     invested_changes[0] = total_invested[0]  # first day = full initial investment
 
-    # Get daily benchmark returns from composite index
-    bench_daily_ret = np.zeros(len(agg))
+    # Map the AUM-weighted composite benchmark index onto the aggregate dates.
+    # bench_composite is indexed by Timestamps, but agg["nav_date"] holds Python
+    # date objects — so the previous `nav_date in bench_composite.index` lookup
+    # missed on EVERY row, zeroing all benchmark returns and leaving the Nifty-
+    # equivalent line tracking pure inflows (it showed +0.00% on hover). Align
+    # both sides on the calendar date and forward/back-fill any gaps.
     if bench_composite is not None and len(bench_composite) > 1:
-        for i, (_, row) in enumerate(agg.iterrows()):
-            nav_date = row["nav_date"]
-            if nav_date in bench_composite.index:
-                bench_daily_ret[i] = bench_composite.loc[nav_date]
+        bench_by_date = {
+            pd.Timestamp(ts).normalize(): float(val)
+            for ts, val in bench_composite.items()
+        }
+        agg_dates = pd.to_datetime(agg["nav_date"]).dt.normalize()
+        bench_levels = agg_dates.map(bench_by_date).ffill().bfill().to_numpy(dtype=float)
 
-        # Convert composite index levels to daily returns
-        bench_levels = np.array([
-            float(bench_composite.loc[row["nav_date"]])
-            if row["nav_date"] in bench_composite.index else np.nan
-            for _, row in agg.iterrows()
-        ])
-        # Fill any gaps
-        mask = ~np.isnan(bench_levels)
-        if mask.sum() > 1:
+        if np.isfinite(bench_levels).sum() > 1:
             bench_rets = np.zeros(len(bench_levels))
-            bench_rets[1:] = np.where(
-                mask[1:] & mask[:-1] & (bench_levels[:-1] > 0),
-                bench_levels[1:] / bench_levels[:-1] - 1,
-                0,
-            )
+            prev = bench_levels[:-1]
+            cur = bench_levels[1:]
+            bench_rets[1:] = np.where(prev > 0, cur / prev - 1.0, 0.0)
         else:
             bench_rets = np.zeros(len(agg))
     else:

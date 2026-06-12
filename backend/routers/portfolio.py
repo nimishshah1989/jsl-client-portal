@@ -288,7 +288,18 @@ async def get_holdings(
             undeployed = nav_value * fallback_pct / Decimal("100")
 
     equity_total = sum((h.current_value or Decimal("0")) for h in equity)
-    total_value = equity_total + undeployed + liquid_bees
+
+    # Denominator = official total NAV (latest NAV row). The line chart computes
+    # cash % as (cash + bank + ETF) / nav_value, so dividing holdings by the same
+    # nav_value keeps the two views consistent. Using the equity live-price sum
+    # instead would diverge from the chart whenever a holding lacks a live price
+    # (its current_value falls to 0, shrinking the denominator and inflating cash%).
+    nav_total = (
+        latest_nav.nav_value
+        if latest_nav is not None and latest_nav.nav_value and latest_nav.nav_value > Decimal("0")
+        else None
+    )
+    total_value = nav_total if nav_total is not None else (equity_total + undeployed + liquid_bees)
     denom = total_value if total_value > Decimal("0") else Decimal("1")
 
     responses: list[HoldingResponse] = []

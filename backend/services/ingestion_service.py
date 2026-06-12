@@ -27,6 +27,7 @@ from backend.services.benchmark_service import fetch_nifty_data
 from backend.services.ingestion_helpers import (
     find_or_create_client,
     find_or_create_portfolio,
+    log_strategy_tally,
     log_upload,
     recompute_holdings,
     update_benchmark_values,
@@ -200,7 +201,7 @@ async def ingest_nav_file(
         try:
             client_id = await find_or_create_client(db, client_code, client_name)
             inception = min(r["date"] for r in client_records)
-            portfolio_id = await find_or_create_portfolio(db, client_id, inception)
+            portfolio_id = await find_or_create_portfolio(db, client_id, inception, client_code)
 
             nav_count = await upsert_nav_rows(db, client_id, portfolio_id, client_records)
             upload.rows_processed += nav_count
@@ -273,6 +274,9 @@ async def ingest_nav_file(
         "NAV ingestion complete: %d rows processed, %d failed, %d clients",
         upload.rows_processed, upload.rows_failed, upload.clients_affected,
     )
+
+    # Post-upload drift check: every portfolio should carry a valid strategy tag.
+    await log_strategy_tally(db)
     return upload
 
 
@@ -325,7 +329,7 @@ async def ingest_transaction_file(
         try:
             client_id = await find_or_create_client(db, client_code, client_name)
             inception = min(r["date"] for r in client_records)
-            portfolio_id = await find_or_create_portfolio(db, client_id, inception)
+            portfolio_id = await find_or_create_portfolio(db, client_id, inception, client_code)
 
             txn_count = await upsert_transactions(db, client_id, portfolio_id, client_records)
             upload.rows_processed += txn_count
@@ -413,7 +417,7 @@ async def ingest_cashflow_file(
         try:
             client_id = await find_or_create_client(db, client_code, client_name)
             inception = min(r["date"] for r in client_records)
-            portfolio_id = await find_or_create_portfolio(db, client_id, inception)
+            portfolio_id = await find_or_create_portfolio(db, client_id, inception, client_code)
 
             cf_count = await upsert_cash_flows(db, client_id, portfolio_id, client_records)
             upload.rows_processed += cf_count

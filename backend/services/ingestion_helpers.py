@@ -21,6 +21,7 @@ from backend.services.benchmark_service import (
     fetch_and_align,
     fetch_nifty_data,
 )
+from backend.services.classification import classify_code
 from backend.services.holdings_service import compute_holdings
 from backend.services.isin_resolver import (
     isin_to_symbol,
@@ -78,35 +79,99 @@ async def find_or_create_portfolio(
     db: AsyncSession,
     client_id: int,
     inception_date: datetime,
+    client_code: str | None = None,
     portfolio_name: str = "PMS Equity",
 ) -> int:
-    """Find existing portfolio or create one. Returns portfolio_id."""
+    """Find existing portfolio or create one. Returns portfolio_id.
+
+    Also self-heals the strategy tags (client_code / strategy / is_closed) from
+    the code on every call, so the classification can never drift across
+    re-uploads or new uploads. The rule lives in services/classification.py.
+    """
+    strategy = is_closed = None
+    if client_code:
+        cls = classify_code(client_code)
+        strategy, is_closed = cls.strategy, cls.is_closed
+
+    idate = inception_date.date() if hasattr(inception_date, "hour") else inception_date
+
     result = await db.execute(
         text("SELECT id FROM cpp_portfolios WHERE client_id = :cid AND portfolio_name = :pname"),
         {"cid": client_id, "pname": portfolio_name},
+    )
+    row = result.fetchone()
+    if row:
+        portfolio_id = row[0]
+        if client_code:
+            await _tag_portfolio(db, portfolio_id, client_code, strategy, is_closed)
+        return portfolio_id
+
+    result = await db.execute(
+        text("""
+            INSERT INTO cpp_portfolios
+                (client_id, portfolio_name, inception_date, client_code, strategy, is_closed)
+            VALUES
+                (:cid, :pname, :idate, :code,
+                 COALESCE(:strategy, 'LEADERS'), COALESCE(:is_closed, false))
+            ON CONFLICT (client_id, portfolio_name) DO NOTHING
+            RETURNING id
+        """),
+        {
+            "cid": client_id, "pname": portfolio_name, "idate": idate,
+            "code": client_code, "strategy": strategy, "is_closed": is_closed,
+        },
     )
     row = result.fetchone()
     if row:
         return row[0]
 
-    result = await db.execute(
-        text("""
-            INSERT INTO cpp_portfolios (client_id, portfolio_name, inception_date)
-            VALUES (:cid, :pname, :idate)
-            ON CONFLICT (client_id, portfolio_name) DO NOTHING
-            RETURNING id
-        """),
-        {"cid": client_id, "pname": portfolio_name, "idate": inception_date.date() if hasattr(inception_date, 'hour') else inception_date},
-    )
-    row = result.fetchone()
-    if row:
-        return row[0]
-    # ON CONFLICT hit — fetch existing
+    # ON CONFLICT hit — fetch existing and self-heal its tags.
     result = await db.execute(
         text("SELECT id FROM cpp_portfolios WHERE client_id = :cid AND portfolio_name = :pname"),
         {"cid": client_id, "pname": portfolio_name},
     )
-    return result.fetchone()[0]
+    portfolio_id = result.fetchone()[0]
+    if client_code:
+        await _tag_portfolio(db, portfolio_id, client_code, strategy, is_closed)
+    return portfolio_id
+
+
+async def _tag_portfolio(
+    db: AsyncSession,
+    portfolio_id: int,
+    client_code: str,
+    strategy: str | None,
+    is_closed: bool | None,
+) -> None:
+    """Idempotently set a portfolio's source UCC + strategy tags."""
+    await db.execute(
+        text("""
+            UPDATE cpp_portfolios
+            SET client_code = :code, strategy = :strategy, is_closed = :is_closed
+            WHERE id = :pid
+        """),
+        {"pid": portfolio_id, "code": client_code, "strategy": strategy, "is_closed": is_closed},
+    )
+
+
+async def log_strategy_tally(db: AsyncSession) -> dict:
+    """Post-upload drift check: log a per-strategy portfolio tally and warn on
+    any portfolio left without a client_code (i.e. unclassified)."""
+    result = await db.execute(text("""
+        SELECT strategy,
+               count(*)                                AS n,
+               count(*) FILTER (WHERE client_code IS NULL) AS untagged
+        FROM cpp_portfolios
+        GROUP BY strategy
+        ORDER BY strategy
+    """))
+    rows = result.fetchall()
+    tally = {r.strategy: r.n for r in rows}
+    untagged = sum(r.untagged for r in rows)
+    logger.info("Strategy tally after ingestion: %s", tally)
+    if untagged:
+        logger.warning("%d portfolio(s) have NULL client_code after ingestion", untagged)
+    return {"tally": tally, "untagged": untagged}
 
 
 _BULK_BATCH_SIZE = 500

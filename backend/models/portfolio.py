@@ -3,6 +3,7 @@
 import datetime as dt
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -35,6 +36,16 @@ class Portfolio(Base):
     inception_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), default="active", server_default="active"
+    )
+    # Source UCC for this portfolio (e.g. BJ53, BJ53PASS). One portfolio per code.
+    client_code: Mapped[str | None] = mapped_column(String(50), nullable=True, unique=True)
+    # Strategy bucket derived from the code suffix — see services/classification.py.
+    strategy: Mapped[str] = mapped_column(
+        String(20), default="LEADERS", server_default="LEADERS", nullable=False
+    )
+    # Archived account (CLOSE/CLO suffix): excluded from live aggregates + Combined.
+    is_closed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

@@ -19,7 +19,7 @@ from backend.routers.helpers import (
     FD_RATE,
     date_cutoff,
     dec2,
-    get_default_portfolio,
+    resolve_portfolio,
 )
 from backend.services.audit_service import get_client_ip, get_request_id, log_audit
 from backend.schemas.portfolio import (
@@ -82,7 +82,7 @@ async def get_nav_series(
     - cash_pct:      liquidity % clamped to [0, 100]
     """
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     stmt = (
         select(NavSeries)
@@ -217,7 +217,7 @@ async def get_growth(
     add or withdraw capital over time.
     """
     client_id: int = user["client_id"]
-    portfolio = await get_default_portfolio(db, client_id)
+    portfolio = await resolve_portfolio(db, client_id, request)
 
     first_stmt = (
         select(NavSeries)

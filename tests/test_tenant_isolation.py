@@ -413,9 +413,12 @@ async def _seed_client_b(session: AsyncSession) -> tuple[Client, Portfolio]:
 async def seeded_db(session_factory):
     """Seed both clients and return their IDs."""
     async with session_factory() as session:
-        a, _ = await _seed_client_a(session)
-        b, _ = await _seed_client_b(session)
-        return {"a_id": a.id, "b_id": b.id}
+        a, a_pf = await _seed_client_a(session)
+        b, b_pf = await _seed_client_b(session)
+        return {
+            "a_id": a.id, "b_id": b.id,
+            "a_portfolio_id": a_pf.id, "b_portfolio_id": b_pf.id,
+        }
 
 
 # ── FastAPI test app ──
@@ -514,6 +517,7 @@ def _expected_endpoint_count() -> int:
     with a sentinel-leak check for the new endpoint.
 
     Current matrix (must equal len(_enumerate_portfolio_get_endpoints())):
+      /api/portfolio/list
       /api/portfolio/summary
       /api/portfolio/allocation
       /api/portfolio/holdings
@@ -526,7 +530,7 @@ def _expected_endpoint_count() -> int:
       /api/portfolio/xirr
       /api/portfolio/methodology
     """
-    return 11
+    return 12
 
 
 # Endpoints that use Postgres-specific raw SQL features (date arithmetic on
@@ -544,7 +548,8 @@ _PG_ONLY_ENDPOINTS = frozenset({
 
 def _make_cookies(client_id: int) -> dict[str, str]:
     """Build an httpx cookie dict containing a real, signed JWT."""
-    token = create_access_token(client_id=client_id, is_admin=False)
+    # Seeded clients default to token_version=1 (Client model default).
+    token = create_access_token(client_id=client_id, is_admin=False, token_version=1)
     return {"access_token": token}
 
 
@@ -673,3 +678,32 @@ async def test_admin_recompute_idor_blocked_for_non_admin(client):
     )
     # And the response body must not have leaked any client B sentinel.
     _assert_no_sentinel_leak(resp.text, "/api/admin/recompute-risk")
+
+
+@pytest.mark.asyncio
+async def test_foreign_portfolio_id_is_rejected(client):
+    """Client A passing client B's portfolio_id must get 404 — never B's data.
+
+    The new ``?portfolio_id=`` selector (resolve_portfolio) scopes by both id
+    AND client_id; this guards against an IDOR where A reads B's portfolio by
+    guessing its id."""
+    ac, ids = client
+    cookies = _make_cookies(ids["a_id"])
+
+    for path in ("summary", "holdings", "nav-series"):
+        resp = await ac.get(
+            f"/api/portfolio/{path}?portfolio_id={ids['b_portfolio_id']}",
+            cookies=cookies,
+        )
+        assert resp.status_code == 404, (
+            f"Expected 404 for A requesting B's portfolio on /{path}, "
+            f"got {resp.status_code}: {resp.text[:300]}"
+        )
+        _assert_no_sentinel_leak(resp.text, f"/api/portfolio/{path}?portfolio_id=B")
+
+    # And A's OWN portfolio_id must still resolve normally.
+    resp = await ac.get(
+        f"/api/portfolio/summary?portfolio_id={ids['a_portfolio_id']}",
+        cookies=cookies,
+    )
+    assert resp.status_code == 200, resp.text

@@ -37,6 +37,11 @@ from backend.services.risk_metrics_analysis import (
     ulcer_index,
     up_capture,
 )
+from backend.services.strategy_filter import (
+    normalize_strategy,
+    portfolio_clause,
+    strategy_params,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +49,24 @@ from backend.config import get_settings as _get_settings
 
 RISK_FREE_RATE = float(_get_settings().RISK_FREE_RATE)
 
-# In-memory cache for expensive composite index (TTL = 5 minutes)
+# In-memory cache for the expensive composite index (TTL = 5 minutes), keyed by
+# strategy (COMBINED / LEADERS / PASSIVE / IND11) so each filtered view caches
+# independently.
 _CACHE_TTL = 300
-_cache: dict[str, Any] = {"ts": 0, "agg": None, "port": None, "bench": None}
+_cache: dict[str, dict[str, Any]] = {}
 
 
-async def _fetch_aggregate_nav(db: AsyncSession) -> pd.DataFrame:
-    """Fetch daily aggregate NAV series across all active, non-admin clients.
+async def _fetch_aggregate_nav(
+    db: AsyncSession, strategy: str = "COMBINED",
+) -> pd.DataFrame:
+    """Fetch daily aggregate NAV series across the strategy's live portfolios.
 
     Returns DataFrame with columns: nav_date, total_aum, total_invested,
     total_benchmark, weighted_cash_pct — sorted by nav_date ascending.
+    Closed accounts are always excluded.
     """
-    result = await db.execute(text("""
+    join, where = portfolio_clause(strategy, alias="n")
+    result = await db.execute(text(f"""
         SELECT
             n.nav_date,
             SUM(n.nav_value)                             AS total_aum,
@@ -66,11 +77,13 @@ async def _fetch_aggregate_nav(db: AsyncSession) -> pd.DataFrame:
                  ELSE 0 END                              AS weighted_cash_pct
         FROM cpp_nav_series n
         JOIN cpp_clients c ON c.id = n.client_id
+        {join}
         WHERE c.is_active = true AND c.is_admin = false
+          {where}
         GROUP BY n.nav_date
         HAVING SUM(n.nav_value) > 0
         ORDER BY n.nav_date
-    """))
+    """), strategy_params(strategy))
     rows = result.fetchall()
     if not rows:
         return pd.DataFrame(columns=[
@@ -87,28 +100,32 @@ async def _fetch_aggregate_nav(db: AsyncSession) -> pd.DataFrame:
     )
 
 
-async def _get_cached_composite(db: AsyncSession) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
-    """Return (agg_df, port_composite, bench_composite) with 5-min TTL cache."""
+async def _get_cached_composite(
+    db: AsyncSession, strategy: str = "COMBINED",
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    """Return (agg_df, port_composite, bench_composite) with a 5-min TTL cache,
+    cached per strategy."""
+    strategy = normalize_strategy(strategy)
     now = time.time()
-    if now - _cache["ts"] < _CACHE_TTL and _cache["agg"] is not None:
-        return _cache["agg"], _cache["port"], _cache["bench"]
+    entry = _cache.get(strategy)
+    if entry and now - entry["ts"] < _CACHE_TTL and entry["agg"] is not None:
+        return entry["agg"], entry["port"], entry["bench"]
 
-    agg = await _fetch_aggregate_nav(db)
-    daily_rets = await _fetch_daily_composite_returns(db)
+    agg = await _fetch_aggregate_nav(db, strategy)
+    daily_rets = await _fetch_daily_composite_returns(db, strategy)
     if daily_rets.empty:
         port_s = pd.Series(dtype=float)
         bench_s = pd.Series(dtype=float)
     else:
         port_s, bench_s = _build_composite_from_returns(daily_rets)
 
-    _cache["ts"] = now
-    _cache["agg"] = agg
-    _cache["port"] = port_s
-    _cache["bench"] = bench_s
+    _cache[strategy] = {"ts": now, "agg": agg, "port": port_s, "bench": bench_s}
     return agg, port_s, bench_s
 
 
-async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
+async def _fetch_daily_composite_returns(
+    db: AsyncSession, strategy: str = "COMBINED",
+) -> pd.DataFrame:
     """Compute AUM-weighted, TWR-adjusted daily returns in SQL for speed.
 
     Uses window functions to get prev-day NAV and prev-day invested_amount per
@@ -137,7 +154,8 @@ async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
 
     Returns ~2000 rows (one per date) instead of ~366K rows.
     """
-    result = await db.execute(text("""
+    join, where = portfolio_clause(strategy, alias="n")
+    result = await db.execute(text(f"""
         WITH client_nav AS (
             SELECT
                 n.nav_date,
@@ -156,8 +174,10 @@ async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
                 ) AS prev_bench
             FROM cpp_nav_series n
             JOIN cpp_clients c ON c.id = n.client_id
+            {join}
             WHERE c.is_active = true AND c.is_admin = false
               AND n.nav_value > 0
+              {where}
         ),
         daily_rets AS (
             SELECT
@@ -184,7 +204,7 @@ async def _fetch_daily_composite_returns(db: AsyncSession) -> pd.DataFrame:
         FROM daily_rets
         GROUP BY nav_date
         ORDER BY nav_date
-    """))
+    """), strategy_params(strategy))
     rows = result.fetchall()
     if not rows:
         return pd.DataFrame(columns=["nav_date", "weighted_port_ret", "weighted_bench_ret"])
@@ -231,16 +251,16 @@ def _apply_range_filter(df: pd.DataFrame, range_filter: str) -> pd.DataFrame:
 
 
 async def get_aggregate_nav_series(
-    db: AsyncSession, range_filter: str = "ALL",
+    db: AsyncSession, range_filter: str = "ALL", strategy: str = "COMBINED",
 ) -> list[dict[str, Any]]:
     """Aggregate NAV series — shows actual total AUM + Nifty equivalent.
 
-    Portfolio line: actual total AUM across all clients (₹ crores).
+    Portfolio line: actual total AUM across the strategy's live portfolios (₹).
     Benchmark line: what that same money would be worth in Nifty,
     adjusted for the same cash inflows/outflows as the actual portfolio.
     Cash %: AUM-weighted average cash allocation.
     """
-    agg, _, bench_composite = await _get_cached_composite(db)
+    agg, _, bench_composite = await _get_cached_composite(db, strategy)
     if agg.empty:
         return []
 
@@ -305,13 +325,15 @@ async def get_aggregate_nav_series(
     return results
 
 
-async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
-    """Compute risk metrics on the aggregate (firm-wide) NAV series.
+async def get_aggregate_risk_metrics(
+    db: AsyncSession, strategy: str = "COMBINED",
+) -> dict[str, Any]:
+    """Compute risk metrics on the aggregate NAV series for a strategy.
 
-    Uses AUM-weighted daily returns across all clients to build a composite
-    index. This eliminates distortion from new clients joining the firm.
+    Uses AUM-weighted daily returns across the strategy's live portfolios to
+    build a composite index. This eliminates distortion from new clients joining.
     """
-    agg, port_series, bench_series = await _get_cached_composite(db)
+    agg, port_series, bench_series = await _get_cached_composite(db, strategy)
     if len(port_series) < 2:
         return _empty_risk_response()
 
@@ -401,9 +423,11 @@ async def get_aggregate_risk_metrics(db: AsyncSession) -> dict[str, Any]:
     }
 
 
-async def get_aggregate_performance_table(db: AsyncSession) -> list[dict[str, Any]]:
+async def get_aggregate_performance_table(
+    db: AsyncSession, strategy: str = "COMBINED",
+) -> list[dict[str, Any]]:
     """Multi-period performance table using AUM-weighted composite index."""
-    _, port_composite, bench_composite = await _get_cached_composite(db)
+    _, port_composite, bench_composite = await _get_cached_composite(db, strategy)
     if len(port_composite) < 2:
         return []
 

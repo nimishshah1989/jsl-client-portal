@@ -14,27 +14,34 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.aggregate_service import _get_cached_composite
+from backend.services.strategy_filter import portfolio_clause, strategy_params
 
 
-async def get_aggregate_allocation(db: AsyncSession) -> dict[str, Any]:
-    """Sector allocation across all active non-admin client holdings.
+async def get_aggregate_allocation(
+    db: AsyncSession, strategy: str = "COMBINED",
+) -> dict[str, Any]:
+    """Sector allocation across the strategy's live client holdings.
 
     Groups by symbol for ETFs (shows actual ETF names like NIFTYBEES),
     by sector for stocks, and lumps small sectors (<2%) into Others.
+    Closed accounts are always excluded.
     """
-    result = await db.execute(text("""
+    join, where = portfolio_clause(strategy, alias="h")
+    result = await db.execute(text(f"""
         SELECT
             h.symbol,
             COALESCE(h.sector, 'Other') AS sector,
             SUM(h.current_value)        AS total_value
         FROM cpp_holdings h
         JOIN cpp_clients c ON c.id = h.client_id
+        {join}
         WHERE c.is_active = true AND c.is_admin = false
           AND h.quantity > 0
           AND h.current_value > 0
+          {where}
         GROUP BY h.symbol, COALESCE(h.sector, 'Other')
         ORDER BY total_value DESC
-    """))
+    """), strategy_params(strategy))
     rows = result.fetchall()
     total = sum(float(r.total_value) for r in rows) if rows else 0.0
 
@@ -100,13 +107,15 @@ async def get_aggregate_allocation(db: AsyncSession) -> dict[str, Any]:
     return {"by_sector": main_sectors, "total_value": round(total, 0)}
 
 
-async def get_aggregate_monthly_returns(db: AsyncSession) -> dict[str, Any]:
+async def get_aggregate_monthly_returns(
+    db: AsyncSession, strategy: str = "COMBINED",
+) -> dict[str, Any]:
     """Monthly return heatmap data using AUM-weighted composite index.
 
     Uses the composite index (not raw AUM sums) to avoid distortion
     from new clients joining — which would show as huge monthly "returns".
     """
-    _, port_composite, _ = await _get_cached_composite(db)
+    _, port_composite, _ = await _get_cached_composite(db, strategy)
     if len(port_composite) < 30:
         return {"heatmap": [], "stats": _empty_monthly_stats()}
 

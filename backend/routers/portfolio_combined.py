@@ -15,8 +15,10 @@ from backend.services.audit_service import get_client_ip, get_request_id, log_au
 from backend.services.combined_analytics import (
     get_combined_allocation,
     get_combined_drawdown_series,
+    get_combined_growth,
     get_combined_performance_table,
     get_combined_risk_metrics,
+    get_combined_xirr,
 )
 from backend.services.combined_service import (
     get_combined_holdings,
@@ -127,4 +129,30 @@ async def combined_allocation(
     client_id: int = user["client_id"]
     data = await get_combined_allocation(db, client_id)
     await _audit(db, request, client_id, "HOLDINGS")
+    return data
+
+
+@router.get("/growth")
+async def combined_growth(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Combined 'what your money became': portfolio vs Nifty vs FD."""
+    client_id: int = user["client_id"]
+    data = await get_combined_growth(db, client_id)
+    await _audit(db, request, client_id, "PORTFOLIO")
+    return data
+
+
+@router.get("/xirr")
+async def combined_xirr(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Combined XIRR from corpus changes across live portfolios."""
+    client_id: int = user["client_id"]
+    data = await get_combined_xirr(db, client_id)
+    await _audit(db, request, client_id, "PORTFOLIO")
     return data

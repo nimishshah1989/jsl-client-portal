@@ -24,8 +24,10 @@ from backend.models.portfolio import Portfolio
 from backend.services.combined_analytics import (
     get_combined_allocation,
     get_combined_drawdown_series,
+    get_combined_growth,
     get_combined_performance_table,
     get_combined_risk_metrics,
+    get_combined_xirr,
 )
 from backend.services.combined_service import (
     get_combined_holdings,
@@ -178,3 +180,23 @@ async def test_combined_analytics_run_and_exclude_closed(combined_db):
     assert risk["max_drawdown"] == "0.00"   # monotonic up -> no drawdown
     assert isinstance(perf, list) and len(perf) >= 1
     assert len(dd) == 2                       # one point per nav date
+
+
+@pytest.mark.asyncio
+async def test_combined_growth_reconciles(combined_db):
+    async with combined_db() as s:
+        g = await get_combined_growth(s, client_id=1)
+    assert g["invested"] == "150.00"     # 100 + 50 (closed excluded)
+    assert g["portfolio"] == "175.00"    # 120 + 55
+    assert float(g["nifty"]) > 0
+    assert float(g["fd"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_combined_xirr_from_corpus(combined_db):
+    async with combined_db() as s:
+        x = await get_combined_xirr(s, client_id=1)
+    # Flows: +150 at inception, -175 terminal -> a positive XIRR.
+    assert x["total_invested"] == "150.00"
+    assert x["cash_flows_count"] == 2
+    assert x["xirr"] is not None and float(x["xirr"]) > 0

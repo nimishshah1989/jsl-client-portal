@@ -29,6 +29,7 @@ from backend.schemas.auth import (
     UserResponse,
 )
 from backend.services.audit_service import get_client_ip, get_request_id, log_audit
+from backend.services.merge_service import resolve_login_target
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +150,33 @@ async def login(
             },
         )
 
-    # Successful login — reset lockout counters (H3)
+    # Successful login — reset lockout counters on the credential actually used (H3)
     client.failed_login_count = 0
     client.locked_until = None
-    client.last_login = now
 
-    token = create_access_token(client.id, client.is_admin, client.token_version)
+    # PR7 unified-login alias: a retired (merged) username keeps working during the
+    # grace period and lands on the survivor's unified account — issue the JWT for
+    # the survivor and report the survivor's name/portfolio count. Returns `client`
+    # unchanged for normal (un-merged) logins.
+    effective = await resolve_login_target(db, client)
+    if effective is None:
+        # Retired alias whose unified account is unavailable (inactive/deleted/
+        # missing). Deny rather than strand the user on the emptied retired account.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "ACCOUNT_UNAVAILABLE",
+                "message": "This account is being consolidated. Please contact support.",
+            },
+        )
+    is_alias = effective.id != client.id
+
+    # Stamp access time on the account actually entered (the survivor for an alias
+    # login) so admin "last login" views and future survivor selection reflect real
+    # activity, and the retired row's last_login stays frozen.
+    effective.last_login = now
+
+    token = create_access_token(effective.id, effective.is_admin, effective.token_version)
     await db.flush()
 
     response.set_cookie(
@@ -178,17 +200,25 @@ async def login(
         max_age=COOKIE_MAX_AGE,
     )
 
+    # Attribute the LOGIN to the session's effective identity (the survivor for an
+    # alias login) so it joins up with the JWT-scoped activity that follows; record
+    # the alias used so the retired credential is still traceable.
     await log_audit(
-        db, user_id=client.id, action="LOGIN",
+        db, user_id=effective.id, action="LOGIN",
         resource_type="SYSTEM", ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent", "")[:500],
         request_id=get_request_id(request),
+        details=(
+            {"alias_login": True, "alias_client_id": client.id,
+             "alias_username": client.username}
+            if is_alias else None
+        ),
     )
 
     return LoginResponse(
-        client_name=client.name,
-        portfolio_count=len(client.portfolios),
-        is_admin=client.is_admin,
+        client_name=effective.name,
+        portfolio_count=len(effective.portfolios),
+        is_admin=effective.is_admin,
     )
 
 

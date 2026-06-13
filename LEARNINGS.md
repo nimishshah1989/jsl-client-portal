@@ -86,3 +86,17 @@
 **Category:** Environment / Ops
 **Learning:** Backend test deps aren't preinstalled in agent containers — `pip install` the set in `HANDOFF_MULTIPORTFOLIO.md §5` (incl. `aiosqlite`, and `cffi` to fix the system `cryptography` panic) before `pytest`. The suite runs entirely on SQLite (no RDS). RDS is **not** reachable from agent sessions directly — tunnel via EC2 (`INFRA_ACCESS.md`) or run scripts on the box (`clients.jslwealth.in` = `13.206.34.214`, app at `~/apps/client-portal`, `DATABASE_URL_SYNC` in `.env`, use `docker run postgres:15 --network host` for `psql`).
 **Impact:** CI (`tests.yml`) sets dummy `DATABASE_URL`/`JWT_SECRET` (format-valid, never dialled). Prod DB work is a gated, on-box step.
+
+---
+
+## L-011: A merge migration's verifier must check DURABLE invariants, not snapshots-in-time
+**Date:** 2026-06-13
+**Category:** Migrations / Data Integrity
+**Learning:** Building PR7a (client merge), a high-effort review caught several traps worth remembering:
+- **Don't re-validate cross-time facts.** The first `verify_merge_invariants` asserted every retired client still shares its survivor's *current* name. But a survivor's name can be edited post-merge — that would make a future, correct merge run fail forever. Name-grouping is now asserted **at merge time** (where it's the actual invariant); verify only checks **durable** facts (AUM/invested/portfolio-count unchanged, cross-table ownership, dangling FKs, zero orphans, no chains).
+- **INNER JOIN hides orphans.** An ownership check joined data→portfolio with an INNER JOIN, so a row pointing at a missing portfolio was invisible. Added an explicit dangling-FK (`portfolio_id NOT IN (...)`) check.
+- **`(client_id, portfolio_name)` is unique** and every portfolio is `"PMS Equity"` — re-parenting must rename (to `"PMS Equity (<code>)"`); `client_code` is the globally-unique disambiguator.
+- **Auth alias: deny > strand.** A retired login whose survivor is gone/disabled must be denied, not landed on the emptied retired account; and chains (`A→B→C`) must be followed to the terminal survivor (with a cycle guard).
+- **Engine-agnostic SQL** (no `DISTINCT ON`/`FILTER`/`ON CONFLICT`, no window-function reliance) lets the CI fixture run the *real* migration on SQLite — the strongest possible test. Pick exactly one row per group with a `MAX(id)`-at-`MAX(date)` subquery to match Postgres `DISTINCT ON` deterministically.
+- **CLI ordering:** write side-artifacts (credential CSV) **after** commit so a filesystem error can't roll back a verified merge; validate `--expect-*` guards up front so a typo aborts cleanly, not with a `Decimal` traceback.
+**Impact:** `merge_service.py` / `merge_clients_by_name.py` reflect all of the above; `tests/test_merge_service.py` seeds a prod-shaped DB (multi-code person + single-code + closed + admin + soft-deleted-same-name) and runs the real migration in CI, asserting every invariant + alias resolution.

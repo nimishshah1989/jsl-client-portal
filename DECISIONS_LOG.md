@@ -72,3 +72,17 @@
 5. CI: `tests.yml` runs `pytest` on every PR (added after finding two security suites silently red on main).
 **Consequences:** Delivered as a stack (PR1–PR6 + CI/cleanup; PR7 pending — see `HANDOFF_MULTIPORTFOLIO.md`). Closed-account exclusion makes the admin "Total AUM" tick down by the 3 closed accounts vs before. Per-portfolio endpoints now accept `?portfolio_id=` (ownership-checked). Tenant-isolation matrix is the authoritative endpoint count (currently 23) — bump it when adding `/api/portfolio` GET endpoints.
 
+---
+
+## ADR-008: PR7a — Unified-Login Merge Migration (code only; execution gated)
+**Date:** 2026-06-13
+**Status:** Accepted — code merged; the data migration is NOT run until the gated execution path completes.
+**Context:** Implementing the PR7 unified-login merge from ADR-007 §4. The migration re-parents a person's per-code clients onto one survivor. Three implementation realities forced concrete decisions.
+**Decision:**
+1. **Re-parent + rename.** Every portfolio is named `"PMS Equity"`, and `cpp_portfolios` has `UNIQUE(client_id, portfolio_name)`. Folding two onto one survivor would collide, so the migration renames re-parented portfolios to `"PMS Equity (<client_code>)"` — `client_code` is globally unique (`uq_cpp_portfolios_client_code`), so the result is collision-proof and the origin stays legible. Data-table re-parents only touch `client_id` (`portfolio_id` is unchanged, so their unique keys never collide).
+2. **Reconcile-before-commit.** `merge_clients_by_name` does all writes through the caller's session and flushes but never commits; the CLI commits only after `verify_merge_invariants` passes (AUM/invested/current/portfolio-count invariant, cross-table ownership, dangling-portfolio refs, zero orphans, no merge chains). Any failure rolls back. The whole thing is engine-agnostic so the CI fixture runs the **real** migration on SQLite.
+3. **Survivor pick is pure + active-first.** `pick_survivor` = (active beats disabled, then most-recent `last_login`, then lowest `id`) — the live code the person already uses.
+4. **Auth alias denies, never strands.** A retired username resolves through `merged_into` (following multi-round chains, with a cycle guard) to the terminal survivor and lands there; if that unified account is unavailable, login is **denied** (403) rather than landing on the emptied retired account. Alias logins stamp the survivor's `last_login` and attribute the LOGIN audit to the survivor (with the alias recorded), so the trail and "last seen" stay correct.
+5. **Audit is durable.** `cpp_merge_audit` FKs use NO delete action (not CASCADE) — the reversibility record must survive; the system soft-deletes clients anyway.
+**Consequences:** PR7a is safe to merge but its SQL (`scripts/migrate_add_merge_columns.sql`) is additive and MUST be applied to prod **before** the code deploys (the ORM now maps `cpp_clients.merged_into`) — same operational ordering PR1 used. Execution stays gated: dry-run → RDS snapshot → staging restore + reconcile → prod. PR7b (ingestion group-by-name) only after the migration has run.
+

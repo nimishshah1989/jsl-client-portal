@@ -11,6 +11,7 @@ from backend.models.upload_log import UploadLog
 from backend.models.cash_flow import CashFlow
 from backend.models.audit_log import AuditLog
 from backend.models.consent import ClientConsent
+from backend.models.merge_audit import MergeAudit
 
 __all__ = [
     "Client",
@@ -24,4 +25,5 @@ __all__ = [
     "CashFlow",
     "AuditLog",
     "ClientConsent",
+    "MergeAudit",
 ]

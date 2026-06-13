@@ -93,11 +93,11 @@ docker run --rm -i --network host -v "$PWD/scripts:/scripts" postgres:15 psql "$
 ---
 
 ## 6. PR7 build checklist
-- [ ] PR7a schema migration SQL + model column (`Client.merged_into`)
-- [ ] `merge_service.py` (`pick_survivor`, `merge_clients_by_name`, `verify_merge_invariants`)
-- [ ] `scripts/merge_clients_by_name.py` (`--dry-run`, transactional, recon‑before‑commit)
-- [ ] auth alias (login resolves `merged_into` → survivor)
-- [ ] `tests/test_merge_service.py` (seeded prod‑shaped DB; asserts all invariants; in CI)
-- [ ] EXECUTION: dry‑run → snapshot → staging run + reconcile → prod run + reconcile → credential CSV
+- [x] PR7a schema migration SQL + model column (`Client.merged_into`) — `scripts/migrate_add_merge_columns.sql` + `cpp_merge_audit` (`models/merge_audit.py`). **Additive; apply to prod BEFORE deploying PR7a code (ORM now maps `merged_into`) — same ordering as PR1.**
+- [x] `merge_service.py` (`pick_survivor` [active‑first], `capture_baseline`, `merge_clients_by_name`, `verify_merge_invariants`, `resolve_login_target`)
+- [x] `scripts/merge_clients_by_name.py` (`--dry-run` default, transactional, recon‑before‑commit, `--expect-aum/--expect-invested` guards, credential CSV after commit)
+- [x] auth alias (login resolves `merged_into` → survivor, follows chains, denies if unified acct unavailable; stamps survivor `last_login`; audits under survivor)
+- [x] `tests/test_merge_service.py` (seeded prod‑shaped DB: multi‑code + single‑code + closed + admin + soft‑deleted‑same‑name; runs the REAL migration; asserts every invariant + alias resolution + idempotency + chain/cycle; **in CI**). Suite now **465 passing**.
+- [ ] EXECUTION (operator + AWS): dry‑run on prod → RDS snapshot → restore to staging + run + reconcile → prod run + reconcile → credential CSV. Use `--expect-aum 905234707.58 --expect-invested 651769759.97` as guard rails.
 - [ ] PR7b: ingestion `find_or_create_client` by name (post‑migration) + idempotency + new‑client report + name‑override map
 - [ ] (polish) PR6 follow‑ups: combined summary `ytd_return`/benchmark fields; combined holdings cash‑breakdown rows

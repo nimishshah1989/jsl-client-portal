@@ -250,6 +250,17 @@ async def logout(
         samesite="strict",
         path="/",
     )
+    # Also clear any impersonation cookie. get_current_user PREFERS
+    # impersonation_token over access_token, so a stale one left behind here would
+    # hijack every subsequent request (login succeeds but /me 401s on the old
+    # token) until the browser cookie is manually cleared.
+    response.delete_cookie(
+        key="impersonation_token",
+        httponly=True,
+        secure=_SECURE_COOKIE,
+        samesite="strict",
+        path="/",
+    )
     return {"message": "logged out"}
 
 

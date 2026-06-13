@@ -160,6 +160,9 @@ async def test_combined_summary_reconciles(combined_db):
     assert summ["current_value"] == "175.00"
     assert summ["profit_amount"] == "25.00"
     assert summ["portfolio_count"] == 2   # closed excluded
+    # YTD must be present (the dashboard card showed "--" before this) and, for a
+    # series that rose within the year, positive.
+    assert "ytd_return" in summ and float(summ["ytd_return"]) > 0
 
 
 @pytest.mark.asyncio

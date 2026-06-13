@@ -93,7 +93,8 @@ def _empty_risk() -> dict[str, Any]:
     ]
     out: dict[str, Any] = {k: "0.00" for k in keys}
     out.update({"max_consecutive_loss": 0, "win_months": 0, "loss_months": 0,
-                "max_dd_start": None, "max_dd_end": None, "max_dd_recovery": None})
+                "max_dd_start": None, "max_dd_end": None, "max_dd_recovery": None,
+                "monthly_returns": []})
     return out
 
 
@@ -133,6 +134,14 @@ async def get_combined_risk_metrics(db: AsyncSession, client_id: int) -> dict[st
         streak = streak + 1 if loss else 0
         mx = max(mx, streak)
 
+    _MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    monthly_returns = [
+        {"year": ts.year, "month": ts.month - 1, "return_pct": round(float(r), 2),
+         "label": f"{_MON[ts.month - 1]} {ts.year}"}
+        for ts, r in monthly.items()
+    ]
+
     cash = df["cash_amt"].to_numpy() / np.where(df["nav"].to_numpy() > 0, df["nav"].to_numpy(), 1) * 100
 
     return {
@@ -156,6 +165,7 @@ async def get_combined_risk_metrics(db: AsyncSession, client_id: int) -> dict[st
         "max_consecutive_loss": int(mx),
         "win_months": int(len(pos)),
         "loss_months": int(len(neg)),
+        "monthly_returns": monthly_returns,
         "avg_cash_held": _r2(float(np.mean(cash))) if len(cash) else "0.00",
         "max_cash_held": _r2(float(np.max(cash))) if len(cash) else "0.00",
         "current_cash": _r2(float(cash[-1])) if len(cash) else "0.00",

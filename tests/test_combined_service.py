@@ -21,6 +21,7 @@ from backend.models.client import Client
 from backend.models.holding import Holding
 from backend.models.nav_series import NavSeries
 from backend.models.portfolio import Portfolio
+from backend.models.transaction import Transaction
 from backend.services.combined_analytics import (
     get_combined_allocation,
     get_combined_drawdown_series,
@@ -33,6 +34,7 @@ from backend.services.combined_service import (
     get_combined_holdings,
     get_combined_nav_series,
     get_combined_summary,
+    get_combined_transactions,
     merge_holdings,
 )
 
@@ -86,7 +88,8 @@ async def combined_db():
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp.name}")
-    tables = [Client.__table__, Portfolio.__table__, NavSeries.__table__, Holding.__table__]
+    tables = [Client.__table__, Portfolio.__table__, NavSeries.__table__,
+              Holding.__table__, Transaction.__table__]
     async with engine.begin() as conn:
         await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=tables))
 
@@ -121,6 +124,16 @@ async def combined_db():
             hold(10, "RELIANCE", "10", "120"), hold(10, "TCS", "5", "60"),
             hold(11, "RELIANCE", "4", "48"),   hold(11, "INFY", "3", "30"),
             hold(12, "RELIANCE", "999", "9999"),  # CLOSED — excluded
+        ])
+
+        def txn(pid, d, sym):
+            return Transaction(client_id=1, portfolio_id=pid, txn_date=d, txn_type="BUY",
+                               symbol=sym, asset_class="EQUITY", quantity=Decimal("1"),
+                               price=Decimal("10"), amount=Decimal("10"))
+        s.add_all([
+            txn(10, dt.date(2024, 2, 1), "RELIANCE"), txn(10, dt.date(2024, 3, 1), "TCS"),
+            txn(11, dt.date(2024, 2, 15), "INFY"),
+            txn(12, dt.date(2024, 2, 20), "RELIANCE"),  # CLOSED — excluded
         ])
         await s.commit()
         try:
@@ -200,3 +213,20 @@ async def test_combined_xirr_from_corpus(combined_db):
     assert x["total_invested"] == "150.00"
     assert x["cash_flows_count"] == 2
     assert x["xirr"] is not None and float(x["xirr"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_combined_transactions_excludes_closed(combined_db):
+    async with combined_db() as s:
+        page = await get_combined_transactions(s, client_id=1, page=1, per_page=50)
+    # 3 live txns (pids 10,10,11); the closed-portfolio txn (pid 12) is excluded.
+    assert page["total"] == 3
+    assert {t["symbol"] for t in page["items"]} == {"RELIANCE", "TCS", "INFY"}
+
+
+@pytest.mark.asyncio
+async def test_combined_risk_includes_monthly_heatmap(combined_db):
+    async with combined_db() as s:
+        risk = await get_combined_risk_metrics(s, client_id=1)
+    assert "monthly_returns" in risk
+    assert isinstance(risk["monthly_returns"], list)

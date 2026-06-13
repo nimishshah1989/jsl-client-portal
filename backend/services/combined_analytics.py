@@ -17,8 +17,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_settings
-from backend.routers.helpers import date_cutoff
-from backend.services.combined_service import fetch_combined_nav_df
+from backend.routers.helpers import FD_RATE, date_cutoff
+from backend.services.combined_service import _nifty_equiv, fetch_combined_nav_df
+from backend.services.xirr_service import compute_xirr, extract_cash_flows_from_corpus
 from backend.services.risk_metrics import (
     absolute_return,
     annualized_volatility,
@@ -243,3 +244,62 @@ async def get_combined_allocation(db: AsyncSession, client_id: int) -> dict[str,
         for r in rows
     ]
     return {"by_sector": by_sector}
+
+
+async def get_combined_growth(db: AsyncSession, client_id: int) -> dict[str, Any]:
+    """'What your money became' across live portfolios: portfolio vs Nifty vs FD.
+
+    Nifty uses the virtual-units method on the combined corpus; FD compounds
+    each combined inflow from its date (cash-flow-timed), matching the
+    per-portfolio growth methodology.
+    """
+    df = await fetch_combined_nav_df(db, client_id)
+    if df.empty:
+        return {}
+    invested = float(df["invested"].iloc[-1])
+    current = float(df["nav"].iloc[-1])
+    nifty = float(_nifty_equiv(df)[-1])
+    inception = df["nav_date"].iloc[0]
+    latest = df["nav_date"].iloc[-1]
+    years = max((latest - inception).days / 365.25, 0.0)
+
+    fd_rate = float(FD_RATE) / 100.0
+    inv = df["invested"].to_numpy()
+    deltas = np.diff(inv, prepend=0.0)
+    deltas[0] = inv[0]
+    fd = 0.0
+    for d, amt in zip(df["nav_date"].to_numpy(), deltas):
+        if amt != 0:
+            yrs = max((latest - (d.item() if hasattr(d, "item") else d)).days / 365.25, 0.0)
+            fd += float(amt) * (1.0 + fd_rate) ** yrs
+
+    return {
+        "invested": _r2(invested), "portfolio": _r2(current),
+        "nifty": _r2(nifty), "fd": _r2(fd),
+        "inception_date": inception.isoformat(), "latest_date": latest.isoformat(),
+        "years": _r2(years),
+    }
+
+
+async def get_combined_xirr(db: AsyncSession, client_id: int) -> dict[str, Any]:
+    """Client-wide XIRR from combined corpus changes across live portfolios."""
+    df = await fetch_combined_nav_df(db, client_id)
+    if df.empty:
+        return {"xirr": None, "cash_flows_count": 0, "first_investment_date": None,
+                "total_invested": "0.00", "cash_flow_source": "inferred"}
+    nav_df = pd.DataFrame({
+        "date": pd.to_datetime(df["nav_date"]),
+        "corpus": df["invested"].astype(float),
+        "nav": df["nav"].astype(float),
+    })
+    flows = extract_cash_flows_from_corpus(nav_df)
+    xirr = compute_xirr(flows)
+    inflows = [f for f in flows if f[1] > 0]
+    first = min((f[0] for f in inflows), default=None)
+    return {
+        "xirr": _r2(xirr) if xirr is not None else None,
+        "cash_flows_count": len(flows),
+        "first_investment_date": first.date().isoformat() if first is not None and hasattr(first, "date") else (first.isoformat() if first else None),
+        "total_invested": _r2(float(df["invested"].iloc[-1])),
+        "cash_flow_source": "inferred",
+    }

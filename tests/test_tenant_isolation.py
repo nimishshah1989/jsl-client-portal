@@ -542,8 +542,9 @@ def _expected_endpoint_count() -> int:
       /api/portfolio/combined/growth
       /api/portfolio/combined/xirr
       /api/portfolio/combined/transactions
+      /api/portfolio/combined/methodology
     """
-    return 22
+    return 23
 
 
 # Endpoints that use Postgres-specific raw SQL features (date arithmetic on

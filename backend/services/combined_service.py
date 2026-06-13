@@ -21,10 +21,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import select, text
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.holding import Holding
+from backend.models.transaction import Transaction
 from backend.routers.helpers import date_cutoff
 from backend.services.risk_metrics import cagr
 
@@ -184,6 +185,57 @@ async def get_combined_summary(db: AsyncSession, client_id: int) -> dict[str, An
         if hasattr(df["nav_date"].iloc[-1], "isoformat") else str(df["nav_date"].iloc[-1]),
         "portfolio_count": len(await _live_portfolio_ids(db, client_id)),
     }
+
+
+async def get_combined_transactions(
+    db: AsyncSession,
+    client_id: int,
+    page: int = 1,
+    per_page: int = 50,
+    txn_type: str | None = None,
+    asset_class: str | None = None,
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+) -> dict[str, Any]:
+    """Paginated transactions across the client's live portfolios."""
+    live = await _live_portfolio_ids(db, client_id)
+    if not live:
+        return {"items": [], "total": 0, "page": page, "per_page": per_page, "total_pages": 1}
+
+    base = (
+        select(Transaction)
+        .where(Transaction.client_id == client_id)
+        .where(Transaction.portfolio_id.in_(live))
+    )
+    if txn_type:
+        base = base.where(Transaction.txn_type == txn_type.upper())
+    if asset_class:
+        base = base.where(Transaction.asset_class == asset_class.upper())
+    if date_from:
+        base = base.where(Transaction.txn_date >= date_from)
+    if date_to:
+        base = base.where(Transaction.txn_date <= date_to)
+
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    offset = (page - 1) * per_page
+    txns = list((await db.execute(
+        base.order_by(desc(Transaction.txn_date), desc(Transaction.id)).offset(offset).limit(per_page)
+    )).scalars().all())
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    items = [
+        {
+            "id": t.id,
+            "txn_date": t.txn_date.isoformat() if hasattr(t.txn_date, "isoformat") else str(t.txn_date),
+            "txn_type": t.txn_type, "symbol": t.symbol, "asset_name": t.asset_name,
+            "asset_class": t.asset_class,
+            "quantity": _d2(t.quantity) if t.quantity is not None else None,
+            "price": _d2(t.price) if t.price is not None else None,
+            "amount": _d2(t.amount),
+        }
+        for t in txns
+    ]
+    return {"items": items, "total": total, "page": page, "per_page": per_page, "total_pages": total_pages}
 
 
 def merge_holdings(rows: list[dict]) -> list[dict]:

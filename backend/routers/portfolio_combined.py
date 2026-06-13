@@ -20,10 +20,13 @@ from backend.services.combined_analytics import (
     get_combined_risk_metrics,
     get_combined_xirr,
 )
+import datetime as dt
+
 from backend.services.combined_service import (
     get_combined_holdings,
     get_combined_nav_series,
     get_combined_summary,
+    get_combined_transactions,
 )
 
 logger = logging.getLogger(__name__)
@@ -155,4 +158,25 @@ async def combined_xirr(
     client_id: int = user["client_id"]
     data = await get_combined_xirr(db, client_id)
     await _audit(db, request, client_id, "PORTFOLIO")
+    return data
+
+
+@router.get("/transactions")
+async def combined_transactions(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    txn_type: str | None = Query(None),
+    asset_class: str | None = Query(None),
+    date_from: dt.date | None = Query(None),
+    date_to: dt.date | None = Query(None),
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Paginated transactions across the client's live portfolios."""
+    client_id: int = user["client_id"]
+    data = await get_combined_transactions(
+        db, client_id, page, per_page, txn_type, asset_class, date_from, date_to,
+    )
+    await _audit(db, request, client_id, "TRANSACTIONS")
     return data

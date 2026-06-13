@@ -62,3 +62,27 @@
 ---
 
 <!-- Claude will append new learnings here during build sessions -->
+
+---
+
+## L-008: Two security test suites were silently RED on main (no CI ran them)
+**Date:** 2026-06-13
+**Category:** Testing / CI
+**Learning:** `test_tenant_isolation` and `test_impersonation` were both failing on `main` and nobody knew — there was no CI running `pytest` on PRs. `test_impersonation` called the auth dependencies without a DB session, but auth had since been refactored to re-validate the token against the DB (`_validate_client_from_db`, C5); the tenant suite's `_make_cookies` omitted the now-required `token_version`. Both were repaired (the impersonation one now seeds an in-memory session and exercises the real C5 path).
+**Impact:** Added `.github/workflows/tests.yml` (PR gate). **Always run the full suite — not just compile — and treat a stale security test as a real gap.** When a dependency's signature/behaviour changes, grep its callers in tests.
+
+---
+
+## L-009: Reconcile combined/aggregate against sum-of-parts; ₹ adds, ratios don't
+**Date:** 2026-06-13
+**Category:** Math / Aggregation
+**Learning:** For the Combined view (and admin aggregate), only ₹ quantities are additive (AUM, invested, holding value/qty). Returns/ratios (CAGR, Sharpe, beta, XIRR, max DD) must be **recomputed from the combined TWR/composite series**, never summed. Every aggregate function ships with a reconciliation test asserting `combined == sum of the client's live portfolios`. Two edges bit us: (a) the shared `max_drawdown()` argmax-errors on a monotonic series (trough at index 0) — compute drawdown inline; (b) SQLite returns `nav_date` as a string while Postgres returns a `date` — normalise with `pd.to_datetime(...).dt.date` so date math works in both tests and prod.
+**Impact:** `combined_service.py` / `combined_analytics.py` use inline drawdown + date normalisation; reconciliation tests guard the invariant.
+
+---
+
+## L-010: Agent sessions need a test-deps bootstrap; RDS only reachable via EC2
+**Date:** 2026-06-13
+**Category:** Environment / Ops
+**Learning:** Backend test deps aren't preinstalled in agent containers — `pip install` the set in `HANDOFF_MULTIPORTFOLIO.md §5` (incl. `aiosqlite`, and `cffi` to fix the system `cryptography` panic) before `pytest`. The suite runs entirely on SQLite (no RDS). RDS is **not** reachable from agent sessions directly — tunnel via EC2 (`INFRA_ACCESS.md`) or run scripts on the box (`clients.jslwealth.in` = `13.206.34.214`, app at `~/apps/client-portal`, `DATABASE_URL_SYNC` in `.env`, use `docker run postgres:15 --network host` for `psql`).
+**Impact:** CI (`tests.yml`) sets dummy `DATABASE_URL`/`JWT_SECRET` (format-valid, never dialled). Prod DB work is a gated, on-box step.

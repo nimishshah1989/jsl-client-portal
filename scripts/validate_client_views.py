@@ -74,9 +74,13 @@ def _flag(cond: bool) -> str:
 # ── DB helpers (read-only) ──
 
 async def people_groups(db: AsyncSession) -> dict[str, list[dict]]:
-    """Non-admin / non-deleted clients grouped by exact name (the merge grouping)."""
+    """Non-admin / non-deleted clients grouped by exact name (the merge grouping).
+
+    Does NOT reference cpp_clients.merged_into, so this runs on the CURRENT prod
+    schema (pre-merge) as well as post-merge.
+    """
     rows = (await db.execute(text("""
-        SELECT id, client_code, name, username, merged_into
+        SELECT id, client_code, name, username
         FROM cpp_clients
         WHERE is_deleted = false AND is_admin = false
         ORDER BY name, id

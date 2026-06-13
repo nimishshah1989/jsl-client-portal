@@ -26,6 +26,7 @@ from backend.services.combined_analytics import (
     get_combined_allocation,
     get_combined_drawdown_series,
     get_combined_growth,
+    get_combined_methodology,
     get_combined_performance_table,
     get_combined_risk_metrics,
     get_combined_xirr,
@@ -230,3 +231,15 @@ async def test_combined_risk_includes_monthly_heatmap(combined_db):
         risk = await get_combined_risk_metrics(s, client_id=1)
     assert "monthly_returns" in risk
     assert isinstance(risk["monthly_returns"], list)
+
+
+@pytest.mark.asyncio
+async def test_combined_methodology_shape(combined_db):
+    async with combined_db() as s:
+        m = await get_combined_methodology(s, client_id=1)
+        risk = await get_combined_risk_metrics(s, client_id=1)
+    assert m["benchmark_name"] == "NIFTY 50"
+    assert m["trading_days_per_year"] == 252
+    # CAGR worked-example value matches the combined risk computation.
+    assert m["metrics"]["cagr"]["value"] == risk["cagr"]
+    assert "inputs" in m["metrics"]["sharpe_ratio"]

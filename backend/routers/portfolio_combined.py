@@ -16,6 +16,7 @@ from backend.services.combined_analytics import (
     get_combined_allocation,
     get_combined_drawdown_series,
     get_combined_growth,
+    get_combined_methodology,
     get_combined_performance_table,
     get_combined_risk_metrics,
     get_combined_xirr,
@@ -179,4 +180,17 @@ async def combined_transactions(
         db, client_id, page, per_page, txn_type, asset_class, date_from, date_to,
     )
     await _audit(db, request, client_id, "TRANSACTIONS")
+    return data
+
+
+@router.get("/methodology")
+async def combined_methodology(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Methodology page for the combined view (combined worked numbers)."""
+    client_id: int = user["client_id"]
+    data = await get_combined_methodology(db, client_id)
+    await _audit(db, request, client_id, "PORTFOLIO")
     return data

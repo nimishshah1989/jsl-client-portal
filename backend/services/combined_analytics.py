@@ -313,3 +313,57 @@ async def get_combined_xirr(db: AsyncSession, client_id: int) -> dict[str, Any]:
         "total_invested": _r2(float(df["invested"].iloc[-1])),
         "cash_flow_source": "inferred",
     }
+
+
+async def get_combined_methodology(db: AsyncSession, client_id: int) -> dict[str, Any]:
+    """Methodology page for the combined view — same formulae as per-portfolio,
+    populated with the combined worked numbers."""
+    df = await fetch_combined_nav_df(db, client_id)
+    if df.empty:
+        return {}
+    risk = await get_combined_risk_metrics(db, client_id)
+    xirr = await get_combined_xirr(db, client_id)
+
+    rf = _r2(RISK_FREE_RATE)
+    nav_start = _r2(float(df["nav"].iloc[0]))
+    nav_end = _r2(float(df["nav"].iloc[-1]))
+    days = str((df["nav_date"].iloc[-1] - df["nav_date"].iloc[0]).days)
+    daily_std = _r2(float(risk["volatility"]) / (252 ** 0.5)) if float(risk["volatility"]) else "0.00"
+
+    def met(value, benchmark_value=None, **inputs):
+        return {"value": value, "benchmark_value": benchmark_value, "inputs": inputs}
+
+    metrics = {
+        "cagr": met(risk["cagr"], risk.get("bench_cagr"),
+                    start_value=nav_start, end_value=nav_end, days=days),
+        "xirr": met(xirr.get("xirr"), None,
+                    total_invested=xirr.get("total_invested"),
+                    cash_flows=str(xirr.get("cash_flows_count"))),
+        "volatility": met(risk["volatility"], None,
+                          daily_std=daily_std, trading_days="252"),
+        "sharpe_ratio": met(risk["sharpe_ratio"], None,
+                            portfolio_cagr=risk["cagr"], risk_free_rate=rf,
+                            portfolio_volatility=risk["volatility"]),
+        "sortino_ratio": met(risk["sortino_ratio"], None,
+                             portfolio_cagr=risk["cagr"], risk_free_rate=rf),
+        "max_drawdown": met(risk["max_drawdown"], None),
+        "alpha": met(risk["alpha"], None,
+                     beta=risk["beta"], portfolio_cagr=risk["cagr"],
+                     bench_cagr=risk["bench_cagr"], risk_free_rate=rf),
+        "beta": met(risk["beta"], None),
+        "information_ratio": met(risk["information_ratio"], None,
+                                 tracking_error=risk["tracking_error"]),
+        "tracking_error": met(risk["tracking_error"], None),
+        "up_capture": met(risk["up_capture"], None),
+        "down_capture": met(risk["down_capture"], None),
+        "ulcer_index": met(risk["ulcer_index"], None),
+        "market_correlation": met(risk["market_correlation"], None),
+        "monthly_hit_rate": met(risk["monthly_hit_rate"], None),
+    }
+    return {
+        "as_of_date": df["nav_date"].iloc[-1].isoformat(),
+        "risk_free_rate": rf,
+        "trading_days_per_year": 252,
+        "benchmark_name": "NIFTY 50",
+        "metrics": metrics,
+    }

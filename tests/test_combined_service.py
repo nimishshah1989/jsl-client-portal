@@ -21,6 +21,12 @@ from backend.models.client import Client
 from backend.models.holding import Holding
 from backend.models.nav_series import NavSeries
 from backend.models.portfolio import Portfolio
+from backend.services.combined_analytics import (
+    get_combined_allocation,
+    get_combined_drawdown_series,
+    get_combined_performance_table,
+    get_combined_risk_metrics,
+)
 from backend.services.combined_service import (
     get_combined_holdings,
     get_combined_nav_series,
@@ -149,3 +155,26 @@ async def test_combined_holdings_merge_excludes_closed(combined_db):
     assert by_sym["RELIANCE"]["quantity"] == "14.00"
     assert by_sym["RELIANCE"]["current_value"] == "168.00"
     assert set(by_sym) == {"RELIANCE", "TCS", "INFY"}
+
+
+@pytest.mark.asyncio
+async def test_combined_allocation_excludes_closed_and_sums(combined_db):
+    async with combined_db() as s:
+        alloc = await get_combined_allocation(s, client_id=1)
+    # All seeded holdings have no sector -> 'Other'. Live total 120+60+48+30 = 258
+    # (the closed portfolio's 9999 is excluded).
+    assert alloc["by_sector"] == [{"name": "Other", "value": "258.00", "weight_pct": "100.00"}]
+
+
+@pytest.mark.asyncio
+async def test_combined_analytics_run_and_exclude_closed(combined_db):
+    async with combined_db() as s:
+        risk = await get_combined_risk_metrics(s, client_id=1)
+        perf = await get_combined_performance_table(s, client_id=1)
+        dd = await get_combined_drawdown_series(s, client_id=1)
+    # Built from the combined TWR series (live only: 150 -> 175), no exceptions.
+    assert "cagr" in risk and "max_drawdown" in risk
+    assert float(risk["cagr"]) > 0          # 150 -> 175 is a gain
+    assert risk["max_drawdown"] == "0.00"   # monotonic up -> no drawdown
+    assert isinstance(perf, list) and len(perf) >= 1
+    assert len(dd) == 2                       # one point per nav date

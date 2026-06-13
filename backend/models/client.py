@@ -83,6 +83,16 @@ class Client(Base):
         Integer, ForeignKey("cpp_clients.id", ondelete="SET NULL"), nullable=True,
     )
 
+    # PR7 unified-login merge: when several per-code clients are the same person
+    # they are collapsed into a single survivor. Non-survivors are soft-retired by
+    # pointing merged_into at the survivor's id (is_active is kept so the retired
+    # username still works during the alias grace period — login then issues the
+    # JWT for the survivor). NULL = a normal, un-merged client. See
+    # backend/services/merge_service.py.
+    merged_into: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("cpp_clients.id", ondelete="SET NULL"), nullable=True,
+    )
+
     # Relationships
     portfolios = relationship("Portfolio", back_populates="client", lazy="selectin")
 

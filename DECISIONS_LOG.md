@@ -58,3 +58,17 @@
 **Decision:** Adopt a 4-sprint remediation plan tracked in `PRODUCTION_READINESS.md` (single source of truth, read at every session start). Sprint 1 (safety net) and Sprint 2 (math + accuracy) are blocking; Sprints 3 (DPDP rights) and 4 (quality) are pre-launch but lower urgency. Auth/cookie/JWT changes run sequentially due to overlapping files; math/test/quality streams run in parallel via worktree-isolated sub-agents.
 **Consequences:** ~10–14 engineering days to defensible production. Each fix lands as its own PR gated by `/code-review` + `/security-review` + `/verify`. Pre-launch verification gate (12 manual checks against BJ53 reference data and Market Pulse) is non-negotiable.
 
+---
+
+## ADR-007: Multi-Portfolio per Person, Strategy Tagging & Combined View
+**Date:** 2026-06-13
+**Status:** Accepted — Combined view shipped; unified-login migration (PR7) pending.
+**Context:** The PMS list is really 2+ strategy sleeves per person — a code ending `PASS` is Passive, `IND` is the IND11 strategy, else Leaders; `CLOSE`/`CLO` codes are archived. One human (e.g. Bhadresh = 6 codes) currently has 6 separate logins because each UCC is its own `cpp_clients` row. Operator wants: each portfolio tagged by strategy; an admin Leaders/Passive/IND11/Combined classification; and eventually one login per person seeing all their portfolios + a Combined default.
+**Decision:**
+1. Tag `cpp_portfolios` with `client_code`/`strategy`/`is_closed`; derivation is the single source of truth in `services/classification.py`, shared by backfill + ingestion. Closed excluded from all live/Combined views.
+2. Combined view = sum of a person's **live** portfolios; ₹ quantities additive, returns/ratios recomputed from a combined TWR/composite (never summed). New `/api/portfolio/combined/*` endpoints, all client-scoped + reconciled (combined == sum of parts).
+3. Group a person's codes by **exact full-name match** (interim; manual override map for spelling drift / same-name collisions).
+4. Unified login (PR7): one login per person; **survivor = the code they already log in with**; retired logins aliased via `merged_into` (grace period); migration is transactional + reconciliation-before-commit, proven on a CI fixture, then staged behind an RDS snapshot. Ingestion switches to group-by-name only AFTER the migration runs.
+5. CI: `tests.yml` runs `pytest` on every PR (added after finding two security suites silently red on main).
+**Consequences:** Delivered as a stack (PR1–PR6 + CI/cleanup; PR7 pending — see `HANDOFF_MULTIPORTFOLIO.md`). Closed-account exclusion makes the admin "Total AUM" tick down by the 3 closed accounts vs before. Per-portfolio endpoints now accept `?portfolio_id=` (ownership-checked). Tenant-isolation matrix is the authoritative endpoint count (currently 23) — bump it when adding `/api/portfolio` GET endpoints.
+

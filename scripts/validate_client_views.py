@@ -109,7 +109,9 @@ async def validate_portfolio(db: AsyncSession, client_id: int, p: dict) -> dict:
         FROM cpp_nav_series WHERE client_id = :cid AND portfolio_id = :pid
     """), {"cid": client_id, "pid": pid})).mappings().one()
     latest = (await db.execute(text("""
-        SELECT invested_amount, current_value, nav_value, cash_pct
+        SELECT invested_amount, current_value, nav_value, cash_pct,
+               coalesce(etf_value,0) AS etf, coalesce(cash_value,0) AS cash,
+               coalesce(bank_balance,0) AS bank
         FROM cpp_nav_series WHERE client_id = :cid AND portfolio_id = :pid
         ORDER BY nav_date DESC LIMIT 1
     """), {"cid": client_id, "pid": pid})).mappings().one_or_none()
@@ -130,6 +132,31 @@ async def validate_portfolio(db: AsyncSession, client_id: int, p: dict) -> dict:
         FROM cpp_holdings WHERE client_id=:cid AND portfolio_id=:pid AND quantity > 0
     """), {"cid": client_id, "pid": pid})).mappings().one()
 
+    # Definitive empty-holdings classification: does any equity position remain
+    # OPEN per the transactions (net buys > sells)? If yes + holdings empty → real
+    # bug. If everything nets to zero AND the NAV file shows ~no equity at market →
+    # genuinely liquidated to cash (holdings correctly empty; only a cash row missing).
+    open_syms = open_qty = None
+    equity_mkt = None
+    if int(hold["n"] or 0) == 0 and int(txn_n) > 0 and not p["is_closed"]:
+        op = (await db.execute(text("""
+            SELECT symbol, SUM(CASE
+                     WHEN txn_type IN ('BUY','BONUS','CORPUS_IN','SWITCH_IN','SIP') THEN coalesce(quantity,0)
+                     WHEN txn_type IN ('SELL','REDEMPTION','SWITCH_OUT') THEN -coalesce(quantity,0)
+                     ELSE 0 END) AS net
+            FROM cpp_transactions
+            WHERE client_id=:cid AND portfolio_id=:pid AND is_deleted = false
+            GROUP BY symbol HAVING SUM(CASE
+                     WHEN txn_type IN ('BUY','BONUS','CORPUS_IN','SWITCH_IN','SIP') THEN coalesce(quantity,0)
+                     WHEN txn_type IN ('SELL','REDEMPTION','SWITCH_OUT') THEN -coalesce(quantity,0)
+                     ELSE 0 END) > 0.0001
+        """), {"cid": client_id, "pid": pid})).mappings().all()
+        open_syms = len(op)
+        open_qty = float(sum(float(r["net"]) for r in op))
+        if latest is not None:
+            equity_mkt = float(_d(latest["current_value"] or latest["nav_value"])
+                               - _d(latest["etf"]) - _d(latest["cash"]) - _d(latest["bank"]))
+
     nav_n = int(nav["n"] or 0)
     bench_cov = (int(nav["n_bench"] or 0) / nav_n * 100) if nav_n else 0.0
     risk_ok = risk is not None and risk["cagr"] is not None and risk["sharpe_ratio"] is not None
@@ -142,6 +169,7 @@ async def validate_portfolio(db: AsyncSession, client_id: int, p: dict) -> dict:
         "drawdown_points": int(dd_n), "holdings": int(hold["n"] or 0),
         "holdings_value": _d(hold["val"]), "txns": int(txn_n),
         "cash_pct": float(latest["cash_pct"]) if latest and latest["cash_pct"] is not None else None,
+        "open_syms": open_syms, "open_qty": open_qty, "equity_mkt": equity_mkt,
         "checks": {
             "nav_chart": nav_n >= 2,
             "nifty_overlay": bench_cov >= 95.0,
@@ -229,15 +257,22 @@ def _print_portfolio(v: dict) -> bool:
     checks = v["checks"]
     line = "      " + "  ".join(f"{_flag(ok)} {name}" for name, ok in checks.items())
     print(line)
-    # Classify an empty holdings table so we can tell a bug from a coverage gap.
+    # Classify an empty holdings table — definitively, using whether any equity
+    # position is still OPEN per the transactions and what the NAV file says.
     if v["holdings"] == 0 and not p["is_closed"] and v["nav_points"] > 0:
-        if v["txns"] > 0:
-            print(f"        ↳ HOLDINGS-GAP: {v['txns']} txns exist but holdings table is empty "
-                  f"(holdings not computed) — likely a bug")
-        elif v["cash_pct"] is not None and v["cash_pct"] >= 95:
-            print("        ↳ CASH-PARKED: ~all cash, no equity holdings (likely expected)")
-        else:
+        if v["txns"] == 0:
             print("        ↳ NAV-ONLY: no transactions ingested for this code (data-coverage gap)")
+        elif v["open_syms"]:
+            # Net long position remains but holdings shows nothing → real bug.
+            print(f"        ↳ BUG: {v['open_syms']} symbol(s) still net-long "
+                  f"(~{v['open_qty']:.0f} sh) per {v['txns']} txns, but holdings table is EMPTY "
+                  f"(holdings not recomputed)")
+        else:
+            eq = v["equity_mkt"]
+            eq_s = f"equity@mkt≈₹{eq:,.0f}" if eq is not None else "equity@mkt=?"
+            print(f"        ↳ LIQUIDATED-TO-CASH: 0 open positions per {v['txns']} txns, "
+                  f"cash={v['cash_pct']:.0f}%, {eq_s} → holdings correctly empty; "
+                  f"table just lacks a cash row (PR1/PR6 cash-breakdown polish)")
     return all(checks.values())
 
 

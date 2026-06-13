@@ -6,6 +6,8 @@ import { apiFetch, apiPost } from '@/lib/api';
 import Sidebar from '@/components/layout/Sidebar';
 import Spinner from '@/components/ui/Spinner';
 import { ArrowLeft } from 'lucide-react';
+import { PortfolioSelectionProvider } from '@/hooks/usePortfolioSelection';
+import PortfolioSwitcher from '@/components/dashboard/PortfolioSwitcher';
 
 /**
  * Dashboard layout with sidebar + main content.
@@ -86,7 +88,10 @@ export default function DashboardLayout({ children }) {
           </div>
         )}
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
-          {children}
+          <PortfolioSelectionProvider>
+            <PortfolioSwitcher />
+            {children}
+          </PortfolioSelectionProvider>
         </div>
       </main>
     </div>

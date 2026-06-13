@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { apiGet } from '@/lib/api';
+import { buildPortfolioUrl, usePortfolioSelection } from '@/hooks/usePortfolioSelection';
 
 /**
  * Generic data-fetching hook with loading/error state.
@@ -35,55 +36,67 @@ function useApiData(url, deps = {}) {
   return { data, loading, error, refetch };
 }
 
+// Each hook routes to the per-portfolio endpoint or the /combined/* variant
+// based on the current dashboard selection (default COMBINED). `selection` is
+// in the deps so a switch triggers a refetch.
+
 export function useSummary() {
-  return useApiData('/portfolio/summary');
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('summary', selection), { selection });
 }
 
 export function useNavSeries(range = 'ALL') {
-  return useApiData(`/portfolio/nav-series?range=${range}`, { range });
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('nav-series', selection, { range }), { selection, range });
 }
 
 export function usePerformanceTable() {
-  return useApiData('/portfolio/performance-table');
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('performance-table', selection), { selection });
 }
 
 export function useGrowth() {
-  return useApiData('/portfolio/growth');
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('growth', selection), { selection });
 }
 
 export function useAllocation() {
-  return useApiData('/portfolio/allocation');
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('allocation', selection), { selection });
 }
 
 export function useHoldings(sort = 'weight', order = 'desc', assetClass = 'ALL') {
-  const params = new URLSearchParams({ sort, order });
-  if (assetClass && assetClass !== 'ALL') {
-    params.set('asset_class', assetClass);
-  }
-  return useApiData(`/portfolio/holdings?${params.toString()}`, { sort, order, assetClass });
+  const { selection } = usePortfolioSelection();
+  const url = buildPortfolioUrl('holdings', selection, { sort, order, asset_class: assetClass });
+  return useApiData(url, { selection, sort, order, assetClass });
 }
 
 export function useDrawdown(range = 'ALL') {
-  return useApiData(`/portfolio/drawdown-series?range=${range}`, { range });
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('drawdown-series', selection, { range }), { selection, range });
 }
 
 export function useRiskScorecard() {
-  return useApiData('/portfolio/risk-scorecard');
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('risk-scorecard', selection), { selection });
 }
 
 export function useTransactions(page = 1, perPage = 50, filters = {}) {
-  const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
-  if (filters.txn_type) params.set('txn_type', filters.txn_type);
-  if (filters.asset_class) params.set('asset_class', filters.asset_class);
-  if (filters.date_from) params.set('date_from', filters.date_from);
-  if (filters.date_to) params.set('date_to', filters.date_to);
-  return useApiData(`/portfolio/transactions?${params.toString()}`, { page, perPage, ...filters });
+  const { selection } = usePortfolioSelection();
+  const url = buildPortfolioUrl('transactions', selection, {
+    page, per_page: perPage,
+    txn_type: filters.txn_type, asset_class: filters.asset_class,
+    date_from: filters.date_from, date_to: filters.date_to,
+  });
+  return useApiData(url, { selection, page, perPage, ...filters });
 }
 
 export function useXIRR() {
-  return useApiData('/portfolio/xirr');
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('xirr', selection), { selection });
 }
 
 export function useMethodology() {
-  return useApiData('/portfolio/methodology');
+  const { selection } = usePortfolioSelection();
+  return useApiData(buildPortfolioUrl('methodology', selection), { selection });
 }

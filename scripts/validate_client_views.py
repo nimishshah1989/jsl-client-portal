@@ -109,10 +109,13 @@ async def validate_portfolio(db: AsyncSession, client_id: int, p: dict) -> dict:
         FROM cpp_nav_series WHERE client_id = :cid AND portfolio_id = :pid
     """), {"cid": client_id, "pid": pid})).mappings().one()
     latest = (await db.execute(text("""
-        SELECT invested_amount, current_value, nav_value
+        SELECT invested_amount, current_value, nav_value, cash_pct
         FROM cpp_nav_series WHERE client_id = :cid AND portfolio_id = :pid
         ORDER BY nav_date DESC LIMIT 1
     """), {"cid": client_id, "pid": pid})).mappings().one_or_none()
+    txn_n = (await db.execute(text(
+        "SELECT count(*) FROM cpp_transactions WHERE client_id=:cid AND portfolio_id=:pid"
+    ), {"cid": client_id, "pid": pid})).scalar() or 0
     risk = (await db.execute(text("""
         SELECT cagr, volatility, sharpe_ratio, sortino_ratio, max_drawdown,
                beta, alpha, up_capture, down_capture, xirr
@@ -137,7 +140,8 @@ async def validate_portfolio(db: AsyncSession, client_id: int, p: dict) -> dict:
         "current": _d(latest["current_value"] or (latest["nav_value"] if latest else 0)) if latest else _d(0),
         "risk": dict(risk) if risk else None, "risk_ok": risk_ok,
         "drawdown_points": int(dd_n), "holdings": int(hold["n"] or 0),
-        "holdings_value": _d(hold["val"]),
+        "holdings_value": _d(hold["val"]), "txns": int(txn_n),
+        "cash_pct": float(latest["cash_pct"]) if latest and latest["cash_pct"] is not None else None,
         "checks": {
             "nav_chart": nav_n >= 2,
             "nifty_overlay": bench_cov >= 95.0,
@@ -217,13 +221,23 @@ async def validate_combined(db: AsyncSession, client_id: int) -> dict:
 def _print_portfolio(v: dict) -> bool:
     p = v["portfolio"]
     tag = "CLOSED" if p["is_closed"] else p["strategy"]
+    cash = f"{v['cash_pct']:.0f}%" if v["cash_pct"] is not None else "?"
     print(f"    [{p['client_code'] or '?'}/{tag}] {p['portfolio_name']!r}  "
           f"invested={v['invested']} current={v['current']}  "
           f"nav_pts={v['nav_points']} nifty={v['bench_coverage_pct']:.0f}% "
-          f"dd={v['drawdown_points']} holds={v['holdings']}")
+          f"dd={v['drawdown_points']} holds={v['holdings']} txns={v['txns']} cash={cash}")
     checks = v["checks"]
     line = "      " + "  ".join(f"{_flag(ok)} {name}" for name, ok in checks.items())
     print(line)
+    # Classify an empty holdings table so we can tell a bug from a coverage gap.
+    if v["holdings"] == 0 and not p["is_closed"] and v["nav_points"] > 0:
+        if v["txns"] > 0:
+            print(f"        ↳ HOLDINGS-GAP: {v['txns']} txns exist but holdings table is empty "
+                  f"(holdings not computed) — likely a bug")
+        elif v["cash_pct"] is not None and v["cash_pct"] >= 95:
+            print("        ↳ CASH-PARKED: ~all cash, no equity holdings (likely expected)")
+        else:
+            print("        ↳ NAV-ONLY: no transactions ingested for this code (data-coverage gap)")
     return all(checks.values())
 
 

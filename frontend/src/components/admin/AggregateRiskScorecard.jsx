@@ -69,8 +69,8 @@ function RiskGauge({ value, maxValue = 30, label }) {
   );
 }
 
-export default function AggregateRiskScorecard({ strategy = 'COMBINED' }) {
-  const { data, loading, error } = useAggregateRisk(strategy);
+export default function AggregateRiskScorecard({ strategy = 'COMBINED', includeInactive = false }) {
+  const { data, loading, error } = useAggregateRisk(strategy, includeInactive);
 
   if (loading) return <Skeleton />;
   if (error) {

@@ -55,8 +55,8 @@ function CustomTooltip({ active, payload }) {
   );
 }
 
-export default function AggregateAllocation({ strategy = 'COMBINED' }) {
-  const { data, loading, error } = useAggregateAllocation(strategy);
+export default function AggregateAllocation({ strategy = 'COMBINED', includeInactive = false }) {
+  const { data, loading, error } = useAggregateAllocation(strategy, includeInactive);
 
   if (loading) return <Skeleton />;
   if (error) {

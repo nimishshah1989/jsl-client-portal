@@ -34,6 +34,7 @@ import AggregatePerformance from '@/components/admin/AggregatePerformance';
 import AggregateAllocation from '@/components/admin/AggregateAllocation';
 import AggregateRiskScorecard from '@/components/admin/AggregateRiskScorecard';
 import AggregateMonthlyReturns from '@/components/admin/AggregateMonthlyReturns';
+import AggregateSummaryTable from '@/components/admin/AggregateSummaryTable';
 
 const STRATEGIES = [
   { key: 'COMBINED', label: 'Combined' },
@@ -44,6 +45,10 @@ const STRATEGIES = [
 
 export default function AdminDashboard() {
   const [strategy, setStrategy] = useState('COMBINED');
+  // Off by default → every aggregate number below reflects ACTIVE portfolios only
+  // (latest NAV within 30 days). Tick to include dormant/stale accounts at their
+  // last-known value (AUM rises). See backend active_clause / include_inactive.
+  const [includeInactive, setIncludeInactive] = useState(false);
   const { data: clients, loading: clientsLoading, refetch: refetchClients } =
     useClients();
   const { data: logs, loading: logsLoading, refetch: refetchLogs } =
@@ -172,8 +177,21 @@ export default function AdminDashboard() {
             {s.label}
           </button>
         ))}
-        <span className="text-xs text-slate-400 ml-auto">Closed accounts excluded</span>
+        <label className="ml-auto flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeInactive}
+            onChange={(e) => setIncludeInactive(e.target.checked)}
+            className="rounded border-slate-300 text-jip-teal focus:ring-jip-teal"
+          />
+          Include inactive portfolios
+          <span className="text-slate-400">(no NAV in 30 days)</span>
+        </label>
       </div>
+
+      {/* Strategy summary table — key metrics across all buckets at a glance.
+          Respects the include-inactive toggle; closed accounts always excluded. */}
+      <AggregateSummaryTable includeInactive={includeInactive} />
 
       {/* Analytics Cards */}
       {analyticsLoading ? (
@@ -234,15 +252,15 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <AggregateNavChart strategy={strategy} />
-      <AggregatePerformance strategy={strategy} />
+      <AggregateNavChart strategy={strategy} includeInactive={includeInactive} />
+      <AggregatePerformance strategy={strategy} includeInactive={includeInactive} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <AggregateAllocation strategy={strategy} />
-        <AggregateRiskScorecard strategy={strategy} />
+        <AggregateAllocation strategy={strategy} includeInactive={includeInactive} />
+        <AggregateRiskScorecard strategy={strategy} includeInactive={includeInactive} />
       </div>
 
-      <AggregateMonthlyReturns strategy={strategy} />
+      <AggregateMonthlyReturns strategy={strategy} includeInactive={includeInactive} />
 
       {/* Top Performers / Investors */}
       {analytics && (

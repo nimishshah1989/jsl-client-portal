@@ -164,6 +164,7 @@ async def get_combined_summary(db: AsyncSession, client_id: int) -> dict[str, An
 
     cagr_pct = _ZERO
     max_dd = _ZERO
+    ytd = _ZERO
     if len(df) >= 2:
         twr = pd.Series(_twr_index(df["nav"].to_numpy(), df["invested"].to_numpy()))
         days = (df["nav_date"].iloc[-1] - df["nav_date"].iloc[0]).days
@@ -171,6 +172,17 @@ async def get_combined_summary(db: AsyncSession, client_id: int) -> dict[str, An
         # Worst peak-to-trough on the TWR series; 0 when monotonic.
         drawdown = (twr - twr.cummax()) / twr.cummax() * 100
         max_dd = Decimal(str(float(drawdown.min())))
+        # YTD: TWR from the first NAV on/after Jan 1 of the latest year to the end
+        # (the combined TWR index already strips corpus inflows). Mirrors the
+        # per-portfolio /summary YTD so the dashboard card stops showing "--".
+        latest_dt = df["nav_date"].iloc[-1]
+        jan1 = dt.date(latest_dt.year, 1, 1)
+        ytd_mask = (df["nav_date"] >= jan1).to_numpy()
+        if ytd_mask.any():
+            start_pos = int(np.argmax(ytd_mask))
+            base = float(twr.iloc[start_pos])
+            if base:
+                ytd = Decimal(str((float(twr.iloc[-1]) / base - 1) * 100))
 
     return {
         "invested": _d2(invested),
@@ -178,6 +190,7 @@ async def get_combined_summary(db: AsyncSession, client_id: int) -> dict[str, An
         "profit_amount": _d2(profit),
         "profit_pct": _d2(profit_pct),
         "cagr": _d2(cagr_pct),
+        "ytd_return": _d2(ytd),
         "max_drawdown": _d2(max_dd),
         "cash_amount": _d2(cash_amt),
         "cash_pct": _d2(max(_ZERO, min(Decimal("100"), cash_pct))),

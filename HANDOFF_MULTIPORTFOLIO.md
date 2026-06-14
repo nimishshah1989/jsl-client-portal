@@ -6,22 +6,29 @@ Goal: support one human client holding several PMS portfolios (codes), each tagg
 
 ---
 
-## 0. RESUME HERE — execution to go live (next session)
+## 0. RESUME HERE — prod go-live is DONE (2026-06-14, session 3)
 
-All PR7 **code is merged + deployed** (PRs #46–#50). The unified-login merge is **proven on a staging restore** but has **NOT run on prod**. What remains is prod execution (needs `ssh jprod` + AWS), in this order:
+**Unified login is LIVE on prod.** All three gated steps ran successfully behind RDS snapshots. Only **PR7b** (ingestion group-by-name) remains.
 
-1. **(code, ~1 PR) `dashboard-analytics` → per-portfolio.** `backend/routers/admin.py::dashboard_analytics` still uses `DISTINCT ON (client_id)` (latest NAV per *client*). Exact pre-merge (1 portfolio/client); **post-merge it undercounts** a unified client's StatCard totals. Rewrite to per-portfolio (mirror `aggregate_service._fetch_bucket_aum`) **before** step 3. The Strategy Summary table is already per-portfolio + correct.
-2. **(run) Flag dormant/empty portfolios.** `scripts/flag_dormant_portfolios.py` — dry-run on prod (read-only) → review the ~76 stale + empty `JA59` → RDS snapshot → `--execute --yes` (default `--days 90`). Closes redeemed accounts (`is_closed=true`, data retained) so live AUM is real. Operator confirmed: yes flag dormant; JA59's empty account → closed.
-3. **(run) PR7 unified-login merge on PROD.** Follow `scripts/PR7_STAGING_RUNBOOK.md` steps 5–8 against **prod**: RDS snapshot → `merge_clients_by_name.py` dry-run → `--execute --yes` (recon-before-commit) → `validate_client_views.py --code BJ53 --sample 20` (expect every group `✓ invested == Σ live`). **Guard rails are now `--expect-aum 904964514.89 --expect-invested 648903666.35`** (prod baseline drifted from the handoff's original 905234707.58/651769759.97 — data refreshed since 2026-06-12; re-capture from a fresh dry-run before the real run).
-4. **(cleanup) Tear down staging:** `aws rds delete-db-instance --db-instance-identifier fie-db-staging --skip-final-snapshot --region ap-south-1`.
-5. **PR7b** (after the merge): switch `find_or_create_client` to group-by-name + idempotency + new-client report + name-override map. Never deploy before the data is merged.
+| Step | Status (2026-06-14) |
+|------|---------------------|
+| 1. `dashboard-analytics` → per-portfolio | ✅ **DONE** — PR **#52** merged + deployed. Extracted to `backend/services/admin_analytics.py::compute_dashboard_analytics` (engine-portable per-portfolio CTE, AUM-weighted blended metrics, per-person performer rollup). StatCards no longer undercount unified clients. `tests/test_admin_analytics.py` (6 tests; suite now 477). |
+| 2. Flag dormant/empty portfolios | ✅ **DONE** — `flag_dormant_portfolios.py --execute --days 90` flagged **80** (76 stale + 4 empty stubs incl. JA59) `is_closed=true`. Live AUM ₹902,303,181 → **₹834,278,458** (−₹68,024,723, 7.54%). Snapshot `fie-db-pre-dormant-flag-20260614`. |
+| 3. PR7 unified-login merge on PROD | ✅ **DONE** — `merge_clients_by_name.py --execute --expect-aum 904964514.89 --expect-invested 648903666.35`. **COMMITTED**, invariants held (AUM/invested/portfolio-count unchanged). 44 codes retired across 36 people; **97,170** data rows re-parented. `validate_client_views.py --code BJ53` → BJ53 = 1 client / 6 portfolios, `✓ invested == Σ live` (₹75.9L→₹1.13Cr). Credential delta: **44 retired logins, 0 ever used** (zero client disruption). Snapshot `fie-db-pre-merge-20260614`. |
+| 4. Tear down `fie-db-staging` | ⏳ command handed to operator: `aws rds delete-db-instance --db-instance-identifier fie-db-staging --skip-final-snapshot --region ap-south-1`. **Keep both `fie-db-pre-*` snapshots** ~1 week as the rollback window. |
+| 5. **PR7b** (the one remaining piece) | ⏳ **NOT STARTED.** Switch `find_or_create_client` to group-by-name + idempotency + new-client report + name-override map, so the *next* upload attaches new codes to the right person. Safe to build now (the merge has run). |
 
-**Current prod state:** `cpp_clients.merged_into` + `cpp_merge_audit` exist (migration applied 2026-06-13); PR7a code deployed but **dormant** (no rows merged on prod); combined carry-forward + admin active/inactive toggle + Strategy Summary table all live. **The merge alias + dormant flagging have NOT been run on prod.**
+**Notes from the prod run (see L-013):**
+- Dormant flagging (step 2) does **not** move the merge baseline — `capture_baseline` sums every NAV-bearing portfolio regardless of `is_closed` (so the AUM-invariant is robust). The dry-run reported AUM `904964514.89` / invested `648903666.35` (matched the staging guard rails exactly; prod hadn't drifted further). Re-capture from a fresh dry-run anyway.
+- Flagging closed a few **large** long-dormant accounts (KARAN ₹7.1M, MANHARLAL ₹5.0M, ASHESH-HUF ₹2.5M); their Combined view now reads ₹0 (correct for redeemed; reversible un-close if any are still invested — **pending operator confirmation**).
+- The merge credential CSV write failed inside the container (`Permission denied` on the host-mounted `scripts/`); by design it writes **after** commit so this can't roll back the merge — re-derive from `cpp_clients WHERE merged_into IS NOT NULL` (psql) or `cpp_merge_audit`.
+- New in-portal **Admin Guide** page (`/admin/guide`, `frontend/src/app/admin/guide/page.js`) documents strategy / active-dormant / combined / unified-login logic + the firm-level calculations.
 
-The merge runs from a throwaway container off the prod image pointed at the target DB:
+**Current prod state:** unified login active; `merged_into` aliases live; 80 dormant flagged closed; dashboard-analytics per-portfolio deployed. **Only PR7b is left.**
+
+Scripts run from a throwaway container off the prod image pointed at the target DB:
 ```bash
 ssh jprod && cd ~/apps/client-portal && git pull origin main
-STG_SYNC=$(grep -E '^DATABASE_URL_SYNC=' .env | cut -d= -f2- | tr -d '"'"'"'"')        # prod (or sed @fie-db.->@fie-db-staging. for staging)
 docker run --rm --network host --env-file $PWD/.env -v "$PWD/scripts:/app/scripts" \
   client-portal python /app/scripts/<script>.py [args]
 ```
@@ -57,8 +64,16 @@ docker run --rm --network host --env-file $PWD/.env -v "$PWD/scripts:/app/script
 - Post-merge `validate_client_views.py`: 17/21 sampled people reconciled immediately; the other 3 (JUHI/MAHENDRAKUMAR/MANHARLAL) were a **combined-view date-range bug → fixed by #48 carry-forward** (all reconcile now).
 - Surfaced **76 of 367 "live" portfolios with stale NAV** (dormant/redeemed, up to 5 yrs) — handled by #49 (run pending). Benchmark per strategy = **Nifty 50 for all** for now (operator) → no chart change needed.
 
-### NOT yet done (prod execution — see §0)
-- `dashboard-analytics` per-portfolio rewrite · run dormant flagging on prod · run PR7 merge on prod · teardown staging · PR7b ingestion-by-name.
+### Merged / executed in session 3 (2026-06-14) — PROD GO-LIVE
+| PR / run | What |
+|----------|------|
+| #52 | **`dashboard-analytics` → per-portfolio** (`backend/services/admin_analytics.py`); admin StatCards stop undercounting unified clients post-merge. Suite → 477. |
+| (prod run) | **Dormant flagging executed** — 80 portfolios `is_closed=true`; live AUM → ₹834,278,458. |
+| (prod run) | **PR7 unified-login merge executed** — COMMITTED, invariants held; 44 retired / 0 ever used; BJ53 = 1 client / 6 portfolios reconciled. |
+| (this PR) | **Admin Guide page** (`/admin/guide`) + docs updated to reflect go-live. |
+
+### NOT yet done
+- Tear down `fie-db-staging` (operator) · confirm large flagged-dormant accounts are redeemed · **PR7b ingestion-by-name** (the only remaining feature).
 
 ---
 
@@ -134,8 +149,10 @@ docker run --rm -i --network host -v "$PWD/scripts:/scripts" postgres:15 psql "$
 - [x] `tests/test_merge_service.py` (seeded prod‑shaped DB: multi‑code + single‑code + closed + admin + soft‑deleted‑same‑name; runs the REAL migration; asserts every invariant + alias resolution + idempotency + chain/cycle; **in CI**). Suite **471 passing** (session 2).
 - [x] STAGING rehearsal done (snapshot → restore → migrate → merge → validate → all green; carry-forward fix #48). prod untouched.
 - [x] (polish) PR6 follow-ups: combined summary `ytd_return` (#47); active/inactive toggle + Strategy Summary table (#48); StatCards toggle (#50). Combined holdings cash-breakdown rows still deferred.
-- [ ] **`dashboard-analytics` per-portfolio rewrite** (admin.py) — before the prod merge (else StatCards undercount unified clients).
-- [ ] **Run `flag_dormant_portfolios.py` on prod** (#49) — dry-run → snapshot → `--execute` (closes ~76 dormant + empty JA59).
-- [ ] **Run PR7 merge on PROD** — snapshot → `merge_clients_by_name.py --execute` → `validate_client_views.py`. Guard rails: re-capture baseline from a fresh dry-run (was `904964514.89 / 648903666.35` on 2026-06-14).
-- [ ] Tear down `fie-db-staging`.
-- [ ] PR7b: ingestion `find_or_create_client` by name (post-migration) + idempotency + new-client report + name-override map.
+- [x] **`dashboard-analytics` per-portfolio rewrite** — PR **#52** (`backend/services/admin_analytics.py`), merged + deployed 2026-06-14.
+- [x] **Ran `flag_dormant_portfolios.py` on prod** — flagged 80 (`is_closed=true`); live AUM → ₹834,278,458. Snapshot `fie-db-pre-dormant-flag-20260614`.
+- [x] **Ran PR7 merge on PROD** — COMMITTED, invariants held; 44 retired / 0 ever used; BJ53 reconciles. Snapshot `fie-db-pre-merge-20260614`.
+- [x] In-portal **Admin Guide** page (`/admin/guide`) documenting the logic + calculations.
+- [ ] Tear down `fie-db-staging` (command handed to operator; keep `fie-db-pre-*` snapshots ~1 week).
+- [ ] Confirm the large flagged-dormant accounts (KARAN/MANHARLAL/ASHESH) are genuinely redeemed (reversible un-close otherwise).
+- [ ] **PR7b**: ingestion `find_or_create_client` by name (post-migration) + idempotency + new-client report + name-override map.

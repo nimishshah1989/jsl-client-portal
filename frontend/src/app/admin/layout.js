@@ -13,12 +13,14 @@ import {
   ArrowLeft,
   LogOut,
   GitCompare,
+  BookOpen,
 } from 'lucide-react';
 
 const ADMIN_NAV = [
   { href: '/admin', label: 'Dashboard', icon: ClipboardList },
   { href: '/admin/upload', label: 'Upload Data', icon: Upload },
   { href: '/admin/reconciliation', label: 'Reconciliation', icon: GitCompare },
+  { href: '/admin/guide', label: 'Guide', icon: BookOpen },
 ];
 
 export default function AdminLayout({ children }) {

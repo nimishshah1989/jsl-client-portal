@@ -203,22 +203,24 @@ class TestApplyRangeFilter:
 # true/false) and to drop the JOIN to cpp_clients (synthetic data assumes all
 # rows belong to active non-admin clients — the JOIN is incidental to the
 # TWR math). Keeping this string explicit guards the SQL math against drift.
+# Partition is by portfolio_id (NOT client_id): a merged client owns several
+# portfolios, and partitioning by client_id interleaves their NAVs.
 _TWR_COMPOSITE_SQL = """
     WITH client_nav AS (
         SELECT
             n.nav_date,
-            n.client_id,
+            n.portfolio_id,
             n.nav_value,
             n.invested_amount,
             COALESCE(n.benchmark_value, 0) AS benchmark_value,
             LAG(n.nav_value) OVER (
-                PARTITION BY n.client_id ORDER BY n.nav_date
+                PARTITION BY n.portfolio_id ORDER BY n.nav_date
             ) AS prev_nav,
             LAG(n.invested_amount) OVER (
-                PARTITION BY n.client_id ORDER BY n.nav_date
+                PARTITION BY n.portfolio_id ORDER BY n.nav_date
             ) AS prev_invested,
             LAG(COALESCE(n.benchmark_value, 0)) OVER (
-                PARTITION BY n.client_id ORDER BY n.nav_date
+                PARTITION BY n.portfolio_id ORDER BY n.nav_date
             ) AS prev_bench
         FROM cpp_nav_series n
         WHERE n.nav_value > 0
@@ -259,6 +261,7 @@ def _make_sqlite_with_nav_rows(rows: list[dict]) -> sqlite3.Connection:
     conn.execute("""
         CREATE TABLE cpp_nav_series (
             client_id INTEGER NOT NULL,
+            portfolio_id INTEGER NOT NULL,
             nav_date TEXT NOT NULL,
             nav_value REAL NOT NULL,
             invested_amount REAL NOT NULL,
@@ -267,11 +270,14 @@ def _make_sqlite_with_nav_rows(rows: list[dict]) -> sqlite3.Connection:
     """)
     conn.executemany(
         "INSERT INTO cpp_nav_series "
-        "(client_id, nav_date, nav_value, invested_amount, benchmark_value) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "(client_id, portfolio_id, nav_date, nav_value, invested_amount, benchmark_value) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         [
             (
                 r["client_id"],
+                # Default one portfolio per client (pre-merge shape) unless the
+                # test explicitly models a multi-portfolio (merged) client.
+                r.get("portfolio_id", r["client_id"]),
                 r["nav_date"].isoformat(),
                 r["nav_value"],
                 r["invested_amount"],
@@ -447,3 +453,41 @@ class TestTwrCorpusAdjustment:
         out = _run_composite_sql(conn)
         assert len(out) == 1
         assert out.iloc[0]["weighted_port_ret"] == pytest.approx(0.0, abs=1e-6)
+
+    def test_multi_portfolio_client_not_interleaved(self):
+        """Post-merge regression: one client owning several portfolios must have
+        each sleeve's daily return computed within its OWN NAV series.
+
+        The LAG windows partition by portfolio_id. If they (wrongly) partition by
+        client_id, the merged client's two sleeves interleave — a ₹5,000 sleeve's
+        row takes the ₹1,000 sleeve's row as "yesterday" → daily returns of
+        +400% / -80% instead of the true ~+1%. This produced the −92% CAGR /
+        −100% drawdown / +26,935% month seen on the live admin dashboard.
+
+        Both sleeves: flat corpus (no infusions), steady +1%/day. Client 1 owns
+        portfolio 10 (₹5,000 base) and portfolio 11 (₹1,000 base).
+        """
+        dates = [date(2025, 3, 3) + timedelta(days=i) for i in range(5)]
+        rows = []
+        for i, d in enumerate(dates):
+            rows.append({"client_id": 1, "portfolio_id": 10, "nav_date": d,
+                         "nav_value": 5000.0 + 50.0 * i, "invested_amount": 1000.0})
+        for i, d in enumerate(dates):
+            rows.append({"client_id": 1, "portfolio_id": 11, "nav_date": d,
+                         "nav_value": 1000.0 + 10.0 * i, "invested_amount": 1000.0})
+
+        conn = _make_sqlite_with_nav_rows(rows)
+        out = _run_composite_sql(conn)
+
+        # 4 return days (5 NAV points − the excluded first row per portfolio).
+        assert len(out) == 4, (
+            f"expected 4 return days, got {len(out)} — sleeves interleaved "
+            "(LAG must partition by portfolio_id, not client_id)"
+        )
+        rets = out["weighted_port_ret"].astype(float)
+        # Every day's AUM-weighted return is ~+1%; interleaving would blow far
+        # outside this band (±hundreds of %).
+        assert rets.between(0.005, 0.02).all(), (
+            f"implausible daily returns {rets.tolist()} — the merged client's "
+            "sleeves are being interleaved; partition by portfolio_id"
+        )

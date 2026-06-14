@@ -246,3 +246,46 @@ async def test_combined_methodology_shape(combined_db):
     # CAGR worked-example value matches the combined risk computation.
     assert m["metrics"]["cagr"]["value"] == risk["cagr"]
     assert "inputs" in m["metrics"]["sharpe_ratio"]
+
+
+@pytest.mark.asyncio
+async def test_combined_carries_forward_dormant_sleeve():
+    """A live sleeve whose NAV ended earlier must still contribute its last value
+    to the combined total (additive across mismatched date ranges), not be dropped
+    from the latest-date snapshot."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp.name}")
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda c: Base.metadata.create_all(
+            c, tables=[Client.__table__, Portfolio.__table__, NavSeries.__table__]))
+    Session = async_sessionmaker(bind=engine, expire_on_commit=False)
+    d1, d2, d3 = dt.date(2024, 1, 1), dt.date(2024, 6, 1), dt.date(2024, 12, 1)
+    async with Session() as s:
+        s.add(Client(id=1, client_code="X", name="X", username="x", password_hash="x",
+                     is_active=True, is_admin=False))
+        # P10 reports through d3; P11 (dormant) stops at d1.
+        s.add(Portfolio(id=10, client_id=1, portfolio_name="A", inception_date=d1,
+                        client_code="X", strategy="LEADERS", is_closed=False))
+        s.add(Portfolio(id=11, client_id=1, portfolio_name="B", inception_date=d1,
+                        client_code="XMF", strategy="LEADERS", is_closed=False))
+
+        def nav(pid, d, v, inv):
+            return NavSeries(client_id=1, portfolio_id=pid, nav_date=d,
+                             nav_value=Decimal(v), current_value=Decimal(v),
+                             invested_amount=Decimal(inv), benchmark_value=Decimal("100"))
+        s.add_all([
+            nav(10, d1, "100", "100"), nav(10, d2, "110", "100"), nav(10, d3, "120", "100"),
+            nav(11, d1, "50", "50"),  # dormant — only d1
+        ])
+        await s.commit()
+    try:
+        async with Session() as s:
+            summ = await get_combined_summary(s, client_id=1)
+            pts = await get_combined_nav_series(s, client_id=1)
+        # d3 total = P10 (120) + P11 carried-forward (50) = 170; invested 100 + 50.
+        assert summ["current_value"] == "170.00", summ
+        assert summ["invested"] == "150.00", summ
+        assert pts[-1]["nav"] == "170.00"
+    finally:
+        await engine.dispose()

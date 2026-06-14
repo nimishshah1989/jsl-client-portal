@@ -53,34 +53,72 @@ async def fetch_combined_nav_df(db: AsyncSession, client_id: int) -> pd.DataFram
     Columns: nav_date, nav (Σ current_value), invested (Σ invested_amount),
     bench_price (Nifty close — identical across a client's portfolios on a
     date), cash_amt (Σ etf+cash+bank). Sorted by date.
+
+    Each portfolio's values are **forward-filled** to the union of all dates
+    before summing, so a sleeve whose own NAV series ended earlier (e.g. one that
+    stopped reporting / went dormant) still contributes its last-known value to
+    the combined total — the combined is additive across mismatched date ranges
+    (a daily-reporting sleeve + a sleeve that ends in 2024 ⇒ the 2024 value is
+    carried forward, not dropped). A portfolio contributes 0 before its first NAV
+    date (it didn't exist yet). Closed portfolios are excluded entirely.
+
+    NOTE: carry-forward assumes a dormant sleeve's capital is still held. A sleeve
+    that was genuinely redeemed should be flagged ``is_closed`` so it is excluded
+    here rather than carried forward (otherwise its stale value is double-counted).
     """
     result = await db.execute(text("""
         SELECT
-            n.nav_date,
-            SUM(n.current_value)                                        AS nav,
-            SUM(n.invested_amount)                                      AS invested,
-            MAX(n.benchmark_value)                                      AS bench_price,
-            SUM(COALESCE(n.etf_value,0) + COALESCE(n.cash_value,0)
+            n.portfolio_id                                             AS portfolio_id,
+            n.nav_date                                                 AS nav_date,
+            n.current_value                                            AS nav,
+            n.invested_amount                                          AS invested,
+            n.benchmark_value                                          AS bench_price,
+            (COALESCE(n.etf_value,0) + COALESCE(n.cash_value,0)
                 + COALESCE(n.bank_balance,0))                          AS cash_amt
         FROM cpp_nav_series n
         JOIN cpp_portfolios p ON p.id = n.portfolio_id
         WHERE n.client_id = :cid AND p.is_closed = false
-        GROUP BY n.nav_date
-        HAVING SUM(n.current_value) > 0
         ORDER BY n.nav_date
     """), {"cid": client_id})
     rows = result.fetchall()
     if not rows:
         return pd.DataFrame(columns=["nav_date", "nav", "invested", "bench_price", "cash_amt"])
-    df = pd.DataFrame(
-        [(r.nav_date, float(r.nav), float(r.invested or 0),
-          float(r.bench_price) if r.bench_price else np.nan,
+
+    raw = pd.DataFrame(
+        [(r.portfolio_id, r.nav_date,
+          float(r.nav or 0), float(r.invested or 0),
+          float(r.bench_price) if r.bench_price is not None else np.nan,
           float(r.cash_amt or 0)) for r in rows],
-        columns=["nav_date", "nav", "invested", "bench_price", "cash_amt"],
+        columns=["portfolio_id", "nav_date", "nav", "invested", "bench_price", "cash_amt"],
     )
     # Normalise nav_date to python date objects — Postgres returns date, SQLite
     # (tests) returns str. Keeps date arithmetic + isoformat consistent.
-    df["nav_date"] = pd.to_datetime(df["nav_date"]).dt.date
+    raw["nav_date"] = pd.to_datetime(raw["nav_date"]).dt.date
+
+    all_dates = sorted(raw["nav_date"].unique())
+    nav_sum = pd.Series(0.0, index=all_dates)
+    inv_sum = pd.Series(0.0, index=all_dates)
+    cash_sum = pd.Series(0.0, index=all_dates)
+    for _pid, g in raw.groupby("portfolio_id"):
+        g = (g.drop_duplicates("nav_date").set_index("nav_date")
+               .sort_index().reindex(all_dates))
+        # ffill carries each sleeve's last value forward; pre-inception stays 0.
+        nav_sum = nav_sum.add(g["nav"].ffill().fillna(0.0), fill_value=0.0)
+        inv_sum = inv_sum.add(g["invested"].ffill().fillna(0.0), fill_value=0.0)
+        cash_sum = cash_sum.add(g["cash_amt"].ffill().fillna(0.0), fill_value=0.0)
+
+    # Benchmark is identical across a client's portfolios on a date.
+    bench = raw.groupby("nav_date")["bench_price"].max().reindex(all_dates)
+
+    df = pd.DataFrame({
+        "nav_date": all_dates,
+        "nav": nav_sum.reindex(all_dates).to_numpy(),
+        "invested": inv_sum.reindex(all_dates).to_numpy(),
+        "bench_price": bench.to_numpy(),
+        "cash_amt": cash_sum.reindex(all_dates).to_numpy(),
+    })
+    # Drop any leading dates before anything has value (mirrors old HAVING SUM>0).
+    df = df[df["nav"] > 0].reset_index(drop=True)
     return df
 
 

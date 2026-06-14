@@ -141,9 +141,14 @@ async def _fetch_daily_composite_returns(
     """Compute AUM-weighted, TWR-adjusted daily returns in SQL for speed.
 
     Uses window functions to get prev-day NAV and prev-day invested_amount per
-    client, then computes time-weighted-return-adjusted daily returns that strip
-    out the effect of corpus inflows/outflows on a per-client basis BEFORE
+    PORTFOLIO, then computes time-weighted-return-adjusted daily returns that strip
+    out the effect of corpus inflows/outflows on a per-portfolio basis BEFORE
     AUM-weighting them into a firm-wide composite.
+
+    The LAG windows MUST partition by ``portfolio_id``, not ``client_id``: after
+    the unified-login merge a client owns several portfolios, so partitioning by
+    client_id interleaves different sleeves' NAVs and yields nonsense daily returns
+    (a ₹5cr sleeve's row taking a ₹50L sleeve's row as "yesterday" → ±hundreds %).
 
     TWR adjustment (mirrors ``risk_metrics.compute_twr_series``):
         corpus_change  = invested_today - invested_yesterday
@@ -177,13 +182,13 @@ async def _fetch_daily_composite_returns(
                 n.invested_amount,
                 COALESCE(n.benchmark_value, 0) AS benchmark_value,
                 LAG(n.nav_value) OVER (
-                    PARTITION BY n.client_id ORDER BY n.nav_date
+                    PARTITION BY n.portfolio_id ORDER BY n.nav_date
                 ) AS prev_nav,
                 LAG(n.invested_amount) OVER (
-                    PARTITION BY n.client_id ORDER BY n.nav_date
+                    PARTITION BY n.portfolio_id ORDER BY n.nav_date
                 ) AS prev_invested,
                 LAG(COALESCE(n.benchmark_value, 0)) OVER (
-                    PARTITION BY n.client_id ORDER BY n.nav_date
+                    PARTITION BY n.portfolio_id ORDER BY n.nav_date
                 ) AS prev_bench
             FROM cpp_nav_series n
             JOIN cpp_clients c ON c.id = n.client_id

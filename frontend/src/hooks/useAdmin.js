@@ -324,7 +324,7 @@ export function useUploadPreview() {
 /**
  * Hook for admin dashboard analytics.
  */
-export function useDashboardAnalytics(strategy = 'COMBINED') {
+export function useDashboardAnalytics(strategy = 'COMBINED', includeInactive = false) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -333,14 +333,16 @@ export function useDashboardAnalytics(strategy = 'COMBINED') {
     setLoading(true);
     setError(null);
     try {
-      const result = await apiGet(`/admin/dashboard-analytics?strategy=${strategy}`);
+      const result = await apiGet(
+        `/admin/dashboard-analytics?strategy=${strategy}&include_inactive=${includeInactive}`,
+      );
       setData(result);
     } catch (err) {
       setError(err.message || 'Failed to load analytics');
     } finally {
       setLoading(false);
     }
-  }, [strategy]);
+  }, [strategy, includeInactive]);
 
   return { data, loading, error, refetch: fetch };
 }

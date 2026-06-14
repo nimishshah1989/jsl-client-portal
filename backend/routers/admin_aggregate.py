@@ -24,6 +24,7 @@ from backend.services.aggregate_service import (
     get_aggregate_nav_series,
     get_aggregate_performance_table,
     get_aggregate_risk_metrics,
+    get_aggregate_summary_table,
 )
 from backend.services.benchmark_sweep import (
     DEFAULT_SWEEP_DAYS,
@@ -70,16 +71,33 @@ async def benchmark_sync(
         ) from exc
 
 
+@router.get("/summary-table")
+async def aggregate_summary_table(
+    include_inactive: bool = Query(False),
+    admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """At-a-glance metrics across all strategy buckets for the admin landing page
+    (Total AUM / CAGR / 30-day deposits / 30-day withdrawals / Max Drawdown)."""
+    try:
+        return await get_aggregate_summary_table(db, include_inactive=include_inactive)
+    except Exception as exc:
+        logger.exception("Failed to compute aggregate summary table")
+        raise HTTPException(status_code=500, detail="Failed to compute aggregate summary table") from exc
+
+
 @router.get("/nav-series")
 async def aggregate_nav_series(
     time_range: str = Query("ALL", alias="range"),
     strategy: str = Query("COMBINED"),
+    include_inactive: bool = Query(False),
     admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Aggregate NAV series across a strategy's live client portfolios."""
     try:
-        return await get_aggregate_nav_series(db, range_filter=time_range, strategy=strategy)
+        return await get_aggregate_nav_series(
+            db, range_filter=time_range, strategy=strategy, include_inactive=include_inactive)
     except Exception as exc:
         logger.exception("Failed to compute aggregate NAV series")
         raise HTTPException(status_code=500, detail="Failed to compute aggregate NAV series") from exc
@@ -88,12 +106,14 @@ async def aggregate_nav_series(
 @router.get("/performance-table")
 async def aggregate_performance_table(
     strategy: str = Query("COMBINED"),
+    include_inactive: bool = Query(False),
     admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Multi-period performance table for a strategy's aggregate portfolio."""
     try:
-        return await get_aggregate_performance_table(db, strategy=strategy)
+        return await get_aggregate_performance_table(
+            db, strategy=strategy, include_inactive=include_inactive)
     except Exception as exc:
         logger.exception("Failed to compute aggregate performance table")
         raise HTTPException(status_code=500, detail="Failed to compute aggregate performance table") from exc
@@ -102,12 +122,14 @@ async def aggregate_performance_table(
 @router.get("/risk-scorecard")
 async def aggregate_risk_scorecard(
     strategy: str = Query("COMBINED"),
+    include_inactive: bool = Query(False),
     admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Risk metrics computed on a strategy's aggregate NAV series."""
     try:
-        return await get_aggregate_risk_metrics(db, strategy=strategy)
+        return await get_aggregate_risk_metrics(
+            db, strategy=strategy, include_inactive=include_inactive)
     except Exception as exc:
         logger.exception("Failed to compute aggregate risk metrics")
         raise HTTPException(status_code=500, detail="Failed to compute aggregate risk metrics") from exc
@@ -116,12 +138,14 @@ async def aggregate_risk_scorecard(
 @router.get("/allocation")
 async def aggregate_allocation(
     strategy: str = Query("COMBINED"),
+    include_inactive: bool = Query(False),
     admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Sector allocation across a strategy's live client holdings."""
     try:
-        return await get_aggregate_allocation(db, strategy=strategy)
+        return await get_aggregate_allocation(
+            db, strategy=strategy, include_inactive=include_inactive)
     except Exception as exc:
         logger.exception("Failed to compute aggregate allocation")
         raise HTTPException(status_code=500, detail="Failed to compute aggregate allocation") from exc
@@ -130,12 +154,14 @@ async def aggregate_allocation(
 @router.get("/monthly-returns")
 async def aggregate_monthly_returns(
     strategy: str = Query("COMBINED"),
+    include_inactive: bool = Query(False),
     admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Monthly return heatmap and stats for a strategy's aggregate portfolio."""
     try:
-        return await get_aggregate_monthly_returns(db, strategy=strategy)
+        return await get_aggregate_monthly_returns(
+            db, strategy=strategy, include_inactive=include_inactive)
     except Exception as exc:
         logger.exception("Failed to compute aggregate monthly returns")
         raise HTTPException(status_code=500, detail="Failed to compute aggregate monthly returns") from exc

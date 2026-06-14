@@ -14,19 +14,28 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.aggregate_service import _get_cached_composite
-from backend.services.strategy_filter import portfolio_clause, strategy_params
+from backend.services.strategy_filter import (
+    active_clause,
+    active_cutoff,
+    active_params,
+    portfolio_clause,
+    strategy_params,
+)
 
 
 async def get_aggregate_allocation(
-    db: AsyncSession, strategy: str = "COMBINED",
+    db: AsyncSession, strategy: str = "COMBINED", include_inactive: bool = False,
 ) -> dict[str, Any]:
     """Sector allocation across the strategy's live client holdings.
 
     Groups by symbol for ETFs (shows actual ETF names like NIFTYBEES),
     by sector for stocks, and lumps small sectors (<2%) into Others.
-    Closed accounts are always excluded.
+    Closed accounts are always excluded; stale portfolios excluded unless
+    ``include_inactive``.
     """
     join, where = portfolio_clause(strategy, alias="h")
+    cutoff = None if include_inactive else await active_cutoff(db)
+    active = active_clause(include_inactive, cutoff, alias="h")
     result = await db.execute(text(f"""
         SELECT
             h.symbol,
@@ -38,10 +47,10 @@ async def get_aggregate_allocation(
         WHERE c.is_active = true AND c.is_admin = false
           AND h.quantity > 0
           AND h.current_value > 0
-          {where}
+          {where}{active}
         GROUP BY h.symbol, COALESCE(h.sector, 'Other')
         ORDER BY total_value DESC
-    """), strategy_params(strategy))
+    """), {**strategy_params(strategy), **active_params(include_inactive, cutoff)})
     rows = result.fetchall()
     total = sum(float(r.total_value) for r in rows) if rows else 0.0
 
@@ -108,14 +117,14 @@ async def get_aggregate_allocation(
 
 
 async def get_aggregate_monthly_returns(
-    db: AsyncSession, strategy: str = "COMBINED",
+    db: AsyncSession, strategy: str = "COMBINED", include_inactive: bool = False,
 ) -> dict[str, Any]:
     """Monthly return heatmap data using AUM-weighted composite index.
 
     Uses the composite index (not raw AUM sums) to avoid distortion
     from new clients joining — which would show as huge monthly "returns".
     """
-    _, port_composite, _ = await _get_cached_composite(db, strategy)
+    _, port_composite, _ = await _get_cached_composite(db, strategy, include_inactive)
     if len(port_composite) < 30:
         return {"heatmap": [], "stats": _empty_monthly_stats()}
 

@@ -38,6 +38,9 @@ from backend.services.risk_metrics_analysis import (
     up_capture,
 )
 from backend.services.strategy_filter import (
+    active_clause,
+    active_cutoff,
+    active_params,
     normalize_strategy,
     portfolio_clause,
     strategy_params,
@@ -58,14 +61,17 @@ _cache: dict[str, dict[str, Any]] = {}
 
 async def _fetch_aggregate_nav(
     db: AsyncSession, strategy: str = "COMBINED",
+    include_inactive: bool = False, cutoff=None,
 ) -> pd.DataFrame:
     """Fetch daily aggregate NAV series across the strategy's live portfolios.
 
     Returns DataFrame with columns: nav_date, total_aum, total_invested,
     total_benchmark, weighted_cash_pct — sorted by nav_date ascending.
-    Closed accounts are always excluded.
+    Closed accounts are always excluded; stale (inactive) portfolios are excluded
+    too unless ``include_inactive`` is True.
     """
     join, where = portfolio_clause(strategy, alias="n")
+    active = active_clause(include_inactive, cutoff, alias="n")
     result = await db.execute(text(f"""
         SELECT
             n.nav_date,
@@ -79,11 +85,11 @@ async def _fetch_aggregate_nav(
         JOIN cpp_clients c ON c.id = n.client_id
         {join}
         WHERE c.is_active = true AND c.is_admin = false
-          {where}
+          {where}{active}
         GROUP BY n.nav_date
         HAVING SUM(n.nav_value) > 0
         ORDER BY n.nav_date
-    """), strategy_params(strategy))
+    """), {**strategy_params(strategy), **active_params(include_inactive, cutoff)})
     rows = result.fetchall()
     if not rows:
         return pd.DataFrame(columns=[
@@ -91,40 +97,46 @@ async def _fetch_aggregate_nav(
             "total_benchmark", "weighted_cash_pct",
         ])
 
-    return pd.DataFrame(
+    df = pd.DataFrame(
         [(r.nav_date, float(r.total_aum), float(r.total_invested),
           float(r.total_benchmark or 0), float(r.weighted_cash_pct or 0))
          for r in rows],
         columns=["nav_date", "total_aum", "total_invested",
                  "total_benchmark", "weighted_cash_pct"],
     )
+    # Normalise to python date — Postgres returns date, SQLite (tests) returns str.
+    df["nav_date"] = pd.to_datetime(df["nav_date"]).dt.date
+    return df
 
 
 async def _get_cached_composite(
-    db: AsyncSession, strategy: str = "COMBINED",
+    db: AsyncSession, strategy: str = "COMBINED", include_inactive: bool = False,
 ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
     """Return (agg_df, port_composite, bench_composite) with a 5-min TTL cache,
-    cached per strategy."""
+    cached per (strategy, include_inactive)."""
     strategy = normalize_strategy(strategy)
+    cache_key = f"{strategy}:{'all' if include_inactive else 'active'}"
     now = time.time()
-    entry = _cache.get(strategy)
+    entry = _cache.get(cache_key)
     if entry and now - entry["ts"] < _CACHE_TTL and entry["agg"] is not None:
         return entry["agg"], entry["port"], entry["bench"]
 
-    agg = await _fetch_aggregate_nav(db, strategy)
-    daily_rets = await _fetch_daily_composite_returns(db, strategy)
+    cutoff = None if include_inactive else await active_cutoff(db)
+    agg = await _fetch_aggregate_nav(db, strategy, include_inactive, cutoff)
+    daily_rets = await _fetch_daily_composite_returns(db, strategy, include_inactive, cutoff)
     if daily_rets.empty:
         port_s = pd.Series(dtype=float)
         bench_s = pd.Series(dtype=float)
     else:
         port_s, bench_s = _build_composite_from_returns(daily_rets)
 
-    _cache[strategy] = {"ts": now, "agg": agg, "port": port_s, "bench": bench_s}
+    _cache[cache_key] = {"ts": now, "agg": agg, "port": port_s, "bench": bench_s}
     return agg, port_s, bench_s
 
 
 async def _fetch_daily_composite_returns(
     db: AsyncSession, strategy: str = "COMBINED",
+    include_inactive: bool = False, cutoff=None,
 ) -> pd.DataFrame:
     """Compute AUM-weighted, TWR-adjusted daily returns in SQL for speed.
 
@@ -155,6 +167,7 @@ async def _fetch_daily_composite_returns(
     Returns ~2000 rows (one per date) instead of ~366K rows.
     """
     join, where = portfolio_clause(strategy, alias="n")
+    active = active_clause(include_inactive, cutoff, alias="n")
     result = await db.execute(text(f"""
         WITH client_nav AS (
             SELECT
@@ -177,7 +190,7 @@ async def _fetch_daily_composite_returns(
             {join}
             WHERE c.is_active = true AND c.is_admin = false
               AND n.nav_value > 0
-              {where}
+              {where}{active}
         ),
         daily_rets AS (
             SELECT
@@ -204,14 +217,18 @@ async def _fetch_daily_composite_returns(
         FROM daily_rets
         GROUP BY nav_date
         ORDER BY nav_date
-    """), strategy_params(strategy))
+    """), {**strategy_params(strategy), **active_params(include_inactive, cutoff)})
     rows = result.fetchall()
     if not rows:
         return pd.DataFrame(columns=["nav_date", "weighted_port_ret", "weighted_bench_ret"])
-    return pd.DataFrame(
+    df = pd.DataFrame(
         [(r.nav_date, float(r.weighted_port_ret), float(r.weighted_bench_ret)) for r in rows],
         columns=["nav_date", "weighted_port_ret", "weighted_bench_ret"],
     )
+    # Normalise to datetime — Postgres returns date, SQLite (tests) returns str.
+    # Only used to build the composite's DatetimeIndex (never isoformatted).
+    df["nav_date"] = pd.to_datetime(df["nav_date"])
+    return df
 
 
 def _build_composite_from_returns(daily_rets: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -252,6 +269,7 @@ def _apply_range_filter(df: pd.DataFrame, range_filter: str) -> pd.DataFrame:
 
 async def get_aggregate_nav_series(
     db: AsyncSession, range_filter: str = "ALL", strategy: str = "COMBINED",
+    include_inactive: bool = False,
 ) -> list[dict[str, Any]]:
     """Aggregate NAV series — shows actual total AUM + Nifty equivalent.
 
@@ -260,7 +278,7 @@ async def get_aggregate_nav_series(
     adjusted for the same cash inflows/outflows as the actual portfolio.
     Cash %: AUM-weighted average cash allocation.
     """
-    agg, _, bench_composite = await _get_cached_composite(db, strategy)
+    agg, _, bench_composite = await _get_cached_composite(db, strategy, include_inactive)
     if agg.empty:
         return []
 
@@ -326,14 +344,14 @@ async def get_aggregate_nav_series(
 
 
 async def get_aggregate_risk_metrics(
-    db: AsyncSession, strategy: str = "COMBINED",
+    db: AsyncSession, strategy: str = "COMBINED", include_inactive: bool = False,
 ) -> dict[str, Any]:
     """Compute risk metrics on the aggregate NAV series for a strategy.
 
     Uses AUM-weighted daily returns across the strategy's live portfolios to
     build a composite index. This eliminates distortion from new clients joining.
     """
-    agg, port_series, bench_series = await _get_cached_composite(db, strategy)
+    agg, port_series, bench_series = await _get_cached_composite(db, strategy, include_inactive)
     if len(port_series) < 2:
         return _empty_risk_response()
 
@@ -424,10 +442,10 @@ async def get_aggregate_risk_metrics(
 
 
 async def get_aggregate_performance_table(
-    db: AsyncSession, strategy: str = "COMBINED",
+    db: AsyncSession, strategy: str = "COMBINED", include_inactive: bool = False,
 ) -> list[dict[str, Any]]:
     """Multi-period performance table using AUM-weighted composite index."""
-    _, port_composite, bench_composite = await _get_cached_composite(db, strategy)
+    _, port_composite, bench_composite = await _get_cached_composite(db, strategy, include_inactive)
     if len(port_composite) < 2:
         return []
 
@@ -483,6 +501,96 @@ async def get_aggregate_performance_table(
         })
 
     return results
+
+
+async def _fetch_flows_30d(
+    db: AsyncSession, strategy: str, include_inactive: bool, cutoff, flow_cutoff,
+) -> tuple[float, float]:
+    """Rolling-30-day deposits and withdrawals (₹) for a strategy bucket.
+
+    Deposits = Σ INFLOW, withdrawals = Σ OUTFLOW on cpp_cash_flows in the window
+    [flow_cutoff, today], scoped to the strategy's live (and, unless
+    include_inactive, active) portfolios.
+    """
+    if flow_cutoff is None:
+        return 0.0, 0.0
+    join, where = portfolio_clause(strategy, alias="cf")
+    active = active_clause(include_inactive, cutoff, alias="cf")
+    result = await db.execute(text(f"""
+        SELECT
+            COALESCE(SUM(CASE WHEN cf.flow_type = 'INFLOW'  THEN cf.amount ELSE 0 END), 0) AS deposits,
+            COALESCE(SUM(CASE WHEN cf.flow_type = 'OUTFLOW' THEN cf.amount ELSE 0 END), 0) AS withdrawals
+        FROM cpp_cash_flows cf
+        JOIN cpp_clients c ON c.id = cf.client_id
+        {join}
+        WHERE c.is_active = true AND c.is_admin = false
+          AND cf.flow_date >= :flow_cutoff
+          {where}{active}
+    """), {**strategy_params(strategy), **active_params(include_inactive, cutoff),
+           "flow_cutoff": flow_cutoff})
+    row = result.one()
+    return float(row.deposits or 0), float(row.withdrawals or 0)
+
+
+async def _fetch_bucket_aum(
+    db: AsyncSession, strategy: str, include_inactive: bool, cutoff,
+) -> float:
+    """Total AUM for a strategy bucket = Σ of each portfolio's OWN latest NAV.
+
+    Per-portfolio-latest (not per-date) so a dormant sleeve still contributes its
+    last value when included, and active-only cleanly drops it — matches the
+    merge AUM snapshot. Portable (no DISTINCT ON / window functions)."""
+    join, where = portfolio_clause(strategy, alias="n")
+    active = active_clause(include_inactive, cutoff, alias="n")
+    result = await db.execute(text(f"""
+        WITH md AS (
+            SELECT n.portfolio_id AS pid, MAX(n.nav_date) AS md
+            FROM cpp_nav_series n
+            JOIN cpp_clients c ON c.id = n.client_id
+            {join}
+            WHERE c.is_active = true AND c.is_admin = false
+              {where}{active}
+            GROUP BY n.portfolio_id
+        ),
+        latest_ids AS (
+            SELECT MAX(n2.id) AS nid
+            FROM cpp_nav_series n2
+            JOIN md ON md.pid = n2.portfolio_id AND n2.nav_date = md.md
+            GROUP BY n2.portfolio_id
+        )
+        SELECT COALESCE(SUM(nav_value), 0) AS total_aum
+        FROM cpp_nav_series WHERE id IN (SELECT nid FROM latest_ids)
+    """), {**strategy_params(strategy), **active_params(include_inactive, cutoff)})
+    return float(result.scalar() or 0)
+
+
+async def get_aggregate_summary_table(
+    db: AsyncSession, include_inactive: bool = False,
+) -> dict[str, Any]:
+    """At-a-glance metrics across every strategy bucket, for the admin landing page.
+
+    Returns one entry per bucket (COMBINED / LEADERS / PASSIVE / IND11) with:
+    total_aum, cagr, max_drawdown, and rolling-30-day deposits / withdrawals.
+    Honors ``include_inactive`` (default excludes stale/dormant portfolios).
+    """
+    cutoff = None if include_inactive else await active_cutoff(db)
+    flow_cutoff = await active_cutoff(db, window_days=30)  # rolling 30 calendar days
+
+    buckets: dict[str, Any] = {}
+    for strat in ("COMBINED", "LEADERS", "PASSIVE", "IND11"):
+        total_aum = await _fetch_bucket_aum(db, strat, include_inactive, cutoff)
+        risk = await get_aggregate_risk_metrics(db, strat, include_inactive)
+        deposits, withdrawals = await _fetch_flows_30d(
+            db, strat, include_inactive, cutoff, flow_cutoff)
+        buckets[strat] = {
+            "total_aum": round(total_aum, 0),
+            "cagr": risk["cagr"],
+            "max_drawdown": risk["max_drawdown"],
+            "deposits_30d": round(deposits, 0),
+            "withdrawals_30d": round(withdrawals, 0),
+        }
+
+    return {"window_days": 30, "include_inactive": include_inactive, "buckets": buckets}
 
 
 # ── Private helpers ──────────────────────────────────────────────────────

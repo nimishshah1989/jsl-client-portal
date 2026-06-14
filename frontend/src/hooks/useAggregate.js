@@ -34,25 +34,44 @@ function useApiData(url, deps = {}) {
   return { data, loading, error, refetch };
 }
 
-export function useAggregateNavSeries(range = 'ALL', strategy = 'COMBINED') {
+export function useAggregateNavSeries(range = 'ALL', strategy = 'COMBINED', includeInactive = false) {
   return useApiData(
-    `/admin/aggregate/nav-series?range=${range}&strategy=${strategy}`,
-    { range, strategy },
+    `/admin/aggregate/nav-series?range=${range}&strategy=${strategy}&include_inactive=${includeInactive}`,
+    { range, strategy, includeInactive },
   );
 }
 
-export function useAggregatePerformance(strategy = 'COMBINED') {
-  return useApiData(`/admin/aggregate/performance-table?strategy=${strategy}`, { strategy });
+export function useAggregatePerformance(strategy = 'COMBINED', includeInactive = false) {
+  return useApiData(
+    `/admin/aggregate/performance-table?strategy=${strategy}&include_inactive=${includeInactive}`,
+    { strategy, includeInactive },
+  );
 }
 
-export function useAggregateRisk(strategy = 'COMBINED') {
-  return useApiData(`/admin/aggregate/risk-scorecard?strategy=${strategy}`, { strategy });
+export function useAggregateRisk(strategy = 'COMBINED', includeInactive = false) {
+  return useApiData(
+    `/admin/aggregate/risk-scorecard?strategy=${strategy}&include_inactive=${includeInactive}`,
+    { strategy, includeInactive },
+  );
 }
 
-export function useAggregateAllocation(strategy = 'COMBINED') {
-  return useApiData(`/admin/aggregate/allocation?strategy=${strategy}`, { strategy });
+export function useAggregateAllocation(strategy = 'COMBINED', includeInactive = false) {
+  return useApiData(
+    `/admin/aggregate/allocation?strategy=${strategy}&include_inactive=${includeInactive}`,
+    { strategy, includeInactive },
+  );
 }
 
-export function useAggregateMonthlyReturns(strategy = 'COMBINED') {
-  return useApiData(`/admin/aggregate/monthly-returns?strategy=${strategy}`, { strategy });
+export function useAggregateMonthlyReturns(strategy = 'COMBINED', includeInactive = false) {
+  return useApiData(
+    `/admin/aggregate/monthly-returns?strategy=${strategy}&include_inactive=${includeInactive}`,
+    { strategy, includeInactive },
+  );
+}
+
+export function useAggregateSummaryTable(includeInactive = false) {
+  return useApiData(
+    `/admin/aggregate/summary-table?include_inactive=${includeInactive}`,
+    { includeInactive },
+  );
 }

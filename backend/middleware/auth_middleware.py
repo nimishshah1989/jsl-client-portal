@@ -17,6 +17,10 @@ settings = get_settings()
 ALGORITHM = "HS256"
 _BCRYPT_ROUNDS = 12
 
+# Max merged_into hops to follow when resolving a retired login to its survivor
+# (cycle/length guard). Matches merge_service._MAX_MERGE_HOPS.
+_MAX_MERGE_HOPS = 10
+
 # Role hierarchy for admin RBAC (M2).
 #
 # Each admin route declares the minimum role it requires; a user with a role at
@@ -132,12 +136,52 @@ def _extract_token(request: Request, prefer_impersonation: bool) -> str:
     return token
 
 
+async def _resolve_merged_target(
+    db: AsyncSession, start_id: int, merged_into: int | None
+) -> int | None:
+    """Follow ``merged_into`` to the terminal survivor's id (per-request alias).
+
+    The unified-login merge soft-retires a person's per-code clients by pointing
+    ``merged_into`` at the survivor. Login aliases to the survivor, but a session
+    (JWT) created BEFORE the merge — or any retired-login cookie — still carries
+    the retired client_id, whose portfolios were re-parented away (so it now owns
+    nothing → a blank dashboard). Resolving here, on every request, guarantees a
+    multi-portfolio person always lands on their single unified account.
+
+    Returns the terminal survivor's id, or ``None`` if the chain is broken,
+    cyclic, too long, or ends on an unusable (inactive/deleted) account — the
+    caller must then deny rather than strand the user on an empty account.
+    """
+    from backend.models.client import Client  # avoid circular import at module level
+
+    if merged_into is None:
+        return start_id
+    seen = {start_id}
+    target = merged_into
+    for _ in range(_MAX_MERGE_HOPS):
+        if target in seen:
+            return None  # cycle — refuse to loop
+        seen.add(target)
+        row = (await db.execute(
+            select(
+                Client.id, Client.is_active, Client.is_deleted, Client.merged_into,
+            ).where(Client.id == target)
+        )).one_or_none()
+        if row is None or not row.is_active or row.is_deleted:
+            return None
+        if row.merged_into is None:
+            return int(row.id)  # terminal survivor, usable
+        target = row.merged_into
+    return None  # chain too long — refuse rather than guess
+
+
 async def _validate_client_from_db(
     decoded: dict, db: AsyncSession
 ) -> dict:
     """
     Re-validate token claims against the DB row.
-    Checks is_active, is_deleted, and token_version (C5).
+    Checks is_active, is_deleted, and token_version (C5). Follows ``merged_into``
+    so a retired-login session resolves to its unified survivor account.
     Returns the decoded dict with is_admin refreshed from DB.
     """
     from backend.models.client import Client  # avoid circular import at module level
@@ -149,6 +193,7 @@ async def _validate_client_from_db(
             Client.token_version,
             Client.is_admin,
             Client.role,
+            Client.merged_into,
         )
         .where(Client.id == decoded["client_id"])
     )
@@ -169,6 +214,17 @@ async def _validate_client_from_db(
     decoded["role"] = (
         _normalize_admin_role(row.role) if row.is_admin else (row.role or ROLE_CLIENT)
     )
+    # Unified-login: a retired session must follow to the survivor (one account).
+    if row.merged_into is not None:
+        survivor_id = await _resolve_merged_target(
+            db, decoded["client_id"], row.merged_into
+        )
+        if survivor_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account has been merged — please log in again",
+            )
+        decoded["client_id"] = survivor_id
     return decoded
 
 

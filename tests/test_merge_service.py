@@ -410,3 +410,47 @@ async def test_verify_raises_on_injected_drift(seeded):
         with pytest.raises(MergeInvariantError):
             await verify_merge_invariants(s, baseline)
         await s.rollback()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-request auth alias (a retired session must land on the survivor)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_retired_session_resolves_to_survivor_per_request(seeded):
+    """A JWT for a retired (merged_into) client resolves to the survivor on every
+    request — so a stale/grace-period session lands on the one unified account,
+    not the emptied retired one (the blank-dashboard bug)."""
+    from backend.middleware.auth_middleware import _validate_client_from_db
+    async with seeded() as s:
+        # Post-merge state: retire client 2 (BJ53PASS) onto survivor 1 (BJ53).
+        (await s.execute(select(Client).where(Client.id == 2))).scalar_one().merged_into = 1
+        await s.commit()
+
+        retired = await _validate_client_from_db(
+            {"client_id": 2, "token_version": 1, "is_admin": False}, s)
+        assert retired["client_id"] == 1            # followed alias → survivor
+
+        survivor = await _validate_client_from_db(
+            {"client_id": 1, "token_version": 1, "is_admin": False}, s)
+        assert survivor["client_id"] == 1           # survivor unchanged
+
+        single = await _validate_client_from_db(
+            {"client_id": 4, "token_version": 1, "is_admin": False}, s)
+        assert single["client_id"] == 4             # un-merged client unchanged
+
+
+@pytest.mark.asyncio
+async def test_retired_session_denied_when_survivor_unavailable(seeded):
+    """Deny (401), never strand: if the survivor is inactive/deleted, a retired
+    session is rejected rather than landing on the empty retired account."""
+    from fastapi import HTTPException
+    from backend.middleware.auth_middleware import _validate_client_from_db
+    async with seeded() as s:
+        (await s.execute(select(Client).where(Client.id == 2))).scalar_one().merged_into = 1
+        (await s.execute(select(Client).where(Client.id == 1))).scalar_one().is_active = False
+        await s.commit()
+        with pytest.raises(HTTPException) as ei:
+            await _validate_client_from_db(
+                {"client_id": 2, "token_version": 1, "is_admin": False}, s)
+        assert ei.value.status_code == 401

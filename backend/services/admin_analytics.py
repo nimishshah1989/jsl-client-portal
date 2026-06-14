@@ -20,11 +20,13 @@ fixture exercises the real query on SQLite (L-010/L-011).
 from __future__ import annotations
 
 import datetime as dt
+import math
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.services.aggregate_service import get_aggregate_risk_metrics
 from backend.services.strategy_filter import (
     active_clause,
     active_cutoff,
@@ -49,8 +51,9 @@ async def compute_dashboard_analytics(
         total_aum / total_invested / total_profit(_pct): Σ over each portfolio's
             OWN latest NAV (per-portfolio, so a unified client's sleeves all count).
         total_clients: number of distinct people with a live portfolio.
-        blended_cagr / blended_sharpe / avg_max_drawdown: AUM-weighted across
-            portfolios.
+        blended_cagr / blended_sharpe / avg_max_drawdown: the COMPOSITE
+            time-weighted figures (identical to the Strategy Summary table) —
+            NOT an average of per-portfolio CAGRs.
         total_cash / total_cash_pct: cash (ETF + ledger + bank, falling back to
             Liquidity%) summed across portfolios.
         top_performers / bottom_performers / top_by_nav / top_by_invested:
@@ -92,14 +95,25 @@ async def compute_dashboard_analytics(
         (total_aum / total_invested - 1) * 100 if total_invested > 0 else 0.0
     )
 
-    # ── Blended (AUM-weighted) firm metrics + per-person performer rollup
-    blended, client_metrics = _aggregate_risk(
+    # ── Per-person performer rollup (ranks clients by their OWN realised CAGR).
+    client_metrics = _rollup_performers(
         risk_rows, aum_by_portfolio, invested_by_portfolio
     )
 
     by_cagr = sorted(client_metrics, key=lambda x: x["cagr"], reverse=True)
     by_aum = sorted(client_metrics, key=lambda x: x["aum"], reverse=True)
     by_invested = sorted(client_metrics, key=lambda x: x["invested"], reverse=True)
+
+    # ── Firm headline CAGR / Sharpe / Max Drawdown = the COMPOSITE time-weighted
+    # return, the SAME source as the Strategy Summary table. NOT an AUM-weighted
+    # average of per-portfolio CAGRs: that average is dragged far below reality by
+    # large, recently-onboarded accounts whose short history annualises low (e.g.
+    # a ₹7.9cr account 6 months old at +2% vs the strategy's ~24% track record).
+    # One firm number, computed one way.
+    composite = await get_aggregate_risk_metrics(db, strategy, include_inactive)
+    blended_cagr = _finite(composite["cagr"])
+    blended_sharpe = _finite(composite["sharpe_ratio"])
+    avg_max_dd = _finite(composite["max_drawdown"])
 
     upload_history = await _fetch_upload_history(db)
 
@@ -109,11 +123,11 @@ async def compute_dashboard_analytics(
         "total_profit": round(total_profit, 2),
         "total_profit_pct": round(total_profit_pct, 2),
         "total_clients": total_clients,
-        "blended_cagr": round(blended["cagr"], 2),
-        "blended_sharpe": round(blended["sharpe"], 2),
+        "blended_cagr": round(blended_cagr, 2),
+        "blended_sharpe": round(blended_sharpe, 2),
         "total_cash": round(total_cash, 2),
         "total_cash_pct": round(total_cash_pct, 2),
-        "avg_max_drawdown": round(blended["max_dd"], 2),
+        "avg_max_drawdown": round(avg_max_dd, 2),
         "top_performers": by_cagr[:5],
         "top_by_nav": by_aum[:5],
         "top_by_invested": by_invested[:5],
@@ -246,32 +260,35 @@ async def _fetch_latest_risk_rows(
     return result.fetchall()
 
 
-def _aggregate_risk(
+def _finite(value: Any) -> float:
+    """Parse a metric (often a ``_r2`` string) to float; non-finite → 0.0.
+
+    The composite risk response stringifies values, and degenerate inputs can
+    yield 'nan'/'inf' — which would break strict JSON. Coerce those to 0.0.
+    """
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return x if math.isfinite(x) else 0.0
+
+
+def _rollup_performers(
     risk_rows: list[Any],
     aum_by_portfolio: dict[int, float],
     invested_by_portfolio: dict[int, float],
-) -> tuple[dict[str, float], list[dict[str, Any]]]:
-    """AUM-weight per-portfolio risk into firm blended metrics + per-person rows.
+) -> list[dict[str, Any]]:
+    """Roll each person's portfolios into ONE performer row.
 
-    Firm blended metrics weight every portfolio by its own latest AUM. The
-    performer rows roll each person's sleeves into a single entry (sum AUM /
-    invested; AUM-weight the ratios) so the admin UI shows one row per client.
+    Sums AUM / invested across the person's sleeves and AUM-weights the ratios,
+    so the admin Top-5 lists show one row per client (the UI keys on client_id).
+    These per-client figures rank clients by their OWN realised return; the firm
+    headline CAGR/Sharpe/DD come from the composite (see compute_dashboard_analytics).
     """
-    weighted_cagr = weighted_dd = weighted_sharpe = total_weight = 0.0
     per_client: dict[int, dict[str, Any]] = {}
 
     for row in risk_rows:
         weight = aum_by_portfolio.get(row.portfolio_id, 0.0)
-        cagr_val = float(row.cagr or 0)
-        dd_val = float(row.max_drawdown or 0)
-        sharpe_val = float(row.sharpe_ratio or 0)
-        xirr_val = float(row.xirr or 0)
-
-        weighted_cagr += cagr_val * weight
-        weighted_dd += dd_val * weight
-        weighted_sharpe += sharpe_val * weight
-        total_weight += weight
-
         cm = per_client.setdefault(row.client_id, {
             "client_id": row.client_id,
             "name": row.name,
@@ -286,17 +303,11 @@ def _aggregate_risk(
         })
         cm["aum"] += weight
         cm["invested"] += invested_by_portfolio.get(row.portfolio_id, 0.0)
-        cm["_wcagr"] += cagr_val * weight
-        cm["_wdd"] += dd_val * weight
-        cm["_wsharpe"] += sharpe_val * weight
-        cm["_wxirr"] += xirr_val * weight
+        cm["_wcagr"] += float(row.cagr or 0) * weight
+        cm["_wdd"] += float(row.max_drawdown or 0) * weight
+        cm["_wsharpe"] += float(row.sharpe_ratio or 0) * weight
+        cm["_wxirr"] += float(row.xirr or 0) * weight
         cm["_w"] += weight
-
-    blended = {
-        "cagr": weighted_cagr / total_weight if total_weight > 0 else 0.0,
-        "max_dd": weighted_dd / total_weight if total_weight > 0 else 0.0,
-        "sharpe": weighted_sharpe / total_weight if total_weight > 0 else 0.0,
-    }
 
     client_metrics: list[dict[str, Any]] = []
     for cm in per_client.values():
@@ -312,7 +323,7 @@ def _aggregate_risk(
             "aum": round(cm["aum"], 2),
             "invested": round(cm["invested"], 2),
         })
-    return blended, client_metrics
+    return client_metrics
 
 
 async def _fetch_upload_history(db: AsyncSession) -> list[dict[str, Any]]:

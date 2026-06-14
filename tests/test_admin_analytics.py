@@ -26,7 +26,9 @@ from backend.models.client import Client
 from backend.models.nav_series import NavSeries
 from backend.models.portfolio import Portfolio
 from backend.models.risk_metric import RiskMetric
-from backend.services.admin_analytics import compute_dashboard_analytics
+from backend.services import aggregate_service
+from backend.services.admin_analytics import _finite, compute_dashboard_analytics
+from backend.services.aggregate_service import get_aggregate_risk_metrics
 
 # cpp_upload_log uses a Postgres JSONB column that won't compile on SQLite, so we
 # create a minimal version (just the columns the analytics query reads) by hand.
@@ -54,6 +56,10 @@ async def analytics_db():
       default, included only when include_inactive=True. AUM 200.
     - ADMIN (client 9): excluded (is_admin).
     """
+    # The composite is cached module-globally by (strategy, active); clear it so
+    # one test's data can't leak into another now that compute_dashboard_analytics
+    # delegates the headline metrics to get_aggregate_risk_metrics.
+    aggregate_service._cache.clear()
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp.name}")
@@ -189,15 +195,6 @@ async def test_unified_client_is_one_performer_row_with_combined_aum(analytics_d
 
 
 @pytest.mark.asyncio
-async def test_blended_cagr_is_aum_weighted_across_portfolios(analytics_db):
-    """Firm blended CAGR weights every portfolio by its own AUM."""
-    async with analytics_db() as s:
-        out = await compute_dashboard_analytics(s, "COMBINED", include_inactive=False)
-    # (20*1000 + 10*500 + 30*300 + 12*400) / 2200 = 38800/2200 = 17.64
-    assert out["blended_cagr"] == pytest.approx(17.64, abs=0.01)
-
-
-@pytest.mark.asyncio
 async def test_closed_and_admin_excluded(analytics_db):
     """Closed sleeves and admin accounts never contribute to any total."""
     async with analytics_db() as s:
@@ -229,3 +226,28 @@ async def test_strategy_filter_scopes_to_one_sleeve(analytics_db):
     # Only the unified client's PASSIVE sleeve (AUM 500).
     assert passive["total_aum"] == 500.0
     assert passive["total_clients"] == 1
+
+
+@pytest.mark.asyncio
+async def test_headline_metrics_come_from_composite_not_avg_of_cagrs(analytics_db):
+    """Firm CAGR/Sharpe/MaxDD on the StatCards must be the COMPOSITE TWR (same
+    source as the Strategy Summary table), not an AUM-weighted average of
+    per-portfolio stored CAGRs.
+
+    Regression guard for the live bug where the card showed +11.48% while the
+    composite (and reality) was ~+24%. On this fixture the composite differs from
+    the avg-of-stored-CAGRs, so a revert to the old method would break this.
+    """
+    async with analytics_db() as s:
+        comp = await get_aggregate_risk_metrics(s, "COMBINED", False)
+        out = await compute_dashboard_analytics(s, "COMBINED", False)
+
+    # Card delegates the headline figures to the composite (same coercion).
+    assert out["blended_cagr"] == round(_finite(comp["cagr"]), 2)
+    assert out["avg_max_drawdown"] == round(_finite(comp["max_drawdown"]), 2)
+    assert out["blended_sharpe"] == round(_finite(comp["sharpe_ratio"]), 2)
+
+    # The old method (AUM-weighted mean of the seeded 20/10/30/12% sleeve CAGRs,
+    # ≈ +17.64%) would NOT match the composite — so a revert breaks this.
+    avg_of_stored = (20 * 1000 + 10 * 500 + 30 * 300 + 12 * 400) / 2200
+    assert out["blended_cagr"] != round(avg_of_stored, 2)

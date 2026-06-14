@@ -100,3 +100,17 @@
 - **Engine-agnostic SQL** (no `DISTINCT ON`/`FILTER`/`ON CONFLICT`, no window-function reliance) lets the CI fixture run the *real* migration on SQLite — the strongest possible test. Pick exactly one row per group with a `MAX(id)`-at-`MAX(date)` subquery to match Postgres `DISTINCT ON` deterministically.
 - **CLI ordering:** write side-artifacts (credential CSV) **after** commit so a filesystem error can't roll back a verified merge; validate `--expect-*` guards up front so a typo aborts cleanly, not with a `Decimal` traceback.
 **Impact:** `merge_service.py` / `merge_clients_by_name.py` reflect all of the above; `tests/test_merge_service.py` seeds a prod-shaped DB (multi-code person + single-code + closed + admin + soft-deleted-same-name) and runs the real migration in CI, asserting every invariant + alias resolution.
+
+---
+
+## L-012: The staging rehearsal earned its keep — it caught 3 real defects before prod
+**Date:** 2026-06-14
+**Category:** Migrations / Data Quality / Process
+**Learning:** Running the PR7 merge on a real snapshot restore (not just the CI fixture) surfaced things synthetic tests never would:
+- **Combined view dropped dormant sleeves.** Summing portfolios by *shared NAV date* and reading the latest date silently drops a sleeve whose series ended earlier — 3/21 clients under-counted. Fix: forward-fill each sleeve to the union of dates, then sum (additive across mismatched ranges). Lesson: any "sum across series" must define behaviour when the series have **different end dates**.
+- **76/367 "live" accounts were dormant** (stale NAV up to 5 yrs) — the daily NAV file only reports active accounts, so dropped-out = redeemed, but nothing flags them. They inflated AUM at stale values. There was **no lifecycle mechanism to close accounts that vanish from the file** — added `flag_dormant_portfolios.py`; ingestion should eventually auto-detect this.
+- **Two AUM truths.** Firm AUM via *per-portfolio latest* (merge invariant, the table) stays correct under dormancy/mismatched dates; *per-date sum* (combined chart) and *`DISTINCT ON (client_id)`* (dashboard-analytics) do not. After a multi-portfolio merge, anything keyed `DISTINCT ON (client_id)` undercounts — must move to per-portfolio.
+- **A stale `impersonation_token` wedged login** (200-then-401): `get_current_user` prefers it, but logout didn't clear it. Lesson: clear *every* auth cookie on logout; when one cookie type takes precedence, a stale copy is a silent foot-gun.
+- **Baselines drift.** Hard-coded `--expect-aum` from a prior week was already stale (prod data refreshed). Always re-capture invariant baselines from a fresh dry-run, never trust a number written down days earlier.
+- **Frontend can't be built in agent sandboxes** (no `node_modules`) — the deploy's `npm run build` is the only JSX validation; write components to the existing pattern and treat the deploy as the test (it passed for the admin table/toggle).
+**Impact:** PRs #47–#50 + `flag_dormant_portfolios.py`; HANDOFF §0 documents the gated prod-execution order so the next session runs it without re-deriving.

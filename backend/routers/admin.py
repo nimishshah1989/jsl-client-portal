@@ -21,7 +21,13 @@ from backend.models.client import Client
 from backend.models.nav_series import NavSeries
 from backend.models.upload_log import UploadLog
 from backend.schemas.admin import UploadLogResponse
-from backend.services.strategy_filter import portfolio_clause, strategy_params
+from backend.services.strategy_filter import (
+    active_clause,
+    active_cutoff,
+    active_params,
+    portfolio_clause,
+    strategy_params,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -292,6 +298,7 @@ async def data_status(
 @router.get("/dashboard-analytics")
 async def dashboard_analytics(
     strategy: str = Query("COMBINED"),
+    include_inactive: bool = Query(False),
     admin: dict = Depends(require_role(ROLE_ADMIN_READONLY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -313,7 +320,19 @@ async def dashboard_analytics(
         avg_max_drawdown: Average max drawdown across clients
         data_as_of: Latest NAV date in the system
     """
-    params = strategy_params(strategy)
+    # Active-portfolio filter (default on): exclude stale/dormant portfolios so
+    # these firm totals match the Strategy Summary table. include_inactive flips it.
+    cutoff = None if include_inactive else await active_cutoff(db)
+    params = {**strategy_params(strategy), **active_params(include_inactive, cutoff)}
+    active_n = active_clause(include_inactive, cutoff, alias="n")
+    active_r = active_clause(include_inactive, cutoff, alias="r")
+    # cpp_portfolios is aliased pstrat (its id IS the portfolio id), so the recency
+    # filter keys off pstrat.id rather than a portfolio_id column.
+    active_pstrat = (
+        "" if (include_inactive or cutoff is None)
+        else " AND pstrat.id IN (SELECT portfolio_id FROM cpp_nav_series "
+             "GROUP BY portfolio_id HAVING MAX(nav_date) >= :active_cutoff)"
+    )
 
     # Active clients with a live portfolio in this strategy.
     cc_sql = (
@@ -322,8 +341,9 @@ async def dashboard_analytics(
         "WHERE c.is_active = true AND c.is_admin = false "
         "AND pstrat.is_closed = false"
     )
-    if params:
+    if strategy_params(strategy):
         cc_sql += " AND pstrat.strategy = :strategy"
+    cc_sql += active_pstrat
     client_count = (await db.execute(text(cc_sql), params)).scalar() or 0
 
     # Latest NAV per client (for AUM, cash calculations)
@@ -340,7 +360,7 @@ async def dashboard_analytics(
         JOIN cpp_clients c ON c.id = n.client_id
         {nav_join}
         WHERE c.is_active = true AND c.is_admin = false
-          {nav_where}
+          {nav_where}{active_n}
         ORDER BY n.client_id, n.nav_date DESC
     """), params)
     nav_rows = latest_navs.fetchall()
@@ -384,7 +404,7 @@ async def dashboard_analytics(
         JOIN cpp_clients c ON c.id = r.client_id
         {risk_join}
         WHERE c.is_active = true AND c.is_admin = false
-          {risk_where}
+          {risk_where}{active_r}
         ORDER BY r.client_id, r.computed_date DESC
     """), params)
     risk_data = risk_rows.fetchall()

@@ -64,7 +64,7 @@ export default function AdminDashboard() {
     data: analytics,
     loading: analyticsLoading,
     refetch: refetchAnalytics,
-  } = useDashboardAnalytics(strategy);
+  } = useDashboardAnalytics(strategy, includeInactive);
 
   useEffect(() => {
     refetchClients();

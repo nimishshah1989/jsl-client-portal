@@ -361,3 +361,67 @@ async def get_combined_holdings(db: AsyncSession, client_id: int) -> list[dict[s
         }
         for m in merged
     ]
+
+
+async def get_portfolios_summary(db: AsyncSession, client_id: int) -> dict[str, Any]:
+    """Per-sleeve snapshot for the client's LIVE portfolios + a Combined total row.
+
+    Powers the dashboard "all my portfolios at a glance" table. Each row carries
+    the sleeve's source code, strategy, invested, current value, absolute return %
+    and stored since-inception CAGR. The ``combined`` block reuses
+    get_combined_summary (TWR-based), so it matches the Combined summary cards.
+
+    Engine-portable (no DISTINCT ON): latest NAV / risk row per portfolio via
+    MAX(date) then MAX(id). Client-scoped throughout.
+    """
+    live = await _live_portfolio_ids(db, client_id)
+    if not live:
+        return {"portfolios": [], "combined": {}}
+
+    rows = (await db.execute(text("""
+        WITH nav_md AS (
+            SELECT portfolio_id, MAX(nav_date) AS mxd
+            FROM cpp_nav_series WHERE client_id = :cid GROUP BY portfolio_id
+        ),
+        nav_latest AS (
+            SELECT MAX(n.id) AS nid FROM cpp_nav_series n
+            JOIN nav_md ON nav_md.portfolio_id = n.portfolio_id AND n.nav_date = nav_md.mxd
+            GROUP BY n.portfolio_id
+        ),
+        risk_md AS (
+            SELECT portfolio_id, MAX(computed_date) AS mxc
+            FROM cpp_risk_metrics WHERE client_id = :cid GROUP BY portfolio_id
+        ),
+        risk_latest AS (
+            SELECT MAX(r.id) AS rid FROM cpp_risk_metrics r
+            JOIN risk_md ON risk_md.portfolio_id = r.portfolio_id AND r.computed_date = risk_md.mxc
+            GROUP BY r.portfolio_id
+        )
+        SELECT p.id AS pid, p.client_code AS code, p.strategy AS strat,
+               n.invested_amount AS invested, n.nav_value AS current,
+               n.nav_date AS d, r.cagr AS cagr
+        FROM cpp_portfolios p
+        JOIN cpp_nav_series n
+            ON n.portfolio_id = p.id AND n.id IN (SELECT nid FROM nav_latest)
+        LEFT JOIN cpp_risk_metrics r
+            ON r.portfolio_id = p.id AND r.id IN (SELECT rid FROM risk_latest)
+        WHERE p.client_id = :cid AND p.is_closed = false
+        ORDER BY n.nav_value DESC
+    """), {"cid": client_id})).fetchall()
+
+    portfolios: list[dict[str, Any]] = []
+    for r in rows:
+        invested = Decimal(str(r.invested or 0))
+        current = Decimal(str(r.current or 0))
+        ret_pct = ((current / invested - 1) * 100) if invested > 0 else Decimal("0")
+        portfolios.append({
+            "client_code": r.code,
+            "strategy": r.strat,
+            "invested": _d2(invested),
+            "current_value": _d2(current),
+            "return_pct": _d2(ret_pct),
+            "cagr": _d2(Decimal(str(r.cagr))) if r.cagr is not None else None,
+        })
+
+    combined = await get_combined_summary(db, client_id)
+    return {"portfolios": portfolios, "combined": combined}

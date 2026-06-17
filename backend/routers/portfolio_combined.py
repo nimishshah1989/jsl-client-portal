@@ -28,6 +28,7 @@ from backend.services.combined_service import (
     get_combined_nav_series,
     get_combined_summary,
     get_combined_transactions,
+    get_portfolios_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,20 @@ async def combined_summary(
     """Combined summary cards across the client's live portfolios."""
     client_id: int = user["client_id"]
     data = await get_combined_summary(db, client_id)
+    await _audit(db, request, client_id, "PORTFOLIO")
+    return data
+
+
+@router.get("/portfolios-summary")
+async def combined_portfolios_summary(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Per-sleeve snapshot + Combined total row — the 'all my portfolios at a
+    glance' table on the dashboard's Combined view."""
+    client_id: int = user["client_id"]
+    data = await get_portfolios_summary(db, client_id)
     await _audit(db, request, client_id, "PORTFOLIO")
     return data
 

@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 import ClientHeader from '@/components/dashboard/ClientHeader';
 import ReconStatusBanner from '@/components/dashboard/ReconStatusBanner';
 import SummaryCards from '@/components/dashboard/SummaryCards';
+import PortfolioBreakdown from '@/components/dashboard/PortfolioBreakdown';
 import NavChart from '@/components/dashboard/NavChart';
 import PerformanceTable from '@/components/dashboard/PerformanceTable';
 import GrowthViz from '@/components/dashboard/GrowthViz';
@@ -39,6 +40,11 @@ export default function DashboardPage() {
       {/* 2. Summary Cards */}
       <section id="summary">
         <SummaryCards />
+      </section>
+
+      {/* 2b. Your Portfolios — per-sleeve glance (Combined view, multi-portfolio only) */}
+      <section id="portfolios">
+        <PortfolioBreakdown />
       </section>
 
       {/* 3. NAV Performance Chart */}

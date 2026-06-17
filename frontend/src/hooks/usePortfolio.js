@@ -45,6 +45,15 @@ export function useSummary() {
   return useApiData(buildPortfolioUrl('summary', selection), { selection });
 }
 
+/**
+ * Per-sleeve snapshot + Combined total — powers the "Your Portfolios" glance
+ * table on the Combined view. Always the combined-scoped endpoint (not routed
+ * by selection); the component only shows it on the Combined view.
+ */
+export function usePortfoliosSummary() {
+  return useApiData('/portfolio/combined/portfolios-summary');
+}
+
 export function useNavSeries(range = 'ALL') {
   const { selection } = usePortfolioSelection();
   return useApiData(buildPortfolioUrl('nav-series', selection, { range }), { selection, range });

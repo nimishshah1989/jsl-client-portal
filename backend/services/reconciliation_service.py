@@ -244,29 +244,35 @@ async def _load_our_holdings(
 ]:
     """Load all holdings from cpp_holdings, enriched with instrument_type from transactions.
 
+    Keyed by the **portfolio's** ``client_code`` (the sleeve's source UCC), NOT
+    the owning client's code. After the unified-login merge one client owns
+    several portfolios, each carrying its own source code — keying by the client
+    would collapse every sleeve under the survivor's code (flooding the BO sheet
+    for that code with EXTRA_IN_OURS while the other codes show MISSING_IN_OURS).
+
     Returns two parallel lookup dicts so reconciliation can match by ISIN first
     (authoritative, stable) then fall back to symbol (for records without ISIN).
 
-    instrument_type is fetched from the most recent transaction for each (client, symbol)
-    pair so we can classify ETF/MF positions as STRUCTURAL_ETF rather than EXTRA_IN_OURS.
+    instrument_type is fetched per (portfolio, symbol) so ETF/MF positions
+    classify as STRUCTURAL_ETF rather than EXTRA_IN_OURS.
     """
     result = await db.execute(text("""
         SELECT
-            c.client_code, c.name, h.symbol, h.isin, h.quantity,
+            p.client_code, c.name, h.symbol, h.isin, h.quantity,
             h.avg_cost, h.current_price, h.current_value,
             h.unrealized_pnl, h.weight_pct, h.asset_class,
             COALESCE(it.instrument_type, 'EQ') AS instrument_type
         FROM cpp_holdings h
+        JOIN cpp_portfolios p ON p.id = h.portfolio_id
         JOIN cpp_clients c ON c.id = h.client_id
         LEFT JOIN (
-            SELECT DISTINCT ON (client_id, symbol)
-                client_id, symbol, instrument_type
+            SELECT portfolio_id, symbol, MAX(instrument_type) AS instrument_type
             FROM cpp_transactions
             WHERE instrument_type IS NOT NULL AND instrument_type <> ''
-            ORDER BY client_id, symbol, txn_date DESC
-        ) it ON it.client_id = h.client_id AND it.symbol = h.symbol
+            GROUP BY portfolio_id, symbol
+        ) it ON it.portfolio_id = h.portfolio_id AND it.symbol = h.symbol
         WHERE h.quantity > 0
-        ORDER BY c.client_code, h.symbol
+        ORDER BY p.client_code, h.symbol
     """))
 
     by_symbol: dict[str, dict[str, dict]] = {}
@@ -307,15 +313,27 @@ async def _load_our_holdings(
 
 
 async def _load_latest_navs(db: AsyncSession) -> dict[str, dict]:
-    """Load latest NAV per client from cpp_nav_series, keyed by client_code.
+    """Load latest NAV per PORTFOLIO from cpp_nav_series, keyed by the portfolio's
+    client_code (the sleeve's source UCC).
 
-    Returns nav_value (total), equity_component (NAV minus ETF, cash, bank),
-    invested_amount, and nav_date. equity_component is directly comparable
-    to the BO holding report total.
+    Keyed per portfolio — not per client — so the equity-component check lines up
+    with each BO sheet after the unified-login merge (one client owns several
+    sleeves, each with its own code). Returns nav_value (total), equity_component
+    (NAV minus ETF, cash, bank), invested_amount, and nav_date. Engine-portable
+    (no DISTINCT ON): latest row per portfolio via MAX(nav_date) then MAX(id).
     """
     result = await db.execute(text("""
-        SELECT DISTINCT ON (n.client_id)
-            c.client_code,
+        WITH md AS (
+            SELECT portfolio_id, MAX(nav_date) AS mxd
+            FROM cpp_nav_series GROUP BY portfolio_id
+        ),
+        latest_ids AS (
+            SELECT MAX(n.id) AS nid FROM cpp_nav_series n
+            JOIN md ON md.portfolio_id = n.portfolio_id AND n.nav_date = md.mxd
+            GROUP BY n.portfolio_id
+        )
+        SELECT
+            p.client_code,
             n.nav_value,
             n.invested_amount,
             COALESCE(n.etf_value, 0) AS etf_value,
@@ -323,9 +341,9 @@ async def _load_latest_navs(db: AsyncSession) -> dict[str, dict]:
             COALESCE(n.bank_balance, 0) AS bank_balance,
             n.nav_date
         FROM cpp_nav_series n
+        JOIN cpp_portfolios p ON p.id = n.portfolio_id
         JOIN cpp_clients c ON c.id = n.client_id
-        WHERE c.is_active = true
-        ORDER BY n.client_id, n.nav_date DESC
+        WHERE n.id IN (SELECT nid FROM latest_ids) AND c.is_active = true
     """))
 
     navs: dict[str, dict] = {}

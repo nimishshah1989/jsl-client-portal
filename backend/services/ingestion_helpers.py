@@ -34,20 +34,48 @@ logger = logging.getLogger(__name__)
 
 _ZERO = Decimal("0")
 
+# Max merged_into hops when resolving a retired code to its survivor (cycle/length
+# guard). Matches auth_middleware / merge_service.
+_MAX_MERGE_HOPS = 10
+
 
 async def find_or_create_client(
     db: AsyncSession,
     client_code: str,
     client_name: str,
 ) -> int:
-    """Find existing client by code or create a new one. Returns client_id."""
+    """Find existing client by code or create a new one. Returns client_id.
+
+    Follows ``cpp_clients.merged_into`` so a code retired by the unified-login
+    merge resolves to its SURVIVOR. New uploads for a retired code (e.g. AC04
+    after AMITKUMAR's codes were unified onto AC04MF) therefore attach to the
+    unified account — keeping every data row's ``client_id`` equal to its
+    portfolio's ``client_id`` — instead of re-populating the emptied retired
+    client (which also collides on the unique ``client_code`` of the re-parented
+    portfolio).
+    """
     result = await db.execute(
-        text("SELECT id FROM cpp_clients WHERE client_code = :code"),
+        text("SELECT id, merged_into FROM cpp_clients WHERE client_code = :code"),
         {"code": client_code},
     )
     row = result.fetchone()
     if row:
-        return row[0]
+        client_id, merged_into = row[0], row[1]
+        seen = {client_id}
+        hops = 0
+        while merged_into is not None and hops < _MAX_MERGE_HOPS:
+            if merged_into in seen:
+                break  # cycle guard — fall back to the last good id
+            seen.add(merged_into)
+            nxt = (await db.execute(
+                text("SELECT id, merged_into FROM cpp_clients WHERE id = :id"),
+                {"id": merged_into},
+            )).fetchone()
+            if nxt is None:
+                break
+            client_id, merged_into = nxt[0], nxt[1]
+            hops += 1
+        return client_id
 
     username = client_code.lower().replace(" ", "")
     # Placeholder hash — admin must set real password via bulk-create or manual update
@@ -92,6 +120,22 @@ async def find_or_create_portfolio(
     if client_code:
         cls = classify_code(client_code)
         strategy, is_closed = cls.strategy, cls.is_closed
+
+        # A portfolio is identified by its globally-unique ``client_code``. After
+        # the unified-login merge a code's portfolio lives under the survivor
+        # (renamed "PMS Equity (<code>)"), so resolve by code first — never try to
+        # recreate it under the (retired) client, which violates the unique
+        # constraint uq_cpp_portfolios_client_code. This also makes re-uploads
+        # idempotent: the same code always maps back to the same portfolio.
+        existing = await db.execute(
+            text("SELECT id FROM cpp_portfolios WHERE client_code = :code"),
+            {"code": client_code},
+        )
+        row = existing.fetchone()
+        if row:
+            portfolio_id = row[0]
+            await _tag_portfolio(db, portfolio_id, client_code, strategy, is_closed)
+            return portfolio_id
 
     idate = inception_date.date() if hasattr(inception_date, "hour") else inception_date
 

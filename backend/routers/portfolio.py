@@ -263,6 +263,46 @@ def _is_cash_instrument(symbol: str | None, asset_class: str | None) -> bool:
     return asset == "CASH" or sym in _LIQUID_SYMBOLS or sym.startswith("LIQUID")
 
 
+def _build_cash_lines(
+    equity_total: Decimal,
+    undeployed: Decimal,
+    liquid_bees: Decimal,
+    total_value: Decimal,
+) -> list["CashLineItem"]:
+    """Cash / reconciling rows for the holdings table, with weights on total NAV.
+
+    The equity rows are priced at live CMP, but the denominator is the official
+    NAV. When the NAV's equity mark exceeds our itemised live-priced positions
+    (e.g. a holding awaiting a price refresh after an upload), the difference
+    would otherwise leave the table's weights short of 100%. We surface that
+    residual as an explicit line (when material) so equity + cash + residual
+    always closes to 100%. A negative residual (rare: stale-high prices) is not
+    shown. After a fresh equity-holding upload the residual is ~0 and no line
+    appears.
+    """
+    denom = total_value if total_value > Decimal("0") else Decimal("1")
+    items: list[CashLineItem] = []
+    if undeployed > Decimal("0"):
+        items.append(CashLineItem(
+            label="Undeployed Cash", value=dec2(undeployed),
+            weight_pct=dec2(undeployed / denom * Decimal("100")),
+        ))
+    if liquid_bees > Decimal("0"):
+        items.append(CashLineItem(
+            label="Liquid Bees / Liquid ETF", value=dec2(liquid_bees),
+            weight_pct=dec2(liquid_bees / denom * Decimal("100")),
+        ))
+    residual = total_value - equity_total - undeployed - liquid_bees
+    # Material only: > 0.5% of NAV and > ₹1 (ignore rounding noise).
+    if residual > total_value * Decimal("0.005") and residual > Decimal("1"):
+        items.append(CashLineItem(
+            label="Other (broker valuation)", value=dec2(residual),
+            weight_pct=dec2(residual / denom * Decimal("100")),
+        ))
+    return items
+
+
+
 @router.get("/holdings", response_model=HoldingsResponse)
 async def get_holdings(
     request: Request,
@@ -360,19 +400,8 @@ async def get_holdings(
             weight_pct=dec2(cur_val / denom * Decimal("100")),
         ))
 
-    cash_items: list[CashLineItem] = []
-    if undeployed > Decimal("0"):
-        cash_items.append(CashLineItem(
-            label="Undeployed Cash",
-            value=dec2(undeployed),
-            weight_pct=dec2(undeployed / denom * Decimal("100")),
-        ))
-    if liquid_bees > Decimal("0"):
-        cash_items.append(CashLineItem(
-            label="Liquid Bees / Liquid ETF",
-            value=dec2(liquid_bees),
-            weight_pct=dec2(liquid_bees / denom * Decimal("100")),
-        ))
+    # Cash + reconciling rows so equity + cash close to 100% of the NAV total.
+    cash_items = _build_cash_lines(equity_total, undeployed, liquid_bees, total_value)
 
     await log_audit(
         db, user_id=client_id, action="VIEW",

@@ -693,10 +693,31 @@ async def _writeback_client_recon_status(
 
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
 
+    # Recon results are per source code (one per sleeve). After the unified-login
+    # merge a person owns several sleeves, so resolve each code to its OWNING
+    # (survivor) client via cpp_portfolios and aggregate — the person's single
+    # banner is dirty if ANY of their sleeves has a mismatch. Writing by code
+    # would instead land each sleeve's status on its hidden retired alias client.
+    code_to_owner: dict[str, int] = {
+        row[0]: row[1]
+        for row in (await db.execute(text(
+            "SELECT client_code, client_id FROM cpp_portfolios "
+            "WHERE client_code IS NOT NULL"
+        ))).all()
+    }
+
+    agg: dict[int, dict[str, int]] = {}
     for client_recon in summary.clients:
-        qty = client_recon.qty_mismatch_count
-        missing = client_recon.missing_in_ours_count
-        extra = client_recon.extra_in_ours_count
+        owner_id = code_to_owner.get(client_recon.client_code)
+        if owner_id is None:
+            continue  # code has no portfolio (e.g. empty stub) — nothing to flag
+        a = agg.setdefault(owner_id, {"qty": 0, "missing": 0, "extra": 0})
+        a["qty"] += client_recon.qty_mismatch_count
+        a["missing"] += client_recon.missing_in_ours_count
+        a["extra"] += client_recon.extra_in_ours_count
+
+    for owner_id, a in agg.items():
+        qty, missing, extra = a["qty"], a["missing"], a["extra"]
         is_clean = (qty == 0 and missing == 0 and extra == 0)
 
         if is_clean:
@@ -724,22 +745,22 @@ async def _writeback_client_recon_status(
                     "SET is_recon_clean = :clean, "
                     "    recon_last_run_at = :run_at, "
                     "    recon_notes = :notes "
-                    "WHERE client_code = :code"
+                    "WHERE id = :id"
                 ),
                 {
                     "clean": is_clean,
                     "run_at": now,
                     "notes": notes,
-                    "code": client_recon.client_code,
+                    "id": owner_id,
                 },
             )
         except Exception:  # pragma: no cover — defensive: never fail recon over writeback
             logger.exception(
-                "C11 writeback failed for client %s — recon result still returned",
-                client_recon.client_code,
+                "C11 writeback failed for client id %s — recon result still returned",
+                owner_id,
             )
 
     logger.info(
-        "C11: wrote recon status to cpp_clients for %d clients",
-        len(summary.clients),
+        "C11: wrote recon status to cpp_clients for %d people",
+        len(agg),
     )

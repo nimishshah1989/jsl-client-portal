@@ -15,9 +15,11 @@ os.environ.setdefault("JWT_SECRET", "a" * 64)
 import datetime as dt
 import tempfile
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.database import Base
@@ -27,8 +29,10 @@ from backend.models.nav_series import NavSeries
 from backend.models.portfolio import Portfolio
 from backend.models.transaction import Transaction
 from backend.services.reconciliation_service import (
+    ClientReconciliation,
     _load_latest_navs,
     _load_our_holdings,
+    _writeback_client_recon_status,
 )
 
 
@@ -104,3 +108,33 @@ async def test_navs_keyed_by_sleeve_code_not_survivor(merged_db):
     assert set(navs.keys()) == {"BJ53", "BJ53MF"}
     assert navs["BJ53"]["nav_value"] == Decimal("1200")
     assert navs["BJ53MF"]["nav_value"] == Decimal("1050")
+
+
+@pytest.mark.asyncio
+async def test_recon_status_aggregates_onto_survivor(merged_db):
+    """A mismatch on ANY sleeve marks the SURVIVOR's banner dirty — the status is
+    not stranded on the (hidden) retired alias of that sleeve's code."""
+    async with merged_db() as s:
+        summary = SimpleNamespace(clients=[
+            ClientReconciliation(client_code="BJ53"),                      # clean sleeve
+            ClientReconciliation(client_code="BJ53MF", qty_mismatch_count=1),  # dirty sleeve
+        ])
+        await _writeback_client_recon_status(summary, s)
+        await s.commit()
+        survivor = (await s.execute(select(Client).where(Client.id == 1))).scalar_one()
+        assert survivor.is_recon_clean is False
+        assert "quantity mismatch" in (survivor.recon_notes or "")
+
+
+@pytest.mark.asyncio
+async def test_recon_status_clean_when_all_sleeves_clean(merged_db):
+    async with merged_db() as s:
+        summary = SimpleNamespace(clients=[
+            ClientReconciliation(client_code="BJ53"),
+            ClientReconciliation(client_code="BJ53MF"),
+        ])
+        await _writeback_client_recon_status(summary, s)
+        await s.commit()
+        survivor = (await s.execute(select(Client).where(Client.id == 1))).scalar_one()
+        assert survivor.is_recon_clean is True
+        assert survivor.recon_notes is None

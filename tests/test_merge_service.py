@@ -454,3 +454,24 @@ async def test_retired_session_denied_when_survivor_unavailable(seeded):
             await _validate_client_from_db(
                 {"client_id": 2, "token_version": 1, "is_admin": False}, s)
         assert ei.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_admin_client_list_hides_merged_aliases(seeded):
+    """After the merge, the admin client list shows one row per person (the
+    survivor) — retired per-code aliases are hidden, and the survivor's
+    portfolio_count reflects every re-parented sleeve."""
+    from backend.routers.admin_clients import list_clients
+    async with seeded() as s:
+        await merge_clients_by_name(s, dry_run=False)
+        await s.commit()
+        rows = await list_clients(admin={"client_id": 1, "is_admin": True}, db=s)
+        ids = {r.id for r in rows}
+        # Retired aliases (BJ53PASS=2, BJ53CLOSE=3) and soft-deleted (6) are gone.
+        assert ids.isdisjoint({2, 3, 6})
+        # Survivor BJ53 (id=1) appears once, owning its re-parented sleeves.
+        survivors = [r for r in rows if r.id == 1]
+        assert len(survivors) == 1
+        assert survivors[0].portfolio_count >= 2
+        # Untouched single-code person still listed.
+        assert 4 in ids

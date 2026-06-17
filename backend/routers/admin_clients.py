@@ -37,12 +37,16 @@ async def list_clients(
 ) -> list[ClientListResponse]:
     """List all clients with portfolio counts.
 
-    Soft-deleted clients are excluded (M9). Use a dedicated archive view if
-    deleted records ever need to be inspected.
+    Soft-deleted clients are excluded (M9). Retired unified-login aliases
+    (``merged_into`` set) are also excluded — after the merge a person is one
+    account (the survivor), whose ``portfolio_count`` already reflects every
+    re-parented sleeve. Showing the retired per-code rows would list the same
+    person many times and let an admin open an emptied alias.
     """
     stmt = (
         select(Client)
         .where(Client.is_deleted.is_(False))
+        .where(Client.merged_into.is_(None))
         .options(selectinload(Client.portfolios))
         .order_by(Client.name)
     )

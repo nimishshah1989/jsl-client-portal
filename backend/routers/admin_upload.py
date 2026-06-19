@@ -82,6 +82,34 @@ def _check_xlsx_zip_bomb(path: str) -> None:
 _PROGRESS_FLUSH_EVERY = 1  # progress callback is already client-coarse
 
 
+# A 'processing' upload_log row older than this is treated as orphaned (e.g. its
+# container was restarted mid-job) and no longer blocks a new upload.
+_UPLOAD_STALE_MINUTES = 30
+
+
+async def _active_upload_in_progress(
+    db: AsyncSession, file_type: str, now: dt.datetime | None = None
+) -> bool:
+    """True if an upload of ``file_type`` is already processing (started within
+    the staleness window).
+
+    Guards against a double-click / re-submit spawning concurrent ingestion jobs
+    for the same data — those compete for the DB and the benchmark/yfinance
+    fetches and make every job crawl (prod incident 2026-06-19). A 'processing'
+    row older than ``_UPLOAD_STALE_MINUTES`` is considered orphaned and does not
+    block, so a job killed by a restart can't wedge uploads forever.
+    """
+    cutoff = (now or dt.datetime.utcnow()) - dt.timedelta(minutes=_UPLOAD_STALE_MINUTES)
+    existing = (await db.execute(
+        select(UploadLog.id).where(
+            UploadLog.file_type == file_type,
+            UploadLog.status == "processing",
+            UploadLog.started_at >= cutoff,
+        ).limit(1)
+    )).first()
+    return existing is not None
+
+
 async def _create_upload_job(
     *,
     job_id: str,
@@ -278,6 +306,19 @@ async def _save_and_start_background(
     a mis-shaped row set.
     """
     _validate_upload(file)
+
+    # Reject a concurrent upload of the same type — a double-click otherwise
+    # spawns parallel ingestion jobs that thrash the DB + benchmark fetches.
+    async with AsyncSessionLocal() as db:
+        if await _active_upload_in_progress(db, file_type):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A {file_type} upload is already processing. Wait for it to "
+                    "finish (watch the progress bar) before starting another."
+                ),
+            )
+
     content = await file.read()
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 50MB limit")

@@ -54,6 +54,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             f"Cannot connect to database. Check DATABASE_URL. Error: {exc}"
         ) from exc
 
+    # Any upload still 'processing' at startup is orphaned — the worker that owned
+    # it died with the previous process (deploy/restart). Fail it out so its UI
+    # stops polling forever and it can't block new uploads (the concurrency guard).
+    try:
+        async with async_engine.begin() as conn:
+            res = await conn.execute(text(
+                "UPDATE cpp_upload_log SET status = 'failed', "
+                "progress_message = 'Interrupted by a restart', finished_at = NOW() "
+                "WHERE status = 'processing'"
+            ))
+        if res.rowcount:
+            logger.warning(
+                "Marked %d orphaned upload job(s) as failed on startup", res.rowcount
+            )
+    except Exception as exc:
+        logger.warning("Upload-job startup cleanup skipped (non-fatal): %s", exc)
+
     # M8: surface CORS posture at startup. The cors_origin_list property
     # already raises ValueError on invalid entries, so by reaching this
     # point we know every origin parsed cleanly.

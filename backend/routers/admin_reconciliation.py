@@ -467,14 +467,48 @@ async def rerun_reconciliation(
     return _summary_to_response(result, market_date)
 
 
+async def _apply_cost_sync(
+    db: AsyncSession, updates: list[tuple[str, str, Decimal]]
+) -> int:
+    """Push each (sleeve_code, symbol, bo_avg_cost) onto cpp_holdings.
+
+    Matches the holding by the PORTFOLIO's source code, not the owning client's
+    code. Reconciliation keys every match by the sleeve's source UCC
+    (cpp_portfolios.client_code); after the unified-login merge that code can be
+    a retired alias whose client_id differs from the survivor that actually owns
+    the holding row. Joining cpp_clients.client_code therefore matched zero rows
+    for every merged client (e.g. BJ53MF → survivor BJ53), so Sync Costs
+    silently did nothing. cpp_portfolios.client_code is globally unique per
+    sleeve and always resolves to the right holding.
+
+    Returns the number of holding rows actually updated.
+    """
+    from sqlalchemy import text as sa_text
+
+    rows_changed = 0
+    for client_code, symbol, bo_cost in updates:
+        # Portable correlated subquery (no UPDATE...FROM, which SQLite can't
+        # alias) so this runs identically on Postgres and the test engine.
+        res = await db.execute(sa_text("""
+            UPDATE cpp_holdings
+            SET avg_cost = :cost,
+                unrealized_pnl = (current_price - :cost) * quantity,
+                current_value = current_price * quantity
+            WHERE symbol = :sym
+              AND portfolio_id IN (
+                  SELECT id FROM cpp_portfolios WHERE client_code = :code
+              )
+        """), {"cost": bo_cost, "code": client_code, "sym": symbol})
+        rows_changed += res.rowcount or 0
+    return rows_changed
+
+
 @router.post("/sync-costs")
 async def sync_costs_from_backoffice(
     admin: dict = Depends(require_role(ROLE_ADMIN_DATA_ENTRY)),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Sync avg_cost from backoffice for COST_MISMATCH holdings."""
-    from sqlalchemy import text as sa_text
-
     result = _cache.get("result")
     if result is None:
         stored = await load_latest_reconciliation(db)
@@ -495,18 +529,10 @@ async def sync_costs_from_backoffice(
     if not updates:
         return {"message": "No cost mismatches to sync", "updated": 0}
 
-    updated = 0
-    for client_code, symbol, bo_cost in updates:
-        await db.execute(sa_text("""
-            UPDATE cpp_holdings h
-            SET avg_cost = :cost,
-                unrealized_pnl = (h.current_price - :cost) * h.quantity,
-                current_value = h.current_price * h.quantity
-            FROM cpp_clients c
-            WHERE c.id = h.client_id
-              AND c.client_code = :code AND h.symbol = :sym
-        """), {"cost": bo_cost, "code": client_code, "sym": symbol})
-        updated += 1
-
+    rows_changed = await _apply_cost_sync(db, updates)
     await db.commit()
-    return {"message": f"Synced avg_cost for {updated} holdings from backoffice", "updated": updated}
+    return {
+        "message": f"Synced avg_cost for {rows_changed} holdings from backoffice",
+        "updated": rows_changed,
+        "mismatches_processed": len(updates),
+    }

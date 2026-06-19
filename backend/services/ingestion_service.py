@@ -13,12 +13,12 @@ DB helper functions live in ingestion_helpers.py.
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import AsyncSessionLocal
@@ -126,6 +126,33 @@ async def _log(db: AsyncSession, upload: UploadResult, uploaded_by: int) -> None
         logger.error("Failed to write upload log: %s", exc, exc_info=True)
 
 
+async def _benchmark_prefetch_range(
+    db: AsyncSession, all_dates: set
+) -> tuple[date, date] | None:
+    """Date range to pre-fetch the Nifty benchmark for ONCE per upload.
+
+    Spans both the uploaded file's dates AND the earliest NAV date already on
+    record, so the single pre-fetch covers every client's full history. Without
+    the widening, an incremental upload (file spans a few days) makes
+    update_benchmark_values re-pull each client's multi-year range from yfinance,
+    200+ times — minutes per upload. Returns None when there are no dates.
+
+    ``MIN(nav_date)`` comes back as a date on Postgres but an ISO string on
+    SQLite — normalise so the comparison works on both (L-009).
+    """
+    if not all_dates:
+        return None
+    min_date = min(all_dates)
+    max_date = max(all_dates)
+    earliest = (await db.execute(select(func.min(NavSeries.nav_date)))).scalar()
+    if earliest is not None:
+        if not isinstance(earliest, date):
+            earliest = date.fromisoformat(str(earliest)[:10])
+        if earliest < min_date:
+            min_date = earliest
+    return min_date, max_date
+
+
 async def ingest_nav_file(
     filepath: str | Path,
     uploaded_by: int,
@@ -175,9 +202,9 @@ async def ingest_nav_file(
             all_dates.add(d)
 
     nifty_df: pd.DataFrame = pd.DataFrame(columns=["close"])
-    if all_dates:
-        min_date = min(all_dates)
-        max_date = max(all_dates)
+    bench_range = await _benchmark_prefetch_range(db, all_dates)
+    if bench_range is not None:
+        min_date, max_date = bench_range
         logger.info("Pre-fetching benchmark data: %s to %s", min_date, max_date)
         try:
             nifty_df = fetch_nifty_data(min_date, max_date)
